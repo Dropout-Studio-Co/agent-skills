@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Collect a compact digest of past AI-agent sessions for one repository.
 
-Scans local transcript stores of common coding agents (Claude Code, Codex CLI,
-Gemini CLI, plus any extra dirs you pass), keeps only sessions whose working
+Scans local transcript stores of common coding agents (Claude Code, Gemini CLI,
+plus any extra dirs you pass), keeps only sessions whose working
 directory is inside the repo, and prints the high-signal parts: user messages
 (corrections flagged first) and failed tool calls. Secrets are redacted.
 
@@ -132,7 +132,6 @@ def extract(rec):
 
 def candidate_files(root, extra_dirs, cutoff):
     claude_home = Path(os.environ.get("CLAUDE_CONFIG_DIR", HOME / ".claude"))
-    codex_home = Path(os.environ.get("CODEX_HOME", HOME / ".codex"))
     gemini_home = HOME / ".gemini"
     enc = re.sub(r"[^A-Za-z0-9]", "-", str(root))
     found = []
@@ -142,9 +141,6 @@ def candidate_files(root, extra_dirs, cutoff):
         for d in proj.iterdir():
             if d.is_dir() and d.name.startswith(enc):
                 found += [("claude-code", f, True) for f in d.glob("*.jsonl")]
-    # Codex CLI: ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl[.zst]
-    for pat in ("**/rollout-*.jsonl", "**/rollout-*.jsonl.zst"):
-        found += [("codex", f, False) for f in (codex_home / "sessions").glob(pat)]
     # Gemini CLI: ~/.gemini/tmp/<sha256(project_root)>/...
     gdir = gemini_home / "tmp" / hashlib.sha256(str(root).encode()).hexdigest()
     if gdir.is_dir():

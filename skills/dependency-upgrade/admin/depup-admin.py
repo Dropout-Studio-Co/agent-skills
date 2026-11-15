@@ -6,9 +6,9 @@
   depup-admin.py update    [--home H] [--no-reconcile]   (= install + doctor; idempotent)
   depup-admin.py uninstall [--home H] [--no-reconcile] [--remove-canonical]
 
-The canonical skill lives in <home>/.agents/skills/dependency-upgrade. Codex, OpenCode,
-and Pi discover that root natively. Claude Code reads only <home>/.claude/skills,
-so install adds one relative per-skill symlink there (the machine's existing convention).
+The canonical skill lives in <home>/.agents/skills/dependency-upgrade. OpenCode discovers that root
+natively. Claude Code reads only <home>/.claude/skills, so install adds one relative per-skill
+symlink there (the machine's existing convention).
 Only links recorded in the ownership manifest are ever removed. Standard library only.
 
 Exit codes: 0 ok, 1 doctor failure, 2 usage, 3 refused (collision / foreign state).
@@ -33,11 +33,9 @@ SKILL_DIR = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 DEFAULT_ROOTS = {
     # Verified against vendor docs and installed binaries on 2026-11-02.
     'claude': ['~/.claude/skills'],
-    'codex': ['~/.agents/skills', '~/.codex/skills'],
     'opencode': ['~/.config/opencode/skills', '~/.claude/skills', '~/.agents/skills'],
-    'pi': ['~/.pi/agent/skills', '~/.agents/skills'],
 }
-HARNESS_BINARIES = {'claude': 'claude', 'codex': 'codex', 'opencode': 'opencode', 'pi': 'pi'}
+HARNESS_BINARIES = {'claude': 'claude', 'opencode': 'opencode'}
 
 
 def now():
@@ -302,20 +300,12 @@ def doctor(paths, run_tests=False):
     add('canonical directory', os.path.isdir(paths.canonical) and not os.path.islink(paths.canonical), paths.canonical)
     problems = validate_skill(paths.canonical) if os.path.isdir(paths.canonical) else ['missing']
     add('Agent Skills frontmatter/spec', not problems, '; '.join(problems) or 'valid')
-    policy = os.path.join(paths.canonical, 'agents', 'openai.yaml')
-    text = ''
-    if os.path.isfile(policy):
-        with open(policy, encoding='utf-8') as handle:
-            text = handle.read()
-    add('codex explicit-only policy',
-        bool(re.search(r'^policy:\s*\n(?:[ \t]+.*\n)*?[ \t]+allow_implicit_invocation:\s*false\s*$', text + '\n', re.M)),
-        policy)
     try:
         with open(os.path.join(paths.canonical, 'SKILL.md'), encoding='utf-8') as handle:
             meta, _ = parse_frontmatter(handle.read())
-        add('claude/pi explicit-only flag', meta.get('disable-model-invocation') is True, 'disable-model-invocation')
+        add('claude explicit-only flag', meta.get('disable-model-invocation') is True, 'disable-model-invocation')
     except (OSError, ValueError) as exc:
-        add('claude/pi explicit-only flag', False, str(exc))
+        add('claude explicit-only flag', False, str(exc))
     compiled = []
     scripts = ('scripts/depup.py', 'scripts/review_router.py', 'admin/depup-admin.py')
     for rel in scripts:
@@ -350,12 +340,6 @@ def doctor(paths, run_tests=False):
             add('%s: no conflicting definition' % harness, False, 'conflicts: ' + ', '.join(foreign))
         add('%s discovery (static)%s' % (harness, '' if installed else ' [binary not installed]'),
             bool(visible), detail, level='FAIL' if installed else 'WARN')
-    codex_cfg = os.path.join(paths.home, '.codex', 'config.toml')
-    if os.path.isfile(codex_cfg):
-        with open(codex_cfg, encoding='utf-8', errors='replace') as handle:
-            cfg = handle.read()
-        blocked = re.search(r'\[\[skills\.config\]\][^\[]*(name|path)\s*=\s*"[^"]*%s[^"]*"[^\[]*enabled\s*=\s*false' % NAME, cfg)
-        add('codex not disabled in config', not blocked, codex_cfg)
     oc_cfg = os.path.join(paths.home, '.config', 'opencode', 'opencode.json')
     if os.path.isfile(oc_cfg):
         try:

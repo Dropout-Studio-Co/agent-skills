@@ -10,9 +10,7 @@ coding harness. One canonical copy:
 | Harness | How it finds the skill | Explicit invocation |
 | --- | --- | --- |
 | Claude Code | `~/.claude/skills/dependency-upgrade` → relative symlink to the canonical dir | `/dependency-upgrade` |
-| Codex CLI | native `~/.agents/skills` | `$dependency-upgrade` (or `/skills`) |
 | OpenCode | native `~/.agents/skills` (also reads `~/.claude/skills`; same target, loaded once) | ask: "use the dependency-upgrade skill" |
-| Pi | native `~/.agents/skills` | `/skill:dependency-upgrade` |
 
 Modes: `upgrade` (default: the full pipeline, no further input), `plan` (read-only), `verify`,
 `resume`, `rollback`, `status`. Add a scope, e.g. `/dependency-upgrade react family only`.
@@ -22,8 +20,7 @@ branch, PR, merge when green and authorized; otherwise `local-only`: a verified 
 The `rollback` mode cleans only empty owned state; undo committed upgrade batches with verified
 compensating `git revert` commits, never by deleting or resetting their branch.
 
-Implicit loading is off where the harness supports it (`disable-model-invocation: true`
-for Claude Code and Pi, `agents/openai.yaml` `allow_implicit_invocation: false` for Codex).
+Implicit loading is off where the harness supports it (`disable-model-invocation: true` for Claude Code).
 OpenCode has no per-skill flag; the skill itself runs read-only `plan` when it
 was loaded without the user naming it. Claude Code pre-approves the package-manager, Git and
 test commands the pipeline needs via `allowed-tools`, so `dontAsk` sessions do not deny them.
@@ -32,7 +29,6 @@ test commands the pipeline needs via `allowed-tools`, so `dontAsk` sessions do n
 
 ```
 SKILL.md                entry workflow (progressive disclosure)
-agents/openai.yaml      Codex explicit-only policy
 references/             workflow, safety, javascript, ecosystems, parallelism,
                         verification, report-schema
 scripts/depup.py        deterministic helper (stdlib, Python 3.9+), JSON output

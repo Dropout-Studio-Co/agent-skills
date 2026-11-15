@@ -64,12 +64,12 @@ class AdminTests(TempCase):
         self.assertIn('conflicts', out)
 
     def test_conflicting_definition_under_other_name_detected(self):
-        write(os.path.join(self.home, '.pi', 'agent', 'skills', 'deps', 'SKILL.md'),
+        write(os.path.join(self.home, '.config', 'opencode', 'skills', 'deps', 'SKILL.md'),
               '---\nname: dependency-upgrade\ndescription: shadow\n---\n')
         self.run_admin('install')
         code, out = self.run_admin('doctor')
         self.assertEqual(code, 1)
-        self.assertIn('pi: no conflicting definition', out)
+        self.assertIn('opencode: no conflicting definition', out)
 
     def test_uninstall_removes_only_owned(self):
         self.run_admin('install')
@@ -97,13 +97,29 @@ class AdminTests(TempCase):
         self.assertTrue(os.path.lexists(self.link))
         self.assertIn('changed since install', out)
 
-    def test_commented_codex_policy_fails_doctor(self):
+    def test_doctor_checks_only_active_harnesses(self):
+        self.assertEqual(set(admin.DEFAULT_ROOTS), {'claude', 'opencode'})
+        self.assertEqual(set(admin.HARNESS_BINARIES), {'claude', 'opencode'})
+        agents = os.path.join(self.canonical, 'agents')
+        if os.path.isdir(agents):
+            shutil.rmtree(agents)
         self.run_admin('install')
-        with open(os.path.join(self.canonical, 'agents', 'openai.yaml'), 'w') as handle:
-            handle.write('policy:\n  # allow_implicit_invocation: false\n  allow_implicit_invocation: true\n')
+        code, out = self.run_admin('doctor')
+        self.assertEqual(code, 0, out)
+        self.assertIn('doctor: OK', out)
+        self.assertNotIn('codex', out)
+        self.assertNotIn('openai', out)
+        self.assertNotIn('pi discovery', out)
+
+    def test_missing_explicit_only_flag_fails_doctor(self):
+        skill_md = os.path.join(self.canonical, 'SKILL.md')
+        with open(skill_md, encoding='utf-8') as handle:
+            text = handle.read()
+        write(skill_md, text.replace('disable-model-invocation: true\n', ''))
+        self.run_admin('install')
         code, out = self.run_admin('doctor')
         self.assertEqual(code, 1)
-        self.assertIn('FAIL codex explicit-only policy', out)
+        self.assertIn('FAIL claude explicit-only flag', out)
 
     def test_doctor_reads_integrations_manifest_roots(self):
         write(os.path.join(self.home, '.agents', 'integrations.json'),

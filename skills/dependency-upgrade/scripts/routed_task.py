@@ -677,7 +677,7 @@ def build_parser():
     sub = parser.add_subparsers(dest='command')
 
     def session(p):
-        p.add_argument('--session-harness', help='this session\'s harness (claude-code, opencode, pi, ...)')
+        p.add_argument('--session-harness', help='this session\'s harness (claude-code, opencode, ...)')
         p.add_argument('--session-model', help='this session\'s exact model id')
         p.add_argument('--session-effort', help='this session\'s effort')
         p.add_argument('--timeout', type=int, default=1800)
