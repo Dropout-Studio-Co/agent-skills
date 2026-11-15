@@ -46,7 +46,7 @@ same candidate is returned as `reused` without a model call.
 Final fallback: `--session-harness/--session-model/--session-effort` launch the same CLI adapters
 with exactly those values (skipped if identical to a candidate that already failed definitively).
 An explicit `--session-harness` always wins over environment detection. A session in an adapter
-harness (claude-code, opencode, pi) without `--session-model` is refused up front. Only for a
+harness (claude-code, opencode) without `--session-model` is refused up front. Only for a
 harness without an adapter (e.g. Freebuff) does the router return
 `status: handoff` with a `next` command: run `prompt.md` in a fresh-context, read-only native
 subagent of the session (never the authoring conversation), save its answer, then
@@ -74,8 +74,8 @@ sits directly in a `bin` or `Scripts` directory and points at an executable regu
 system/toolchain prefix (such as a `.venv/bin/python -> /usr/bin/python3`) is tolerated, never a
 link to a directory or to a non-executable file (a credentials file under a toolchain prefix is an
 escape), and a sandbox walk past 200,000 entries fails closed the same
-way. The check runs once per `route()` call and is reused for the OpenCode session candidate); Pi `--tools read,grep,find,ls
---no-session`. `DEPUP_REVIEW_ROUTER_ACTIVE=1` makes any nested `review run` refuse. The candidate must
+way. The check runs once per `route()` call and is reused for the OpenCode session candidate).
+`DEPUP_REVIEW_ROUTER_ACTIVE=1` makes any nested `review run` refuse. The candidate must
 be a clean commit, and a result is discarded if the worktree changed during the review.
 
 ## Inputs, outputs, evidence

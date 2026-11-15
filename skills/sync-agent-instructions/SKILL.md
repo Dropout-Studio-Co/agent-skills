@@ -23,7 +23,7 @@ metadata:
    ```
    python3 <skill-dir>/scripts/collect_sessions.py --repo <root> --days 60
    ```
-   It scans local session stores (Claude Code, Codex CLI, Gemini CLI), keeps only sessions run inside this repo, redacts secrets, and prints user messages and failed tool calls, with corrections marked ⚑. Use `--extra-dir` for other agents' history folders and `--days` to widen or narrow the window. If `python3` is unavailable, skip this and rely on the current session.
+   It scans local session stores (Claude Code, Gemini CLI), keeps only sessions run inside this repo, redacts secrets, and prints user messages and failed tool calls, with corrections marked ⚑. Use `--extra-dir` for other agents' history folders and `--days` to widen or narrow the window. If `python3` is unavailable, skip this and rely on the current session.
 3. Add what you learned in the current session.
 4. Run `git log --oneline -30` and `git log --since="60 days ago" --name-only --format= | sort | uniq -c | sort -rn | head -20` to see what changed and where work concentrates.
 

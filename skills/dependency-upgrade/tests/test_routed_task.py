@@ -10,7 +10,7 @@ import json
 import os
 
 from tests.support import SKILL_DIR, TempCase, git_init, load, sh, write
-from tests.test_review_router import (GOOD, FakeHarnesses, claude_result, fail, make_router)
+from tests.test_review_router import (GOOD, OPENCODE_MODELS, FakeHarnesses, claude_result, fail, make_router)
 from tests.test_planning_router import PLAN_TEXT
 
 rt = load('routed_task_under_test', 'scripts/routed_task.py')
@@ -152,15 +152,17 @@ class PlanningTests(RoutedCase):
                          ('opencode', 'deepseek-v4.1-flash', 'high'))
         self.assertEqual(entry['candidates'][0]['reason'], 'missing-cli')
 
-        fake = FakeHarnesses(self.tmp, missing={'claude', 'opencode'},
-                             reviews={'pi': [{'stdout': PLAN_TEXT}]})
+        fake = FakeHarnesses(self.tmp, missing={'claude'}, opencode_models={'data': [OPENCODE_MODELS['data'][1]]},
+                             reviews={'opencode': [{'stdout': json.dumps(
+                                 {'type': 'text', 'part': {'text': PLAN_TEXT}})}]})
         self.use(fake)
-        _, entry = self.rt('plan', run, '--context', self.handoff('c\n'), '--session-harness', 'pi',
+        _, entry = self.rt('plan', run, '--context', self.handoff('c\n'), '--session-harness', 'opencode',
                            '--session-model', 'some-provider/session-model', '--session-effort', 'high')
         self.assertEqual((entry['selected']['priority'], entry['selected']['harness'], entry['selected']['model']),
-                         (4, 'pi', 'some-provider/session-model'))
+                         (4, 'opencode', 'some-provider/session-model'))
         argv = fake.review_calls()[-1]
-        self.assertEqual(argv[argv.index('--thinking') + 1], 'high', 'session effort preserved')
+        self.assertEqual(argv[argv.index('--model') + 1], 'some-provider/session-model#high',
+                         'session effort preserved')
 
 
 class RoutingFailureTests(RoutedCase):
@@ -216,11 +218,15 @@ class RoutingFailureTests(RoutedCase):
 
     def test_11_harness_compatibility(self):
         run = self.start('consolidate')
-        code, out = self.rt('review', run, '--kind', 'code', '--base', self.base, '--session-harness', 'pi')
+        code, out = self.rt('review', run, '--kind', 'code', '--base', self.base, '--session-harness', 'opencode')
         self.assertEqual(code, 1)
         self.assertIn('--session-model', out['error'], 'adapter harness must name its model')
         fake = FakeHarnesses(self.tmp, missing={'claude', 'opencode'})
         self.use(fake)
+        code, entry = self.rt('review', run, '--kind', 'code', '--base', self.base, '--session-harness', 'pi',
+                              '--session-model', 'x')
+        self.assertEqual(entry['status'], 'handoff', 'pi has no adapter: hand off like any other harness')
+        self.assertFalse([c for c in fake.calls if c and c[0] == 'pi'])
         code, entry = self.rt('review', run, '--kind', 'code', '--base', self.base, '--session-harness', 'freebuff',
                               '--session-model', 'x')
         self.assertEqual(entry['status'], 'handoff', 'a harness without an adapter hands off to a native subagent')

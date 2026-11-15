@@ -22,9 +22,9 @@ final check.
 
 ```text
 skills/consolidate/               SKILL.md, routing.json (plan/review prompt profiles)
-skills/dependency-upgrade/        SKILL.md, README.md, scripts/, references/, tests/, admin/, agents/
+skills/dependency-upgrade/        SKILL.md, README.md, scripts/, references/, tests/, admin/
 skills/execution-protocol/        SKILL.md, reference.md, opus-gate-brief.md, implementer-brief.md, plan-schema.json,
-                                  review-schema.json, agents/, opencode/, scripts/ (gate.sh, implement.sh,
+                                  review-schema.json, opencode/, scripts/ (gate.sh, implement.sh,
                                   implement_lib.py, premerge-and-merge.sh), tests/ (smoke.sh, implement-smoke.sh)
 skills/frontend-ui-ux-overhaul/   SKILL.md, routing.json
 skills/sync-agent-instructions/   SKILL.md, scripts/collect_sessions.py

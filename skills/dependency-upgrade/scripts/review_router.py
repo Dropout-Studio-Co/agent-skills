@@ -46,9 +46,9 @@ PREFERRED = (
     {'priority': 3, 'harness': 'opencode', 'provider': 'opencode-go', 'model': 'deepseek-v4.1-flash',
      'display': 'DeepSeek V4.1 Flash 1017', 'effort': 'high'},
 )
-HARNESS_CLI = {'claude-code': 'claude', 'opencode': 'opencode', 'pi': 'pi'}
+HARNESS_CLI = {'claude-code': 'claude', 'opencode': 'opencode'}
 HARNESS_ALIASES = {'claude': 'claude-code', 'claude-code': 'claude-code', 'claudecode': 'claude-code',
-                   'opencode': 'opencode', 'pi': 'pi'}
+                   'opencode': 'opencode'}
 RESULT_BEGIN, RESULT_END = 'DEPUP_REVIEW_RESULT_BEGIN', 'DEPUP_REVIEW_RESULT_END'
 PLAN_KINDS = {
     'plan': 'architecture decisions and the implementation plan for the whole upgrade',
@@ -531,8 +531,7 @@ class Router:
             target = probe.get('resolved_model') or model
             return ['opencode', 'run', '--standalone', '--agent', 'depup-reviewer', '--format', 'json',
                     '--model', target + ('#' + effort if effort else ''), prompt]
-        argv = ['pi', '-p', '--no-session', '--model', model, '--tools', 'read,grep,find,ls']
-        return argv + (['--thinking', effort] if effort else []) + [prompt]
+        raise RuntimeError('no CLI adapter for harness %r' % harness)
 
     def execute(self, candidate, probe, ctx, prompt, attempt_dir):
         argv = self.command(candidate, probe, ctx, prompt, attempt_dir)

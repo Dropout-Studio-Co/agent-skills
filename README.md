@@ -2,7 +2,7 @@
 
 My AI-agent skills, kept in one place: development, automation, code quality and workflow management.
 
-Five skills I use across Claude Code, Codex CLI, OpenCode and Pi. They live here so they survive a
+Five skills I use across Claude Code and OpenCode. They live here so they survive a
 reinstall, stay reviewable, and move to another machine in one copy. Each folder is a standard
 Agent Skill: a `SKILL.md` plus the scripts, references and tests it needs. This is a personal
 workflow repository, not a supported product.
@@ -22,9 +22,9 @@ workflow repository, not a supported product.
 ```text
 skills/
 ├── consolidate/               SKILL.md, routing.json
-├── dependency-upgrade/        SKILL.md, README.md, scripts/, references/, tests/, admin/, agents/
+├── dependency-upgrade/        SKILL.md, README.md, scripts/, references/, tests/, admin/
 ├── execution-protocol/        SKILL.md, reference.md, opus-gate-brief.md, implementer-brief.md, plan-schema.json,
-│                              review-schema.json, agents/, opencode/, scripts/ (gate.sh, implement.sh,
+│                              review-schema.json, opencode/, scripts/ (gate.sh, implement.sh,
 │                              implement_lib.py, premerge-and-merge.sh), tests/ (smoke.sh, implement-smoke.sh)
 ├── frontend-ui-ux-overhaul/   SKILL.md, routing.json
 └── sync-agent-instructions/   SKILL.md, scripts/collect_sessions.py
@@ -39,8 +39,8 @@ take part in routing.
 
 ## Install
 
-Each harness discovers skills from a global root: `~/.agents/skills` for Codex, OpenCode and Pi,
-and `~/.claude/skills` for Claude Code. This repository mirrors that layout under `skills/`:
+Each harness discovers skills from a global root: `~/.agents/skills` for OpenCode and
+`~/.claude/skills` for Claude Code. This repository mirrors that layout under `skills/`:
 
 ```sh
 git clone https://github.com/beyourahi/agent-skills.git
