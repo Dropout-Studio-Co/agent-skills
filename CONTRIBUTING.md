@@ -44,7 +44,11 @@ merged, sync from the merged `main` with the rsync above, then run the drift che
 print nothing. A file deleted in the repository is removed from the installed copy by hand before
 that final check.
 
-Edit here first, then sync; do not edit only the installed copy.
+On the maintainer's machine a LaunchAgent sync keeps `~/.agents/skills/<name>` and `main` in step
+both ways every 5 minutes. An edit to the installed copy is pushed straight to `main` without
+review, so contributions and agent changes go through a PR here; merged changes are installed
+automatically. `~/.agents/bin/agent-skills-sync --dry-run` previews a run. See "Automatic sync" in
+[AGENTS.md](./AGENTS.md) for the full rules: managed skills, ignored files and held changes.
 
 ## Commits
 
