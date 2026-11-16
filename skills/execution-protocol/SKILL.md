@@ -28,14 +28,14 @@ description: 'Execution protocol: 100% end-to-end completion, completion over pr
 
 | Role | Model | Reached via |
 |---|---|---|
-| Conductor | Claude Opus 5.5: `claude-opus-5-5`, High | this Claude Code session |
+| Conductor | Claude Opus 5.5: `claude-opus-5-5`, Medium | this Claude Code session |
 | Plan author (every tier, Low included) | Opus 5.5, effort high | `scripts/gate.sh plan` |
 | Gate reviewer | Opus 5.5: review medium (high for a High tier or trigger), security high, epoch medium (high for High) | `scripts/gate.sh` (fresh read-only session) |
 | Implementer | DeepSeek V4.1 Flash 1017: `opencode-go/deepseek-v4.1-flash#high`, High only | `scripts/implement.sh` (OpenCode Go, no sandbox) |
 | Implementer fallback | Sonnet 5.5: `claude-sonnet-5-5`, High only | only inside `scripts/implement.sh`, after DeepSeek was logged `unavailable` for that step and round |
 
 - **No other model or route:** Sonnet 5.5 is never used for any other role or scenario (conductor, planner, gate, helper agent, lookup). No Haiku, Codex/GPT, Kimi, `opencode/` (Zen) routes, OpenCode Go free models, other DeepSeek variants, or the Sonnet helper agents in `~/.claude/agents`. No gate fallback.
-- **Effort:** Opus only medium or high: gates per `gate.sh`; the conductor high, set by `modelSettings` `claude-opus-5-5` `effortLevel` in `~/.claude/settings.json`, changed only on Rahi's instruction. DeepSeek high only. Sonnet high only, never medium (Rahi 2026-11-14).
+- **Effort:** Opus only medium or high: gates per `gate.sh`; the conductor medium (Rahi 2026-11-16), set by `modelSettings` `claude-opus-5-5` `effortLevel` in `~/.claude/settings.json`, changed only on Rahi's instruction. DeepSeek high only. Sonnet high only, never medium (Rahi 2026-11-14).
 - **The conductor** does everything except plans, gates and implementation rounds: investigation, tier, `facts.md`, the bootstrap command, dispatching each step through `implement.sh` (in the background), reading each round's full diff before running anything from it, re-running lint, types, tests and build itself before any gate, every commit, conflict resolution, git, PR, CI, merge, cleanup, and escalation answers (`--notes` within the plan, or a re-plan through the plan gate). It writes code only after `implement.sh` exits 3, 4 or 6 (it implements the step itself or re-plans) and for outside-repo changes. Self-review is not a gate, so gates stay independent.
 - **A gate session** never writes code, tests or fixes, runs no git mutations, never merges; it returns a plan, a decision or findings only.
 - **Start check (MUST):** Opus 5.5 in Claude Code is the conductor: follow every step. A DeepSeek or Sonnet session is never the conductor: it implements only its brief and runs no gate.sh, premerge, git mutation or PR. Any other model stops and says so.
