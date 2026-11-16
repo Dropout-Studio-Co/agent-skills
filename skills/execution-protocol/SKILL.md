@@ -45,7 +45,7 @@ description: 'Execution protocol: 100% end-to-end completion, completion over pr
 
 ## 2. Risk tier (MUST, before planning; rules decide, not judgment)
 
-The conductor sets the tier from the request and the code it will touch, writing the tier and every matched trigger to `PLAN.md` (step 3). When in doubt, pick the higher tier.
+The conductor sets the tier from the request and the code it will touch, writing the tier and every matched trigger to `PLAN.md` (step 3). When in doubt, pick the higher tier. If the repo has its own tier or risk-floor command or rule (in its AGENTS.md/CLAUDE.md), apply it to the paths the task will touch before the first plan, record its output in `facts.md`, and rerun it at each re-check; the tier is never below it.
 
 **Tier re-check (MUST, before any review gate and again before merge):** re-apply the same rules to the actual diff (`git diff --stat` plus changed paths and content), not the request. If the diff touches a High area, changes behavior in a task marked Low, or matches a trigger not in `PLAN.md`, raise the tier, record why in `PLAN.md`, and run every gate the new tier requires (a fresh `facts.md` Opus plan included, code realigned) before merging. A tier never goes down after planning. Write each re-check to `EVID/tier-recheck-<head-sha>.md` (full 40-character SHA): the `git diff --stat`, every changed path, each tier rule with its result, and the resulting tier; it ends `Tier: <low|medium|high>`.
 
@@ -84,7 +84,7 @@ Never commit to main. One branch and worktree per workstream, cut from the lates
 
 ## 6. Implement through implement.sh, test-first, and verify locally
 
-RED → GREEN → REFACTOR for behavior changes, plus a regression test for every bug fix. Match repo conventions; no unrelated changes. Run the repo's lint, types, tests and build, plus E2E/UI checks when affected; all MUST pass before any review gate. Never skip hooks, delete tests or loosen gates. For a bug-fix step the conductor confirms RED itself: in a scratch detached worktree at the step's base with only the step's test files applied, it runs the regression test and records `RED confirmed: <cmd> -> <failing line>` in `PROGRESS.md`; it must fail on the bug, not on setup, or the round is rejected (`implement.sh --discard`, rerun with `--notes`). The implementer's own RED claim never counts.
+RED → GREEN → REFACTOR for behavior changes, plus a regression test for every bug fix. Match repo conventions; no unrelated changes. Run the repo's lint, types, tests and build, plus E2E/UI checks when affected; all MUST pass before any review gate. Repo rules limiting local runs apply; for E2E/UI, run locally only what PR CI does not run (e.g. a browser CI skips); CI green on the head (step 8) covers the rest. Never skip hooks, delete tests or loosen gates. For a bug-fix step the conductor confirms RED itself: in a scratch detached worktree at the step's base with only the step's test files applied, it runs the regression test and records `RED confirmed: <cmd> -> <failing line>` in `PROGRESS.md`; it must fail on the bug, not on setup, or the round is rejected (`implement.sh --discard`, rerun with `--notes`). The implementer's own RED claim never counts.
 
 **Implementation (MUST).** Each step runs from the root of its clean, linked task worktree:
 

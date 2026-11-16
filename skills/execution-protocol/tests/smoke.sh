@@ -111,12 +111,14 @@ chk "reference.md holds internals" bash -c "r='$ROOT/reference.md'; test -f \"\$
 SBXPAT='sandbox-exec|implementer\.sb|sandbox_check|IMPL_SANDBOX|IMPL-SANDBOX|failIfUnavailable|"sandbox"'
 chk "no sandbox left" bash -c "test ! -e '$ROOT/scripts/implementer.sb' && ! grep -rqE \"\$1\" '$ROOT/scripts' '$ROOT/opencode' '$ROOT/SKILL.md' '$ROOT/reference.md' '$ROOT/implementer-brief.md' && grep -qF '**No sandbox (Rahi 2026-11-14):**' '$ROOT/SKILL.md'" _ "$SBXPAT"
 chk "plan risks and RED in SKILL" bash -c "grep -qF '## Plan risks' '$ROOT/SKILL.md' && grep -qF 'RED confirmed:' '$ROOT/SKILL.md'"
-chk "SKILL size 23300 max" bash -c "[ \$(wc -c < '$ROOT/SKILL.md') -le 23300 ]"
+chk "SKILL size 23800 max" bash -c "[ \$(wc -c < '$ROOT/SKILL.md') -le 23800 ]"
 chk "SKILL resume line + round cap" bash -c "[ \$(grep -cF 'after compaction or restart' '$ROOT/SKILL.md') = 1 ] && l=\$(grep -F 'after compaction or restart' '$ROOT/SKILL.md') && for n in PROGRESS.md PLAN.md gates.log impl.log 'git log'; do printf '%s' \"\$l\" | grep -qF \"\$n\" || exit 1; done && ! grep -qF 'context compaction handles length' '$ROOT/SKILL.md' && grep -qF 'Rounds: 3 per plan' '$ROOT/SKILL.md' && ! grep -qF 'At most 3 rounds per gate' '$ROOT/SKILL.md' && grep -qF -- '- After round 3, rethink:' '$ROOT/SKILL.md'"
 # --- consolidation: cswap mechanics in reference.md, lane ceiling and source-repo rule in SKILL.md ---
 chk "reference.md cswap mechanics" bash -c "grep -qF 'cswap auto --once --model Opus' '$ROOT/reference.md' && grep -qF 'next-available' '$ROOT/reference.md'"
 chk "reference.md drops the duplicated fail sentence" bash -c "! grep -qF 'A \`fail\` verdict is a valid run' '$ROOT/reference.md'"
 chk "lane ceiling and source-repo rule" bash -c "grep -qF 'at most 6 concurrent lanes' '$ROOT/SKILL.md' && grep -qF 'installed copy is never edited first' '$ROOT/SKILL.md'"
+chk "repo tier floor before the first plan" bash -c "grep -qF 'before the first plan, record its output in \`facts.md\`' '$ROOT/SKILL.md' && grep -qF 'the tier is never below it' '$ROOT/SKILL.md'"
+chk "no local E2E that PR CI already runs" bash -c "grep -qF 'run locally only what PR CI does not run' '$ROOT/SKILL.md' && grep -qF 'all MUST pass before any review gate' '$ROOT/SKILL.md'"
 # --- gate: happy path (medium review) ---
 reset; claude_out review "$H" pass; new_ev g1; pkt review "$H"; gaterun "$E" review medium
 chk "happy exit+file" bash -c "[ $GRC = 0 ] && test -s '$E/review-$H.json'"
