@@ -1,7 +1,8 @@
 # agent-skills — notes for agents
 
 Repository of personal AI-agent skills. Each directory under `skills/` is an installable Agent
-Skill; this repository is the source of truth, and `~/.agents/skills/<name>` is a copy of it.
+Skill; this repository is the source of truth, and `~/.agents/skills/<name>` is kept in sync with
+`main` automatically (see [Automatic sync](#automatic-sync)).
 
 ## Commands
 
@@ -10,13 +11,42 @@ python3 -m unittest discover -s skills/dependency-upgrade/tests -t skills/depend
 bash skills/execution-protocol/tests/smoke.sh  # execution-protocol smoke tests (fake CLIs)
 diff -rq -x __pycache__ -x graft skills/<name> ~/.agents/skills/<name>  # drift check: must print nothing
 rsync -a --exclude '__pycache__/' --exclude 'graft/.cache/' skills/<name>/ ~/.agents/skills/<name>/  # sync one skill
+~/.agents/bin/agent-skills-sync --dry-run  # sync: show what the next run would do, change nothing
 ```
 
 Run the drift check from an up-to-date `main` before starting a change to a skill: it must print
 nothing (any difference is local drift; bring it into the repository first). After the change is
 merged, sync from the merged `main` with the rsync, then run the drift check again: it must print
 nothing. A file deleted in the repository is removed from the installed copy by hand before that
-final check.
+final check. Files the sync never copies (for example `.agent-skills-sync` or `.DS_Store`) can show
+up as `Only in ~/.agents/skills/<name>` and are expected; any other difference is drift.
+
+## Automatic sync
+
+- A LaunchAgent labelled `com.beyourahi.agent-skills-sync` runs `~/.agents/bin/agent-skills-sync` at
+  load and every 300 s. It keeps `~/.agents/skills` and `main` in step in both directions.
+- Managed skills are every `skills/<name>` on `main`, plus a new real folder in `~/.agents/skills`
+  that holds a `SKILL.md` whose frontmatter `name` equals the folder name, an empty
+  `.agent-skills-sync` marker, and no entry in `~/.agents/.skill-lock.json`. Symlinked entries are
+  ignored.
+- Local edits, additions and deletions are committed and pushed straight to `main`, with the
+  subjects `chore(sync): update <name> from local copy`, `feat(sync): add <name>` and
+  `chore(sync): remove <name>`. A local change waits 120 s before it is pushed, and a whole-skill
+  deletion needs two runs before it is committed.
+- Changes merged on `main` are installed in the local copy when that copy is unchanged since the
+  last sync. A skill changed on both sides is held, with no write either way and one macOS
+  notification, until both sides match. A skill removed from `main` is retired locally: the folder
+  is kept and the skill is no longer synced.
+- Never synced: `__pycache__/`, `*.pyc`, `.pytest_cache/`, any `graft/` folder, `.DS_Store`,
+  `.agent-skills-sync`, `.git/`, `.local-state/`, `*.log`, `.env` and `.env.*` except
+  `.env.example`, and `.dev.vars`.
+- A change that holds a home path, a token-like string, or a file over 5 MB is held and not pushed.
+- State and logs live in `~/.local/state/agent-skills-sync/`: `runs.jsonl`, `state.json`,
+  `launchd.log` and the sync's own clone in `repo/`.
+- For agents: change a skill in this repository through a PR and never edit
+  `~/.agents/skills/<name>` directly, because the sync pushes such an edit to `main` without
+  review. After the merge the sync installs the change on its next run; the rsync above still
+  installs it at once by hand.
 
 ## Layout
 
