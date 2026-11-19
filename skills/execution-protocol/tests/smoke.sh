@@ -112,6 +112,8 @@ SBXPAT='sandbox-exec|implementer\.sb|sandbox_check|IMPL_SANDBOX|IMPL-SANDBOX|fai
 chk "no sandbox left" bash -c "test ! -e '$ROOT/scripts/implementer.sb' && ! grep -rqE \"\$1\" '$ROOT/scripts' '$ROOT/opencode' '$ROOT/SKILL.md' '$ROOT/reference.md' '$ROOT/implementer-brief.md' && grep -qF '**No sandbox (Rahi 2026-11-14):**' '$ROOT/SKILL.md'" _ "$SBXPAT"
 chk "plan risks and RED in SKILL" bash -c "grep -qF '## Plan risks' '$ROOT/SKILL.md' && grep -qF 'RED confirmed:' '$ROOT/SKILL.md'"
 chk "SKILL size 23800 max" bash -c "[ \$(wc -c < '$ROOT/SKILL.md') -le 23800 ]"
+chk "SKILL plan effort xhigh" grep -qF '| Plan author (every tier, Low included) | Opus 5.5, effort xhigh' "$ROOT/SKILL.md"
+chk "gate.sh plan effort always xhigh" bash -c "grep -qF 'effort always xhigh (--trigger no effect)' '$ROOT/scripts/gate.sh' && ! grep -q 'always high (--trigger' '$ROOT/scripts/gate.sh'"
 chk "SKILL resume line + round cap" bash -c "[ \$(grep -cF 'after compaction or restart' '$ROOT/SKILL.md') = 1 ] && l=\$(grep -F 'after compaction or restart' '$ROOT/SKILL.md') && for n in PROGRESS.md PLAN.md gates.log impl.log 'git log'; do printf '%s' \"\$l\" | grep -qF \"\$n\" || exit 1; done && ! grep -qF 'context compaction handles length' '$ROOT/SKILL.md' && grep -qF 'Rounds: 3 per plan' '$ROOT/SKILL.md' && ! grep -qF 'At most 3 rounds per gate' '$ROOT/SKILL.md' && grep -qF -- '- After round 3, rethink:' '$ROOT/SKILL.md'"
 # --- consolidation: cswap mechanics in reference.md, lane ceiling and source-repo rule in SKILL.md ---
 chk "reference.md cswap mechanics" bash -c "grep -qF 'cswap auto --once --model Opus' '$ROOT/reference.md' && grep -qF 'next-available' '$ROOT/reference.md'"
@@ -339,14 +341,14 @@ reset; epm; rm "$E/epoch-$PK.json"; printf '{}' > "$E/epoch-x.json"; pmrun "$E" 
 chk "premerge: unlogged epoch file is STRAY" bash -c "[ $PRC = 1 ] && grep -q 'not written by gate.sh: epoch-x.json' '$T/pm.out'"
 reset; epm; LOGV=fail logline "$E" epoch "$PK" high opus ""; pmrun "$E" "$R" --diff "$T/pe.diff"
 chk "premerge: denied epoch fails EPOCHS" bash -c "[ $PRC = 1 ] && grep -q 'epoch authorizations' '$T/pm.out'"
-# --- legacy High fallback rows stay provisional; plans always high effort ---
+# --- legacy High fallback rows stay provisional; plans always xhigh effort ---
 hfb() { new_ev hf; printf 'diff\n' > "$T/hf.diff"; PK=$(shasum -a 256 "$T/hf.diff" | awk '{print $1}'); printf 'Tier: high\n' > "$E/PLAN.md"; printf 'Tier: high\n' > "$E/tier-recheck-$PK.md"; printf '{"gate":"plan","tier":"high"}' > "$E/plan-$PK.json"; logline "$E" plan "$PK" high opus "plan-$PK.json"
   for g in review security; do printf 'Gate: %s\nkey: %s\n' "$g" "$PK" > "$E/packet-$g.md"; cat "$T/hf.diff" >> "$E/packet-$g.md"; gatefile "$E" "$g" "$PK"; logline "$E" "$g" "$PK" high fallback "$g-$PK.json"; done; }
 reset; new_ev t1; printf 'facts\n' > "$E/facts.md"; K=$(shasum -a 256 "$E/facts.md" | awk '{print $1}'); { printf 'Gate: plan\n'; cat "$E/facts.md"; } > "$E/packet-plan.md"; claude_out plan "$K" pass; gaterun "$E" plan medium
-chk "T1 plan medium effort high" bash -c "[ $GRC = 0 ] && grep -q -- '--effort high' '$T/calls.log' && grep -q 'Requested tier: medium' '$T/calls.log' && tail -1 '$E/gates.log' | grep -q '\"effort\": \"high\"'"
-gaterun "$E" plan medium --trigger; chk "T1 plan --trigger accepted+high" bash -c "[ $GRC = 0 ] && tail -1 '$E/gates.log' | grep -q '\"effort\": \"high\"'"
+chk "T1 plan medium effort xhigh" bash -c "[ $GRC = 0 ] && grep -q -- '--effort xhigh' '$T/calls.log' && grep -q 'Requested tier: medium' '$T/calls.log' && tail -1 '$E/gates.log' | grep -q '\"effort\": \"xhigh\"'"
+gaterun "$E" plan medium --trigger; chk "T1 plan --trigger accepted+xhigh" bash -c "[ $GRC = 0 ] && tail -1 '$E/gates.log' | grep -q '\"effort\": \"xhigh\"'"
 reset; new_ev t1b; printf 'facts\n' > "$E/facts.md"; K=$(shasum -a 256 "$E/facts.md" | awk '{print $1}'); { printf 'Gate: plan\n'; cat "$E/facts.md"; } > "$E/packet-plan.md"; claude_out plan "$K" pass low; gaterun "$E" plan low
-chk "plan low exit0, effort high, tier low" bash -c "[ $GRC = 0 ] && grep -q -- '--effort high' '$T/calls.log' && tail -1 '$E/gates.log' | grep -q '\"tier\": \"low\"'"
+chk "plan low exit0, effort xhigh, tier low" bash -c "[ $GRC = 0 ] && grep -q -- '--effort xhigh' '$T/calls.log' && tail -1 '$E/gates.log' | grep -q '\"tier\": \"low\"'"
 for pair in 'high medium' 'low high'; do req=${pair% *}; ret=${pair#* }; reset; new_ev "tier-$req-$ret"; printf 'facts\n' > "$E/facts.md"; K=$(shasum -a 256 "$E/facts.md" | awk '{print $1}'); { printf 'Gate: plan\n'; cat "$E/facts.md"; } > "$E/packet-plan.md"; claude_out plan "$K" pass "$ret"; gaterun "$E" plan "$req"
   chk "plan tier $ret for $req invalid" bash -c "[ $GRC = 3 ] && [ \$(grep -c '^claude ' '$T/calls.log') = 2 ] && [ \$(grep -c '\"status\": \"invalid\".*plan tier mismatch' '$E/gates.log') = 2 ] && tail -1 '$E/gates.log' | grep -q 'plan tier mismatch after retry' && ! ls '$E'/plan-*.json 2>/dev/null"; done
 : > "$T/calls.log"; gaterun "$E" epoch low; chk "epoch low exit2 no model" bash -c "[ $GRC = 2 ] && [ \$(grep -cE '^(claude|opencode) ' '$T/calls.log') = 0 ]"
