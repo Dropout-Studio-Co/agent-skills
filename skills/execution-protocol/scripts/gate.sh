@@ -3,7 +3,7 @@
 set -euo pipefail
 usage() { cat <<'EOF'
 usage: EVID=<dir> gate.sh <plan|review|security|epoch> <low|medium|high> [--trigger] [--diff FILE] [--base REF]
-  plan: key EVID/facts.md sha256; effort always high (--trigger no effect); --diff: key FILE sha256
+  plan: key EVID/facts.md sha256; effort always xhigh (--trigger no effect); --diff: key FILE sha256
   review/security: the packet must contain the exact diff (FILE, or git diff merge-base(REF)..HEAD; REF default origin/HEAD); --trigger raises medium effort to high
   epoch: key EVID/epoch.md sha256; only after a review/security round-cap block; max 2 authorized per EVID
 exit: 0 pass (or valid plan), 1 verdict fail, 2 usage/precondition, 3 blocked, 4 round cap, 5 lock wait timed out (rerun)
@@ -95,7 +95,7 @@ PY
 case ${ec:-0} in 0) ;; 1) log invalid "" "" "" "" "" 0 0 0 "" "epoch needs a review/security round-cap block" ""; die "epoch: no round-cap block in gates.log" ;; 2) log invalid "" "" "" "" "" 0 0 0 "" "epoch tier below the block tier" ""; die "epoch: tier below the blocked gate's" ;; 3) log blocked "" "" "" "" "" 0 0 0 "" "epoch denied for this block" ""; exit 3 ;; 4) log blocked "" "" "" "" "" 0 0 0 "" "epoch ceiling: 2 per task" ""; exit 3 ;; esac
 if [ "$cap" = 2 ]; then log blocked "" "" "" "" "" 0 0 0 "" "round cap after re-plan" ""; exit 3; fi
 if [ "$cap" = 1 ]; then log cap "" "" "" "" "" 0 0 0 "" "3 ok rounds reached; re-plan required" ""; exit 4; fi
-effort=medium; if [ "$gate" = plan ] || [ "$tier" = high ] || [ "$trigger" = 1 ]; then effort=high; fi
+effort=medium; if [ "$gate" = plan ]; then effort=xhigh; elif [ "$tier" = high ] || [ "$trigger" = 1 ]; then effort=high; fi
 if [ "$gate" = plan ]; then schema=plan-schema.json; else schema=review-schema.json; fi
 run_claude() { local rc=0 ap; set +e
   ap=$(cat "$SKILL/opus-gate-brief.md")
