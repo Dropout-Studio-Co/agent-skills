@@ -45,8 +45,8 @@ print nothing. A file deleted in the repository is removed from the installed co
 that final check.
 
 On the maintainer's machine a LaunchAgent sync keeps `~/.agents/skills/<name>` and `main` in step
-both ways every 5 minutes. An edit to the installed copy is pushed straight to `main` without
-review, so contributions and agent changes go through a PR here; merged changes are installed
+both ways: it runs on every local change, at login and when the network comes back. An edit to the
+installed copy is pushed straight to `main` without review, so contributions and agent changes go through a PR here; merged changes are installed
 automatically. `~/.agents/bin/agent-skills-sync --dry-run` previews a run. See "Automatic sync" in
 [AGENTS.md](./AGENTS.md) for the full rules: managed skills, ignored files and held changes.
 
