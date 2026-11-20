@@ -55,8 +55,15 @@ if cmd == "plan":
 if cmd == "brief":
     tpl, pf, wt, notes, out = a[1:6]; o = plan(pf); L = lambda xs: "\n".join("- " + str(x) for x in (xs or []))
     t = open(tpl).read().replace("{WORKTREE}", wt).replace("{RESULT}", os.path.join(wt, ".impl/result.json")).replace("{ESCALATION}", os.path.join(wt, ".impl/escalation.md"))
-    t += "\n## Worktree\n%s (follow its AGENTS.md/CLAUDE.md)\n\n## Acceptance criteria\n%s\n\n## Design\n%s\n\n## Files (the only paths you may change)\n%s\n\n## Tests (write them first and see them fail)\n%s\n" % (
+    t += "\n## Worktree\n%s (follow its AGENTS.md/CLAUDE.md)\n\n## Acceptance criteria\n%s\n\n## Design\n%s\n\n## Files (the only paths you may change)\n%s\n\n## Tests (one at a time: write it, see it fail, make it pass)\n%s\n" % (
         wt, L(o.get("acceptance_criteria")), o.get("design", ""), L(o.get("files")), L(o.get("tests")))
+    # The installed tdd skill (a sibling of this skill's folder) is the reference for writing the Tests.
+    td = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(tpl))), "tdd")
+    if os.path.isfile(os.path.join(td, "SKILL.md")):
+        t += "\n## tdd skill (reference for writing the Tests; the rules above, the plan and the notes win; the plan's Tests are the agreed seams: never ask, use no other skill)\n"
+        for n in ("SKILL.md", "tests.md", "mocking.md"):
+            f = os.path.join(td, n)
+            if os.path.isfile(f): t += "\n### %s\n%s\n" % (n, re.sub(r"\A---\n.*?\n---\n", "", open(f, errors="replace").read(), count=1, flags=re.S))
     if notes != "-": t += "\n## Notes from the conductor\n" + open(notes, errors="replace").read() + "\n"
     open(out, "w").write(t); sys.exit()
 if cmd == "sid":

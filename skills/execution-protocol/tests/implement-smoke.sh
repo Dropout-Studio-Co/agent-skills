@@ -137,5 +137,20 @@ ck() { local d=$1 want=$2 rc; shift 2; rm -f "$E/impl.log"; for r in "$@"; do ec
 ck "no log passes" 0; ck "valid log passes" 0 '{"route": "", "status": "start", "step": "s"}' "$DOK" "$DUN" "$SOK" '{"route": "", "status": "discarded"}'
 ck "deepseek effort medium fails" 1 "${DOK/\"high\"/\"medium\"}"; ck "deepseek beam-free fails" 1 "${DOK/deepseek-v4.1-flash/beam-free}"
 ck "sonnet without an unavailable row fails" 1 "$SOK"; ck "sonnet effort medium fails" 1 "$DUN" "${SOK/\"high\"/\"medium\"}"; ck "route kimi fails" 1 '{"route": "kimi", "status": "done"}'
+# --- brief: the installed tdd skill (a sibling of the skill folder) is appended for the implementer ---
+TDH="## tdd skill (reference for writing the Tests; the rules above, the plan and the notes win; the plan's Tests are the agreed seams: never ask, use no other skill)"
+mkdir -p "$T/sk/execution-protocol" "$T/sk/tdd"; cp "$ROOT/implementer-brief.md" "$T/sk/execution-protocol/implementer-brief.md"
+{ printf -- '---\nname: tdd\ndescription: x\n---\n'; echo TDD-BODY-MARK; } > "$T/sk/tdd/SKILL.md"
+echo TESTS-MARK > "$T/sk/tdd/tests.md"; echo MOCK-MARK > "$T/sk/tdd/mocking.md"; echo NOTE-MARK > "$T/notes.md"
+fresh; python3 -I "$ROOT/scripts/implement_lib.py" brief "$T/sk/execution-protocol/implementer-brief.md" "$E/plan-p1.json" "$W" "$T/notes.md" "$T/b1.md"
+chk "brief: installed tdd appended without frontmatter, between Tests and notes" bash -c 'f=$1; h=$2
+  for m in "$h" TDD-BODY-MARK TESTS-MARK MOCK-MARK "### SKILL.md" "### tests.md" "### mocking.md"; do grep -qF -- "$m" "$f" || exit 1; done
+  ! grep -qE "^name: tdd$" "$f" || exit 1
+  a=$(grep -n "^## Tests" "$f" | head -1 | cut -d: -f1); b=$(grep -n "^## tdd skill" "$f" | head -1 | cut -d: -f1); c=$(grep -n "^## Notes from the conductor" "$f" | head -1 | cut -d: -f1)
+  [ -n "$a" ] && [ -n "$b" ] && [ -n "$c" ] && [ "$a" -lt "$b" ] && [ "$b" -lt "$c" ]' _ "$T/b1.md" "$TDH"
+mkdir -p "$T/sk2/execution-protocol"; cp "$ROOT/implementer-brief.md" "$T/sk2/execution-protocol/implementer-brief.md"
+fresh; python3 -I "$ROOT/scripts/implement_lib.py" brief "$T/sk2/execution-protocol/implementer-brief.md" "$E/plan-p1.json" "$W" - "$T/b2.md"
+chk "brief: no tdd section without an installed tdd" bash -c "grep -qF '## Tests (one at a time: write it, see it fail, make it pass)' '$T/b2.md' && ! grep -qF '## tdd skill' '$T/b2.md'"
+chk "brief: one test at a time, not all first" bash -c "grep -qF 'one at a time' '$ROOT/implementer-brief.md' && ! grep -qF 'write them first' '$ROOT/implementer-brief.md' && ! grep -qF 'write them first' '$ROOT/scripts/implement_lib.py'"
 printf '\n%s\n' "$([ $FAILED = 0 ] && echo 'IMPLEMENT TESTS PASSED' || echo 'IMPLEMENT TESTS FAILED')"
 exit $FAILED

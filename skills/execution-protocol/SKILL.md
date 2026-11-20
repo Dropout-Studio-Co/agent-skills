@@ -13,7 +13,7 @@ description: 'Execution protocol: 100% end-to-end completion, completion over pr
 - **Valid reasons to end a turn, only these:** every item in scope is done and verified; every remaining item is blocked by a genuinely external or physically impossible step (e.g. a passkey touch, a credential no agent can reach) or by a gate blocked as step 1 or 7 defines, recorded with its reason; or the user said stop.
 - **Never a reason to stop:** a finished lane, PR or wave; a long turn or long context (checkpoint to `PROGRESS.md` and keep going; after compaction or restart, re-read it, `PLAN.md`, `gates.log`, `impl.log` and git log); gate cost or time; "a good checkpoint"; wanting to report, summarize or confirm direction; uncertainty you can resolve yourself.
 - **No interim reports.** A status update ending with "Next action: X" (or "▶ next") while X is executable is a violation: do X. "Next" belongs only in the final report at a valid stop.
-- **Throughput:** run independent lanes in parallel up to the allowed concurrency; no extra rounds or evidence beyond the gates.
+- **Throughput:** run independent lanes in parallel up to the allowed concurrency; no extra rounds or evidence beyond the gates and step 4's workflow skills.
 - **Before ending any turn (MUST):** list every task item with its status; if any is executable now, continue. The report may say "Incomplete" only when every open item has a recorded blocker of a kind listed above. If the user said stop, say so and mark each open item not done.
 
 **Pre-authorized (Rahi 2026-11-13, MUST).** Rahi grants every approval, permission and choice this protocol would otherwise ask him for, in advance and for every task: never ask, never wait. A decision that would go to him goes to Opus 5.5 through `gate.sh` at the task's tier: as an open question in `facts.md` (`plan` gate; a Low task with one is planned as Medium), or through the `epoch` gate (step 7). Opus decides with its best judgment on Rahi's behalf, and its logged decision is the authorization.
@@ -68,11 +68,19 @@ Evidence folder per task: `~/.local/state/dev-evidence/<task>/` (`EVID` below), 
 
 Check the latest official docs for every command, config, API and version; don't trust memory. Use the installed MCP servers, tools and skills that genuinely help, per their docs; skip redundant ones.
 
+**Workflow skills (Rahi 2026-11-20, MUST).** When installed, read each from `~/.agents/skills/<name>/SKILL.md` by path (`retro` has model invocation off; the built-in `/code-review` is a different skill) and use it where listed. This protocol wins where they differ; a step that has you ask or confirm with the user is yours to decide, or goes to Opus as Pre-authorized says.
+- `diagnosing-bugs`: a bug, failure or slowdown of unknown cause, in the request or met mid-task: run phases 1-4 in a scratch detached worktree (removed after, nothing committed), then put the red repro command and the confirmed cause in `facts.md` or the `--notes`; if no loop can be built, that is a `facts.md` open question. Phases 5-6 are the plan and step 6.
+- `tdd`: `implement.sh` appends it to every brief, with the plan's Tests as the agreed seams; follow it when you implement a step yourself.
+- `code-review`: Medium and High repo tasks, once per plan, after step 6 passes and before `review` round 1: the branch diff from its merge-base with `origin/HEAD`, `PLAN.md` and the request as the spec, two read-only Opus 5.5 subagents. Fix findings that fit the plan via `implement.sh --step fix-code-review --notes`, re-verify (step 6), and log the rest in `PROGRESS.md`. It is not a gate.
+- `pr`: write the step 8 PR body with it; a repo PR template sets the structure.
+- `retro`: at step 9, after any `fail` gate verdict or failed or escalated `implement.sh` round, run it on this session; its candidates are step 9's lasting lessons, logged in `PROGRESS.md`, never put to the user.
+- `setup-pre-commit`: `facts.md` cites it when the task adds commit-time hooks or checks to a JS/TS repo; the repo's hook manager, formatter and package manager win.
+
 ## 5. Isolate
 
 Never commit to main. One branch and worktree per workstream, cut from the latest default branch; one owner per file set. Run independent work in parallel, scaled to quota and machine; dependent work in order. Read-only research needs no worktree.
 
-**Lanes.** Run at most 6 concurrent lanes. An independent workstream with a disjoint file set gets its own worktree and EVID (`<task>-<lane>`); its steps run through `implement.sh` in that worktree, conducted by the conductor. In-session subagents only for bounded read-only lookups; never two sessions on one file set.
+**Lanes.** Run at most 6 concurrent lanes. An independent workstream with a disjoint file set gets its own worktree and EVID (`<task>-<lane>`); its steps run through `implement.sh` in that worktree, conducted by the conductor. In-session subagents only for bounded read-only lookups and the `code-review` pair (step 4); never two sessions on one file set.
 
 **Changes outside a repository, and work with no code diff** (global or user settings, permissions and allow-rules, hooks, policy and instruction files, skills, MCP or harness config, shell profiles, credential config; and no-code tasks such as Lighthouse/PSI runs, production checks, evals, canaries, tool upgrades): the same tiers and gates apply, no PR.
 - Tier them by the step 2 rules. Permissions, allow-rules, hooks, routing/policy, secrets and credential config are always **High**.
