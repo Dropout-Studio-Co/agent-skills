@@ -4,7 +4,8 @@
   "rules": [
     "Authority order: explicit user instruction > repository AGENTS/CLAUDE > accepted product requirements > canonical design system and component contracts > DESIGN.md > existing product identity > this skill > specialist skills > generic conventions.",
     "No unrequested redesign; prefer existing design-system components and primitives; no decorative borders for ordinary separation; visible keyboard focus; no hover-scale on buttons; respect prefers-reduced-motion.",
-    "Planners and reviewers are advisory and read-only; the main session implements every change and runs every check."
+    "Planners and reviewers are advisory and read-only; the main session implements every change and runs every check.",
+    "Lighthouse 13 results (report path, category scores and URL/viewport) are required in the rendered evidence for UI changes to horcrux.app, dropoutstudio.co and beyourahi.com."
   ],
   "plan_kinds": {
     "plan": "Frontend architecture and implementation plan for the overhaul: which surfaces and root causes to fix, component and design-system reuse (shared source first, then consumers), file ownership for any parallel partition, responsive/mobile, accessibility and motion work, what to leave alone, rendered and repository verification per change, and rollback points.",

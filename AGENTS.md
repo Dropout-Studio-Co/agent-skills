@@ -8,6 +8,7 @@ Skill; this repository is the source of truth, and `~/.agents/skills/<name>` is 
 
 ```sh
 python3 -m unittest discover -s skills/dependency-upgrade/tests -t skills/dependency-upgrade  # dependency-upgrade tests
+python3 -m unittest discover -s skills/sync-agent-instructions/tests -t skills/sync-agent-instructions  # collector tests
 bash skills/execution-protocol/tests/smoke.sh  # execution-protocol smoke tests (fake CLIs)
 diff -rq -x __pycache__ -x graft skills/<name> ~/.agents/skills/<name>  # drift check: must print nothing
 rsync -a --exclude '__pycache__/' --exclude 'graft/.cache/' skills/<name>/ ~/.agents/skills/<name>/  # sync one skill
@@ -62,7 +63,10 @@ skills/execution-protocol/        SKILL.md, reference.md, opus-gate-brief.md, im
                                   review-schema.json, opencode/, scripts/ (gate.sh, implement.sh,
                                   implement_lib.py, premerge-and-merge.sh), tests/ (smoke.sh, implement-smoke.sh)
 skills/frontend-ui-ux-overhaul/   SKILL.md, routing.json
-skills/sync-agent-instructions/   SKILL.md, scripts/collect_sessions.py
+skills/intrinsic-responsive-ui/   SKILL.md
+skills/review-loop/               SKILL.md
+skills/safe-switch/               SKILL.md
+skills/sync-agent-instructions/   SKILL.md, scripts/collect_sessions.py, tests/
 ```
 
 ## Invariants
@@ -81,6 +85,7 @@ skills/sync-agent-instructions/   SKILL.md, scripts/collect_sessions.py
 ## Always
 
 - Run the test suite after touching `dependency-upgrade` scripts, tests or any `routing.json`.
+- Run the collector tests after touching `sync-agent-instructions` scripts or tests.
 - Run `bash skills/execution-protocol/tests/smoke.sh` after touching `execution-protocol` scripts or
   tests.
 - Keep documentation accurate to the code: file names, commands and flags.

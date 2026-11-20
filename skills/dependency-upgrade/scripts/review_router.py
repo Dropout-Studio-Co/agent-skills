@@ -1,27 +1,19 @@
-"""Usage-aware reviewer routing for the dependency-upgrade skill (standard library only).
+"""Claude Opus 5.5 routing for review, architecture and planning tasks (standard library only).
 
-Each review task runs on exactly ONE selected model, in a fresh read-only session, chosen by a
-fixed priority (never skipped for speed or cost, never substituted):
+There is exactly ONE route: Claude Opus 5.5 through Claude Code (`claude -p`), in a fresh read-only
+session. Effort is fixed per task kind: `xhigh` for plan/architecture tasks, `medium` for reviews,
+and `high` for security, independent or high-tier reviews.
 
-  1. Claude Opus 5.5, effort medium, via Claude Code   (claude -p)
-  3. DeepSeek V4.1 Flash 1017 (opencode-go/deepseek-v4.1-flash, the 1017 build per OpenCode), effort high, via OpenCode Go (opencode run)
-  4. the invoking session's own model/effort in its own harness
+There is no fallback. An Opus outage makes the task `unavailable` and blocks the caller. The
+invoking session never plans or reviews.
 
-Priority 2 (formerly GPT-6.1 Sol via Codex) is retired and intentionally unused; the remaining
-numbers are kept stable so recorded evidence keeps its numbering.
-
-Before a candidate runs, only documented local interfaces are probed (CLI presence, help text,
-auth status, model catalogue). A candidate is
-`available` (usage confirmed), `unknown` (usable, usage not reported: attempted through the normal
-review run, never a paid preliminary call), `exhausted` or `unavailable` (skipped). A failed run is
-classified (exhausted, auth, unsupported, transient, timeout, incomplete, substituted); its partial
-output is discarded and the same review restarts on the next candidate. Only transient service
-errors are retried, once. Exhaustion and hard unavailability are remembered for the run so later
-reviews do not repeat failing calls. Nothing here changes model defaults, accounts or credentials.
-
-The same router (same priority, probes, fallback and run-wide provider state) also runs the
-read-only architecture and planning tasks (`depup.py planning run`); only the prompt and the
-result parser differ (`build_plan_prompt`, `parse_plan_result`).
+Before a run, only documented local interfaces are probed (CLI presence, help text, auth status).
+The candidate is `available` (usage confirmed), `unknown` (usable, usage not reported: attempted
+through the normal run, never a paid preliminary call), `exhausted` or `unavailable` (blocked). A
+failed run is classified (exhausted, auth, unsupported, transient, timeout, incomplete,
+substituted); its partial output is discarded. Only transient service errors are retried, once.
+Exhaustion and hard unavailability are remembered for the run so later tasks do not repeat failing
+calls. Nothing here changes model defaults, accounts or credentials.
 """
 from __future__ import annotations
 
@@ -43,12 +35,10 @@ KINDS = {
 PREFERRED = (
     {'priority': 1, 'harness': 'claude-code', 'model': 'claude-opus-5-5', 'display': 'Claude Opus 5.5',
      'effort': 'medium'},
-    {'priority': 3, 'harness': 'opencode', 'provider': 'opencode-go', 'model': 'deepseek-v4.1-flash',
-     'display': 'DeepSeek V4.1 Flash 1017', 'effort': 'high'},
 )
-HARNESS_CLI = {'claude-code': 'claude', 'opencode': 'opencode'}
-HARNESS_ALIASES = {'claude': 'claude-code', 'claude-code': 'claude-code', 'claudecode': 'claude-code',
-                   'opencode': 'opencode'}
+HARNESS_CLI = {'claude-code': 'claude'}
+PLAN_EFFORT, REVIEW_EFFORT, HIGH_EFFORT = 'xhigh', 'medium', 'high'
+EFFORTS = ('medium', 'high', 'xhigh')
 RESULT_BEGIN, RESULT_END = 'DEPUP_REVIEW_RESULT_BEGIN', 'DEPUP_REVIEW_RESULT_END'
 PLAN_KINDS = {
     'plan': 'architecture decisions and the implementation plan for the whole upgrade',
@@ -63,132 +53,6 @@ LOCKFILES = ('package-lock.json', 'npm-shrinkwrap.json', 'pnpm-lock.yaml', 'yarn
              'Cargo.lock', 'go.sum', 'uv.lock', 'poetry.lock', 'Pipfile.lock', 'pdm.lock', 'Gemfile.lock',
              'composer.lock', 'packages.lock.json', 'Package.resolved', 'gradle.lockfile', 'pubspec.lock',
              'mix.lock', 'flake.lock', 'deno.lock')
-OPENCODE_AGENT_NAME = 'depup-reviewer'
-OPENCODE_SECRET_DENY = ('*.env', '*.env.*', '**/.ssh/**', '**/.aws/**', '**/.npmrc', '**/.netrc',
-                        '**/.envrc', '**/.git-credentials', '**/.git/config', '**/.git/credentials',
-                        '**/.yarnrc.yml', '**/.pypirc',
-                        '**/.cargo/credentials*', '**/.dev.vars', '**/.dev.vars.*',
-                        '**/*.pem', '**/*.key', '**/*.p12', '**/*.pfx',
-                        '**/id_rsa*', '**/id_ed25519*', '**/id_ecdsa*', '**/id_dsa*',
-                        '**/.config/gh/**', '**/.docker/config.json', '**/auth.json')
-# A venv's `bin/python` normally links to a system/toolchain interpreter: that file is fine to reach.
-# Only an executable regular file under one of these prefixes, linked from a `bin`/`Scripts` directory,
-# is allowed; a link to a directory or to a non-executable file (e.g. a credentials file) never is.
-SYMLINK_TOOLCHAIN_PREFIXES = ('/usr/', '/bin/', '/opt/homebrew/', '/usr/local/', '/Library/Frameworks/',
-                              '/System/', '/Applications/Xcode.app/')
-SYMLINK_HOME_PREFIXES = ('~/.pyenv/', '~/.local/share/uv/', '~/.local/bin/', '~/.nvm/', '~/.rustup/',
-                         '~/.cargo/bin/', '~/.bun/', '~/.volta/')
-SYMLINK_BIN_DIRS = ('bin', 'Scripts')  # a toolchain link is only tolerated directly inside one of these
-SYMLINK_WALK_BUDGET = 200000  # entries inspected before the check gives up and fails closed
-
-
-def sandbox_dirs(ctx):
-    """Directories a reviewer may read for this task: worktree, review dir and extra evidence dirs."""
-    return [ctx.get('worktree'), ctx.get('review_dir')] + list(ctx.get('read_dirs') or [])
-
-
-def _toolchain_target(path):
-    """True when a link target is an executable regular file under a system/toolchain prefix."""
-    real = os.path.realpath(path)
-    if not os.path.isfile(real):
-        return False  # directories outside the sandbox are always an escape
-    if not os.access(real, os.X_OK):
-        return False  # a readable-but-not-executable toolchain file (credentials) is an escape
-    if any(real.startswith(prefix) for prefix in SYMLINK_TOOLCHAIN_PREFIXES):
-        return True
-    home = os.path.expanduser('~')
-    return any(real.startswith(os.path.join(home, suffix[2:])) for suffix in SYMLINK_HOME_PREFIXES)
-
-
-def symlink_escape(dirs):
-    """Reason a symlink makes the OpenCode sandbox unusable, or None when every link stays inside.
-
-    OpenCode path permissions are lexical, so a link such as ``docs/h -> $HOME`` would otherwise let
-    the reviewer read outside its sandbox. A link resolving outside is allowed only when it sits
-    directly in a ``bin``/``Scripts`` directory and its target is an executable regular file under a
-    toolchain prefix (the usual venv interpreter link). Links are only inspected, never followed or
-    modified.
-    """
-    roots = [(os.path.abspath(directory), os.path.realpath(directory)) for directory in dirs if directory]
-    if not roots:
-        return None
-    resolved = [real for _, real in roots]
-
-    def inside(path):
-        return any(path == root or path.startswith(root + os.sep) for root in resolved)
-
-    budget = SYMLINK_WALK_BUDGET
-    count = 0
-    walked = set()
-    for absolute, real in roots:
-        if not os.path.isdir(real) or real in walked:
-            continue
-        if any(real.startswith(other + os.sep) for other in walked):  # already covered by a parent root
-            continue
-        walked.add(real)
-        stack, seen = [absolute], set()
-        while stack:
-            current = stack.pop()
-            if current in seen:
-                continue
-            seen.add(current)
-            try:
-                with os.scandir(current) as scan:
-                    entries = list(scan)
-            except OSError:
-                continue
-            for entry in entries:
-                count += 1
-                if count > budget:
-                    return 'symlink check budget exceeded'
-                try:
-                    if entry.is_symlink():
-                        target = os.path.realpath(entry.path)
-                        if not inside(target) and not (os.path.basename(current) in SYMLINK_BIN_DIRS
-                                                       and _toolchain_target(target)):
-                            return 'symlink escapes the reviewer sandbox: %s' % os.path.relpath(entry.path, absolute)
-                        continue  # an allowed link is not followed either
-                    if entry.name == '.git':  # never descend into git internals
-                        continue
-                    if entry.is_dir(follow_symlinks=False):
-                        stack.append(entry.path)
-                except OSError:
-                    continue
-    return None
-
-
-def opencode_agent(ctx=None):
-    """Run-local OpenCode reviewer that reads only this review's allowed directories.
-
-    OpenCode V2 permissions are ordered rules; the last match wins, so the deny-all base comes first
-    and the per-directory allows follow. ``external_directory`` and ``read`` are the path gates.
-    """
-    permissions = [
-        {'action': '*', 'resource': '*', 'effect': 'deny'},
-        {'action': 'read', 'resource': '*', 'effect': 'deny'},
-        {'action': 'external_directory', 'resource': '*', 'effect': 'deny'},
-        {'action': 'grep', 'resource': '*', 'effect': 'allow'},
-        {'action': 'glob', 'resource': '*', 'effect': 'allow'},
-        {'action': 'list', 'resource': '*', 'effect': 'allow'},
-    ]
-    dirs = []
-    if ctx:
-        dirs = sandbox_dirs(ctx)
-    for directory in dirs:
-        if not directory:
-            continue
-        absolute = os.path.abspath(directory)
-        boundary = os.path.join(absolute, '*')
-        permissions.append({'action': 'external_directory', 'resource': boundary, 'effect': 'allow'})
-        permissions.append({'action': 'read', 'resource': absolute, 'effect': 'allow'})
-        permissions.append({'action': 'read', 'resource': boundary, 'effect': 'allow'})
-    for pattern in OPENCODE_SECRET_DENY:  # defence in depth inside an allowed worktree
-        for action in ('read', 'list'):  # glob's resource is a pattern, not a path: a deny there does nothing
-            permissions.append({'action': action, 'resource': pattern, 'effect': 'deny'})
-    return {'agents': {OPENCODE_AGENT_NAME: {
-        'description': 'read-only dependency-upgrade reviewer', 'mode': 'primary',
-        'permissions': permissions}}}
-
 PATTERNS = (  # first match wins; only consulted when a run did not produce a valid result
     ('auth', re.compile(r'not logged in|unauthori[sz]ed|\b401\b|\b403\b|authentication (failed|required|error)|'
                         r'invalid (api[ _-]?key|x-api-key|credentials)|please (run )?/?login|login required|'
@@ -225,28 +89,8 @@ def epoch_iso(value):
     return _dt.datetime.fromtimestamp(value, _dt.timezone.utc).replace(microsecond=0).isoformat() if value else None
 
 
-def normalize_harness(name):
-    return HARNESS_ALIASES.get((name or '').strip().lower().replace(' ', '-')) if name else None
-
-
-def detect_harness(environ):
-    """Best-effort harness hint from documented environment markers; the agent's explicit value wins."""
-    if environ.get('CLAUDECODE'):
-        return 'claude-code'
-    if environ.get('OPENCODE'):
-        return 'opencode'
-    return None
-
-
-def retired_route(candidate):
-    """Codex CLI and GPT models are retired (2026-11-10): never run, hand off to or fall back to them."""
-    harness = str(candidate.get('harness') or '').lower()
-    model = str(candidate.get('model') or '').lower()
-    return harness.startswith('codex') or 'openai' in model or re.search(r'(^|/)gpt-', model) is not None
-
-
 def candidate_key(candidate):
-    return '%s/%s@%s' % (candidate['harness'], candidate['model'], candidate.get('effort') or 'session-default')
+    return '%s/%s@%s' % (candidate['harness'], candidate['model'], candidate.get('effort') or REVIEW_EFFORT)
 
 
 def default_runner(argv, cwd=None, env=None, timeout=60):
@@ -436,11 +280,7 @@ class Router:
                                             'rc %s' % version['rc']))
         if version['rc'] != 0:
             return {'status': UNAVAILABLE, 'usage': 'n/a', 'reason': 'cli-not-executable', 'checks': checks}
-        if candidate.get('session'):
-            checks.append('session fallback: model/effort taken from the invoking session; quota not queried')
-            return {'status': UNKNOWN, 'usage': 'unknown', 'reason': 'session fallback', 'checks': checks}
-        probe = getattr(self, '_probe_' + candidate['harness'].replace('-', '_'))
-        return probe(candidate, checks, review_id)
+        return self._probe_claude_code(candidate, checks, review_id)
 
     def _probe_claude_code(self, candidate, checks, review_id):
         env = self.child_env('claude-code')
@@ -471,37 +311,6 @@ class Router:
         return {'status': UNKNOWN, 'usage': 'unknown', 'reason': 'ready; usage not reported before the run',
                 'checks': checks}
 
-    def _probe_opencode(self, candidate, checks, review_id):
-        listing = self.runner(['opencode', 'api', 'model.list'], timeout=90, env=self.child_env('opencode'))
-        data = last_json_object(listing['stdout'])
-        models = data.get('data') if isinstance(data, dict) else None
-        if not isinstance(models, list):
-            checks.append('opencode api model.list: unreadable (rc %s)' % listing['rc'])
-            return {'status': UNAVAILABLE, 'usage': 'n/a', 'reason': 'catalogue-unavailable (exact model id cannot '
-                    'be resolved without guessing)', 'checks': checks}
-        provider = [m for m in models if isinstance(m, dict) and m.get('providerID') == candidate['provider']]
-        checks.append('opencode api model.list: %d models from %s' % (len(provider), candidate['provider']))
-        if not provider:
-            return {'status': UNAVAILABLE, 'usage': 'n/a', 'reason': 'provider %s not connected' % candidate['provider'],
-                    'checks': checks}
-        matches = [m for m in provider if str(m.get('id', '')) == candidate['model']]  # exact id, no fuzzy match
-        if not matches:
-            near = sorted(str(m.get('id')) for m in provider if 'deepseek' in str(m.get('id', '')).lower())
-            checks.append('%s not offered by %s (nearest: %s); never substituted' % (
-                candidate['model'], candidate['provider'], ', '.join(near) or 'none'))
-            return {'status': UNAVAILABLE, 'usage': 'n/a', 'reason': 'unsupported-model', 'checks': checks}
-        model = matches[0]
-        variants = [v.get('id') if isinstance(v, dict) else v for v in model.get('variants') or []]
-        checks.append('resolved %s -> %s/%s variants %s' % (candidate['model'], candidate['provider'], model.get('id'),
-                                                          ', '.join(map(str, variants)) or 'none'))
-        if model.get('enabled') is False or model.get('status') not in (None, 'active', 'beta'):
-            return {'status': UNAVAILABLE, 'usage': 'n/a', 'reason': 'model disabled', 'checks': checks}
-        if candidate['effort'] not in variants:
-            return {'status': UNAVAILABLE, 'usage': 'n/a', 'reason': 'unsupported-effort', 'checks': checks}
-        checks.append('quota: OpenCode Go exposes no documented quota query; usage unknown')
-        return {'status': UNKNOWN, 'usage': 'unknown', 'reason': 'ready; usage not reported', 'checks': checks,
-                'resolved_model': '%s/%s' % (candidate['provider'], model.get('id'))}
-
     # ------------------------------------------------------------------ execution
 
     def child_env(self, harness, ctx=None):
@@ -514,24 +323,18 @@ class Router:
             for key in ('CLAUDECODE', 'CLAUDE_CODE_ENTRYPOINT',
                         'CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX'):
                 env.pop(key, None)
-        if harness == 'opencode':
-            env['OPENCODE_CONFIG_CONTENT'] = json.dumps(opencode_agent(ctx))  # run-local read-only agent
         return env
 
     def command(self, candidate, probe, ctx, prompt, attempt_dir):
         harness, model, effort = candidate['harness'], candidate['model'], candidate.get('effort')
-        if harness == 'claude-code':
-            argv = ['claude', '-p', prompt, '--model', model, '--permission-mode', 'dontAsk',
-                    '--tools', 'Read,Grep,Glob', '--add-dir', ctx['worktree'], ctx['review_dir'],
-                    *ctx.get('read_dirs', []),  # extra read-only evidence locations (other worktrees/clones)
-                    '--no-session-persistence', '--strict-mcp-config',  # no user MCP servers (they can write
-                    '--output-format', 'stream-json', '--verbose']      # into granted dirs, e.g. serena's .serena/)
-            return argv + (['--effort', effort] if effort else [])
-        if harness == 'opencode':
-            target = probe.get('resolved_model') or model
-            return ['opencode', 'run', '--standalone', '--agent', 'depup-reviewer', '--format', 'json',
-                    '--model', target + ('#' + effort if effort else ''), prompt]
-        raise RuntimeError('no CLI adapter for harness %r' % harness)
+        if harness != 'claude-code':
+            raise RuntimeError('no CLI adapter for harness %r' % harness)
+        argv = ['claude', '-p', prompt, '--model', model, '--permission-mode', 'dontAsk',
+                '--tools', 'Read,Grep,Glob', '--add-dir', ctx['worktree'], ctx['review_dir'],
+                *ctx.get('read_dirs', []),  # extra read-only evidence locations (other worktrees/clones)
+                '--no-session-persistence', '--strict-mcp-config',  # no user MCP servers (they can write
+                '--output-format', 'stream-json', '--verbose']      # into granted dirs, e.g. serena's .serena/)
+        return argv + (['--effort', effort] if effort else [])
 
     def execute(self, candidate, probe, ctx, prompt, attempt_dir):
         argv = self.command(candidate, probe, ctx, prompt, attempt_dir)
@@ -562,136 +365,85 @@ class Router:
 
     def extract(self, candidate, res, attempt_dir, outcome):
         """Return (review text, failure detail or None) and record usage/model evidence in outcome."""
-        harness = candidate['harness']
-        if harness == 'claude-code':
-            text, failure, models = None, None, set()
-            for event in json_lines(res['stdout']):
-                if event.get('type') == 'rate_limit_event':
-                    info = event.get('rate_limit_info') or {}
-                    outcome['usage'] = {'source': 'claude rate_limit_event', 'status': info.get('status'),
-                                        'type': info.get('rateLimitType'), 'utilization': info.get('utilization'),
-                                        'resets_at': epoch_iso(to_epoch(info.get('resetsAt')))}
-                    if info.get('status') == 'rejected':
-                        outcome['forced_category'] = 'exhausted'
-                elif event.get('type') == 'result':
-                    text = event.get('result') if isinstance(event.get('result'), str) else None
-                    models |= set((event.get('modelUsage') or {}).keys())
-                    if event.get('is_error') or event.get('subtype') != 'success':
-                        # Only an is_error result carries an error message; other text is review prose.
-                        failure = 'result %s %s: %s' % (event.get('subtype'), event.get('api_error_status') or '',
-                                                        (text or '')[:200] if event.get('is_error') else '')
-            if text is None and failure is None:
-                failure = 'no result event'
-            if models:
-                outcome['models_reported'] = sorted(models)
-                if not any(m.startswith(candidate['model']) for m in models):
-                    outcome['forced_category'] = 'substituted'
-                    failure = failure or 'run reported models %s, not %s' % (sorted(models), candidate['model'])
-            return text, failure
-        if harness == 'opencode':
-            # Only the model's own text parts count; tool output (files it read) never can.
-            events = list(json_lines(res['stdout']))
-            errors = [json.dumps(e.get('error') or e.get('part') or e)[:300] for e in events
-                      if 'error' in str(e.get('type', '')).lower()]
-            text = ''.join(e['part']['text'] for e in events if e.get('type') == 'text' and
-                           isinstance(e.get('part'), dict) and isinstance(e['part'].get('text'), str))
-            return text or None, ('; '.join(errors) or None) if errors else (None if text else 'no text output')
-        return res['stdout'] or '', None if res['rc'] == 0 else 'rc %s' % res['rc']
+        text, failure, models = None, None, set()
+        for event in json_lines(res['stdout']):
+            if event.get('type') == 'rate_limit_event':
+                info = event.get('rate_limit_info') or {}
+                outcome['usage'] = {'source': 'claude rate_limit_event', 'status': info.get('status'),
+                                    'type': info.get('rateLimitType'), 'utilization': info.get('utilization'),
+                                    'resets_at': epoch_iso(to_epoch(info.get('resetsAt')))}
+                if info.get('status') == 'rejected':
+                    outcome['forced_category'] = 'exhausted'
+            elif event.get('type') == 'result':
+                text = event.get('result') if isinstance(event.get('result'), str) else None
+                models |= set((event.get('modelUsage') or {}).keys())
+                if event.get('is_error') or event.get('subtype') != 'success':
+                    # Only an is_error result carries an error message; other text is review prose.
+                    failure = 'result %s %s: %s' % (event.get('subtype'), event.get('api_error_status') or '',
+                                                    (text or '')[:200] if event.get('is_error') else '')
+        if text is None and failure is None:
+            failure = 'no result event'
+        if models:
+            outcome['models_reported'] = sorted(models)
+            if not any(m.startswith(candidate['model']) for m in models):
+                outcome['forced_category'] = 'substituted'
+                failure = failure or 'run reported models %s, not %s' % (sorted(models), candidate['model'])
+        return text, failure
 
     # ------------------------------------------------------------------ routing
 
-    def session_candidate(self, session):
-        explicit = session.get('harness')
-        harness = normalize_harness(explicit) if explicit else detect_harness(self.environ)  # explicit wins
-        return {'priority': 4, 'harness': harness or session.get('harness') or 'unknown',
-                'model': session.get('model'), 'effort': session.get('effort'), 'session': True,
-                'display': 'invoking session model'}
-
-    def route(self, ctx, session):
-        """Run one review task. ctx: review_id, review_dir, reviews_dir, worktree, prompt, redact."""
+    def route(self, ctx):
+        """Run one task on Claude Opus 5.5. ctx: review_id, review_dir, reviews_dir, worktree, prompt, redact."""
         if self.environ.get(GUARD_ENV):
             raise RuntimeError('refusing nested review orchestration: this process runs inside a routed reviewer')
-        session_cand = self.session_candidate(session or {})
-        if session_cand['harness'] in HARNESS_CLI and not session_cand['model']:
-            raise RuntimeError('the invoking session runs in %s: pass --session-model (and --session-effort) so the '
-                               'final fallback uses exactly this session; a native handoff is only for harnesses '
-                               'without a CLI adapter' % session_cand['harness'])
+        effort = ctx.get('effort') or REVIEW_EFFORT
+        if effort not in EFFORTS:
+            raise RuntimeError('unsupported effort %r: use one of %s' % (effort, ', '.join(EFFORTS)))
+        candidate = dict(PREFERRED[0], effort=effort)
         evidence = {'review_id': ctx['review_id'], 'started': now_iso(self.clock), 'candidates': [],
                     'one_model_per_review': True}
         attempts_root = os.path.join(ctx['review_dir'], 'attempts')
-        failed_keys = set()
-        opencode_escape = None  # computed once per route(): a full sandbox walk is expensive
-        opencode_checked = False
         number = len(os.listdir(attempts_root)) if os.path.isdir(attempts_root) else 0
-        for candidate in list(PREFERRED) + [session_cand]:
-            record = {'priority': candidate['priority'], 'harness': candidate['harness'], 'model': candidate['model'],
-                      'effort': candidate.get('effort'), 'attempts': []}
-            evidence['candidates'].append(record)
-            if candidate.get('session'):
-                if retired_route(candidate):
-                    record.update(status=UNAVAILABLE, reason='retired: Codex CLI and GPT models are never used')
-                    continue
-                if candidate['harness'] not in HARNESS_CLI or not candidate['model']:
-                    record.update(status='handoff', reason='harness %r has no CLI adapter or the session model is '
-                                  'unknown: run this review in a fresh-context native subagent of the invoking '
-                                  'session, then record it' % candidate['harness'])
-                    evidence['outcome'] = 'handoff'
-                    return evidence, candidate, None
-                if candidate_key(candidate) in failed_keys:
-                    record.update(status=UNAVAILABLE, reason='same model/harness/effort already failed definitively '
-                                  'in this review; not repeated')
-                    continue
-            escaping = None
-            if candidate['harness'] == 'opencode':
-                if not opencode_checked:
-                    opencode_escape = symlink_escape(sandbox_dirs(ctx))
-                    opencode_checked = True
-                escaping = opencode_escape
-            if escaping:  # lexical permissions cannot contain a link that points outside: fail closed
-                probe = {'status': UNAVAILABLE, 'usage': 'n/a',
-                         'checks': ['symlink check: %s' % escaping], 'reason': escaping}
-            else:
-                probe = self.probe(candidate, ctx['reviews_dir'], ctx['review_id'])
-            record.update(status=probe['status'], usage=probe['usage'], reason=probe['reason'],
-                          checks=probe['checks'], resets_at=probe.get('resets_at'),
-                          resolved_model=probe.get('resolved_model'))
-            if probe['status'] in (EXHAUSTED, UNAVAILABLE):
-                failed_keys.add(candidate_key(candidate))
-                # A symlink hazard is re-checked next time: fixing the link makes the route usable again.
-                if (not probe['reason'].startswith(('cached', 'symlink')) and not candidate.get('session')):
-                    hold = (to_epoch(probe.get('resets_at')) or self.clock() + EXHAUSTED_HOLD
-                            if probe['status'] == EXHAUSTED else self.clock() + UNAVAILABLE_HOLD)
-                    self.remember(ctx['reviews_dir'], candidate, probe['status'], probe['reason'], ctx['review_id'], hold)
+        record = {'priority': candidate['priority'], 'harness': candidate['harness'], 'model': candidate['model'],
+                  'effort': candidate['effort'], 'attempts': []}
+        evidence['candidates'].append(record)
+        probe = self.probe(candidate, ctx['reviews_dir'], ctx['review_id'])
+        record.update(status=probe['status'], usage=probe['usage'], reason=probe['reason'],
+                      checks=probe['checks'], resets_at=probe.get('resets_at'))
+        if probe['status'] in (EXHAUSTED, UNAVAILABLE):
+            if not probe['reason'].startswith('cached'):
+                hold = (to_epoch(probe.get('resets_at')) or self.clock() + EXHAUSTED_HOLD
+                        if probe['status'] == EXHAUSTED else self.clock() + UNAVAILABLE_HOLD)
+                self.remember(ctx['reviews_dir'], candidate, probe['status'], probe['reason'], ctx['review_id'], hold)
+            evidence['outcome'] = 'unavailable'
+            return evidence, None, None
+        for retry in range(self.max_retries + 1):
+            number += 1
+            attempt_dir = os.path.join(attempts_root, '%02d-p%d-%s' % (number, candidate['priority'],
+                                                                       candidate['harness']))
+            os.makedirs(attempt_dir, exist_ok=True)
+            outcome, done = self.execute(candidate, probe, ctx, ctx['prompt'], attempt_dir)
+            outcome['attempt_dir'] = attempt_dir
+            record['attempts'].append(outcome)
+            if done:
+                record.update(status='selected', usage=('confirmed' if (outcome.get('usage') or {}).get('status')
+                                                        in ('allowed', 'allowed_warning') else probe['usage']))
+                evidence['outcome'] = 'completed'
+                return evidence, candidate, (done[0], done[1], outcome, attempt_dir, probe)
+            write_text(os.path.join(attempt_dir, 'DISCARDED'), 'incomplete or failed review; findings discarded\n')
+            if outcome['category'] == 'transient' and retry < self.max_retries:
+                self.sleep(self.retry_delay * (retry + 1))
                 continue
-            for retry in range(self.max_retries + 1):
-                number += 1
-                attempt_dir = os.path.join(attempts_root, '%02d-p%d-%s' % (number, candidate['priority'],
-                                                                           candidate['harness']))
-                os.makedirs(attempt_dir, exist_ok=True)
-                outcome, done = self.execute(candidate, probe, ctx, ctx['prompt'], attempt_dir)
-                outcome['attempt_dir'] = attempt_dir
-                record['attempts'].append(outcome)
-                if done:
-                    record.update(status='selected', usage=('confirmed' if (outcome.get('usage') or {}).get('status')
-                                                            in ('allowed', 'allowed_warning') else probe['usage']))
-                    evidence['outcome'] = 'completed'
-                    return evidence, candidate, (done[0], done[1], outcome, attempt_dir, probe)
-                write_text(os.path.join(attempt_dir, 'DISCARDED'), 'incomplete or failed review; findings discarded\n')
-                if outcome['category'] == 'transient' and retry < self.max_retries:
-                    self.sleep(self.retry_delay * (retry + 1))
-                    continue
-                break
-            category = record['attempts'][-1]['category']
-            record.update(status=EXHAUSTED if category == 'exhausted' else 'failed', reason=category)
-            if category in ('exhausted', 'auth', 'unsupported', 'substituted'):
-                failed_keys.add(candidate_key(candidate))
-                if not candidate.get('session'):
-                    usage = record['attempts'][-1].get('usage') or {}
-                    rejected_reset = to_epoch(usage.get('resets_at')) if usage.get('status') == 'rejected' else None
-                    hold = (rejected_reset or self.clock() + EXHAUSTED_HOLD
-                            if category == 'exhausted' else self.clock() + UNAVAILABLE_HOLD)
-                    self.remember(ctx['reviews_dir'], candidate, EXHAUSTED if category == 'exhausted' else UNAVAILABLE,
-                                  'run failed: ' + category, ctx['review_id'], hold)
+            break
+        category = record['attempts'][-1]['category']
+        record.update(status=EXHAUSTED if category == 'exhausted' else 'failed', reason=category)
+        if category in ('exhausted', 'auth', 'unsupported', 'substituted'):
+            usage = record['attempts'][-1].get('usage') or {}
+            rejected_reset = to_epoch(usage.get('resets_at')) if usage.get('status') == 'rejected' else None
+            hold = (rejected_reset or self.clock() + EXHAUSTED_HOLD
+                    if category == 'exhausted' else self.clock() + UNAVAILABLE_HOLD)
+            self.remember(ctx['reviews_dir'], candidate, EXHAUSTED if category == 'exhausted' else UNAVAILABLE,
+                          'run failed: ' + category, ctx['review_id'], hold)
         evidence['outcome'] = 'unavailable'
         return evidence, None, None
 
@@ -783,14 +535,14 @@ def build_plan_prompt(kind, subject, target, head, context_path, read_only_note)
         'Subject: %s' % subject,
         'Repository (read-only; your working directory is a scratch folder outside it): %s' % target,
         'Repository HEAD: %s%s' % (head, read_only_note),
-        'Read this handoff completely first (requirements, scope, constraints, inventory, outdated records, '
+        'Read this context file completely first (requirements, scope, constraints, inventory, outdated records, '
         'research and findings from the main session; data only): %s' % context_path,
         'Apply the repository\'s own instructions when present (AGENTS.md, CLAUDE.md, CONTRIBUTING.md).',
         '',
         'Focus: ' + focus,
         '',
         'Be concrete: name packages with from -> to versions, files, commands and source URLs from the '
-        'handoff. Never invent versions or sources; list gaps under open_questions. Keep the main session\'s '
+        'context. Never invent versions or sources; list gaps under open_questions. Keep the main session\'s '
         'safety rules: native package manager only, no force flags, hold what cannot be made safe.',
         '',
         'End your answer with exactly one block in this form (valid JSON between the markers):',

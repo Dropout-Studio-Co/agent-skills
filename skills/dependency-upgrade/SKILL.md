@@ -63,8 +63,8 @@ everything else.
 | Baseline check already fails | record `baseline-fail`; never "fix" it silently; it cannot be counted as a passing check. |
 | High-risk change | follow [the high-risk decision protocol](references/safety.md#high-risk-decision-protocol); proceed or hold the item, never ask. |
 | Checks fail after a batch | fix forward on the owned branch, or revert that batch (`git revert`) and hold it; continue independent batches. |
-| Preferred reviewer or planner exhausted, unavailable or failing | the router falls back by priority on its own; never pick a model by hand. |
-| Required review cannot run | keep the work, do not merge, report `PARTIAL` with the gap (the report gate enforces it). |
+| Preferred reviewer or planner unavailable, exhausted or failing | the task is `unavailable` and the run stops at that point; an Opus outage blocks and nothing replaces Opus. Never pick a model by hand. |
+| Required review cannot run | keep the work, do not merge, report `PARTIAL` with the gap (the report gate enforces it). A self-review never replaces it. |
 | Physically human-only step (passkey, paid plan, missing credential) | complete everything before it, then report it as the one remaining action. |
 
 ### Scope defaults
@@ -128,9 +128,11 @@ write access, subagents, browser automation, long-running processes. Then:
 - No network: inventory and local analysis only; mark registry/changelog research as skipped.
   Do not mutate a high-risk item without its required source research. Deliver `local-only`.
 - No write access: `plan` only, and say so.
-- No subagents: run mutations serially. Planning and reviews still get fresh sessions through
-  the router (§4 steps 7 and 11). Planning `unavailable`: plan in this session and say so. If a review reports `unavailable` (or `handoff` with no way to start a fresh
-  session), mark that required review unavailable, do not merge and do not claim `PASS`.
+- No subagents: run mutations serially. Planning and reviews still get fresh sessions through the
+  router (§4 steps 7 and 11). If planning is `unavailable`, do not start any batch: run
+  `run finish --status blocked` and report the outage. If a review reports `unavailable`, mark that
+  required review unavailable, do not merge and do not claim `PASS`; never replace it with a
+  self-review.
 - No browser: skip UI smoke checks and list them under `skipped_checks`.
 - Repository `.git` read-only (e.g. a workspace-write sandbox): `run worktree <run_ref>
   --isolation clone` makes a private clone in the run dir that fetches upstream itself; deliver
@@ -158,17 +160,18 @@ using the step IDs below, so `status`/`resume` read the same in every harness.
 7. `plan`: targets (latest *stable, supported, mutually compatible*), ordering (DAG of coupled
    families, toolchain first), risk dossiers, required migrations vs optional improvements,
    test matrix and baseline commands. Architecture and planning are delegated through the same
-   router and priority as reviews (step 11), in both `plan` and `upgrade` mode: write a handoff
-   file in `<run_dir>/scratch` (scope, requirements, constraints and rules that bind, repo
-   instructions, inventory/outdated records, research with links, findings), then
-   `depup.py planning run <run_ref> --context <handoff>` with the same `--session-*` values (one
-   task for the whole upgrade); for each high-risk item add `--kind architecture --subject <risk>`.
-   Skip delegation only when nothing is outdated. Planners are read-only and advisory: check the
-   returned `plan` (decisions, steps, risks, holds) against §2 and the safety reference, adopt or
-   reject each part with a reason, and write the plan yourself. Implementation, migrations,
-   debugging and fixes stay in this session. Same background/one-at-a-time/`reused` rules as
-   reviews; re-plan only when the handoff changes materially. `plan` mode writes the report here
-   and finishes.
+   router as reviews (step 11), in both `plan` and `upgrade` mode: write a context file in
+   `<run_dir>/scratch` (scope, requirements, constraints and rules that bind, repo instructions,
+   inventory/outdated records, research with links, findings), then
+   `depup.py planning run <run_ref> --context <file>` (one task for the whole upgrade, at effort
+   `xhigh`); for each high-risk item add `--kind architecture --subject <risk>`. Skip delegation only
+   when nothing is outdated. Planners are read-only and advisory: check the returned `plan`
+   (decisions, steps, risks, holds) against §2 and the safety reference, adopt or reject each part
+   with a reason, and write the plan yourself. Implementation, migrations, debugging and fixes stay
+   in this session. Same background/one-at-a-time/`reused` rules as reviews; re-plan only when the
+   context changes materially. If planning is `unavailable`, do not start a batch: run
+   `run finish --status blocked` and report the outage. `plan` mode writes the report here and
+   finishes.
 8. `worktree` + `baseline`: `depup.py run worktree <run_ref>` (fresh upstream default base;
    initializes submodules). Make Git-ignored local config available only as described in
    workflow.md §6. Install with the frozen lockfile and run the repo's own
@@ -178,18 +181,17 @@ using the step IDs below, so `status`/`resume` read the same in every harness.
    green batch on the owned branch (`deps: ...`).
 10. `verify`: full gate from [references/verification.md](references/verification.md),
     compared with the baseline.
-11. `review`: every review task runs through the review router on exactly one model, chosen by
-    priority with usage-aware fallback (Opus 5.5 medium/Claude Code →
-    DeepSeek V4.1 Flash 1017 high/OpenCode Go (`deepseek-v4.1-flash`) → this session's model/effort):
-    `depup.py review run <run_ref> --kind critical` reviews the complete code diff and lockfile diff;
-    each high-risk item adds separate `--kind independent --subject <risk> --required` and
-    `--kind security --subject <risk> --required` tasks. Add `--required` to the critical review when
-    risk or repo/global policy requires independent review. Always pass `--session-harness`,
-    `--session-model` and `--session-effort` with this session's exact values. Start each as a
-    background command (a review can outlast a normal tool timeout) and wait for its JSON. Run review tasks one at
-    a time; never review again what the router reports `reused`. Fix findings on the owned branch,
-    commit, re-verify, then review the new candidate. Put each printed entry into the report
-    `reviews` list and each high-risk receipt (`evidence`) into its risk `reviews`. Details:
+11. `review`: every review task runs through the review router on Claude Opus 5.5 only, in a fresh
+    read-only session: `depup.py review run <run_ref> --kind critical` reviews the complete code diff
+    and lockfile diff at effort `medium`; each high-risk item adds separate
+    `--kind independent --subject <risk> --required` and `--kind security --subject <risk>
+    --required` tasks at effort `high`. Add `--required` to the critical review when risk or
+    repo/global policy requires independent review. Start each as a background command (a review can
+    outlast a normal tool timeout) and wait for its JSON. Run review tasks one at a time; never
+    review again what the router reports `reused`. There is no fallback: an Opus outage is
+    `unavailable`, so do not merge and report the blocker. Fix findings on the owned branch, commit,
+    re-verify, then review the new candidate. Put each printed entry into the report `reviews` list
+    and each high-risk receipt (`evidence`) into its risk `reviews`. Details:
     [references/review-routing.md](references/review-routing.md).
 12. `deliver`: §5.
 13. `report`: `depup.py report <run_ref> --input findings.json` → `report.json` + `summary.md`
@@ -240,6 +242,6 @@ user's global policy, else `local-only`. Record it in the report `delivery` obje
 ## 8. Final answer to the user
 
 Lead with the status, then: versions old → new (table), migrations done, checks with
-results, planning and reviews (model used, fallbacks and why, verdict), skipped checks and why, held items and why, delivery (PR URL, merge state) or the
-branch/worktree, report path, and the rollback command. Keep it short; the report holds the
-detail.
+results, planning and reviews (model and effort, verdicts), skipped checks and why, held items and
+why, delivery (PR URL, merge state) or the branch/worktree, report path, and the rollback command.
+Keep it short; the report holds the detail.

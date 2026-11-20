@@ -1,19 +1,18 @@
 #!/usr/bin/env python3
-"""Routed architecture/planning and independent-review tasks for other skills (standard library only).
+"""Routed architecture/planning and review tasks for other skills (standard library only).
 
-The one shared routing implementation is ``review_router.Router`` (dependency-upgrade): same fixed
-priority (Opus 5.5 medium / Claude Code -> DeepSeek V4.1 Flash 1017 high / OpenCode Go -> the invoking
-session), probes, usage-aware fallback, bounded retries, isolation and
-recursion guard. This CLI only adds what a skill without a depup run journal needs: a run directory,
-a skill profile (``<skills>/<skill>/routing.json``: prompt focus per task kind), candidate binding to
-the working tree, reuse, required-review gating and session handoffs. Helpers are reused from depup.py.
+The one shared routing implementation is ``review_router.Router`` (dependency-upgrade): one route,
+Claude Opus 5.5 through Claude Code, with probes, bounded retries, isolation and a recursion guard.
+There is no fallback: an Opus outage makes the task ``unavailable``. This CLI only adds what a skill
+without a depup run journal needs: a run directory, a skill profile
+(``<skills>/<skill>/routing.json``: prompt focus per task kind), candidate binding to the working
+tree, reuse, and required-review gating. Helpers are reused from depup.py.
 
 Commands (all print JSON; exit 0 ok, 1 refused/blocked, 2 usage):
   start  --skill S --repo P [--base REF]          create a run; REF (default HEAD) is the base every review uses
-  plan   RUN --context F [--kind plan|architecture] [--subject S] --session-*   one read-only planner
-  review RUN --kind K [--base REF] [--subject S] [--context F] [--required]
-         [--rendered-evidence F | --no-rendered-evidence WHY] [--location P]... [--with-prs] --session-*
-  record RUN --task-id ID --output F --by "<harness>/<model>@<effort>"  bind a session-native handoff
+  plan   RUN --context F [--kind plan|architecture] [--subject S]   one read-only planner at xhigh
+  review RUN --kind K [--base REF] [--subject S] [--context F] [--required] [--high]
+         [--rendered-evidence F | --no-rendered-evidence WHY] [--location P]... [--with-prs]
   gate   RUN [--require KIND[:SUBJECT]]...        required reviews pass for the CURRENT candidate?
   status RUN                                      task entries
   probe                                           routing availability, no model calls
@@ -69,6 +68,13 @@ def load_profile(skill):
     if not (isinstance(data.get('plan_kinds'), dict) and isinstance(data.get('review_kinds'), dict)
             and data['plan_kinds'] and data['review_kinds']):
         raise Refusal('routing profile %s needs non-empty plan_kinds and review_kinds' % path)
+    for kind, spec in data['review_kinds'].items():
+        if not isinstance(spec, dict):
+            raise Refusal('routing profile %s review kind %s must be an object' % (path, kind))
+        effort = spec.get('effort')
+        if effort is not None and effort not in (rr.REVIEW_EFFORT, rr.HIGH_EFFORT):
+            raise Refusal('routing profile %s review kind %s has unsupported effort %r: use medium or high'
+                          % (path, kind, effort))
     return data
 
 
@@ -87,10 +93,6 @@ def fingerprint(root):
     for name in sorted(filter(None, (listing['stdout'] or '').split('\0'))):
         digest.update(('%s\0%s\0' % (name, depup.file_sha256(os.path.join(root, name)))).encode())
     return digest.hexdigest()
-
-
-def session_of(args):
-    return {'harness': args.session_harness, 'model': args.session_model, 'effort': args.session_effort}
 
 
 def entries(run_dir, folder):
@@ -323,7 +325,7 @@ def worktree_paths(repo):
 
 # ------------------------------------------------------------------ task execution (shared by plan/review)
 
-def run_task(run_dir, meta, task_dir, task_id, prompt, parse, session, timeout, max_retries, before, read_dirs=()):
+def run_task(run_dir, meta, task_dir, task_id, prompt, parse, effort, timeout, max_retries, before, read_dirs=()):
     """Lock, route through the shared Router, discard on tree change, return (evidence, selected, done)."""
     lock = os.path.join(task_dir, 'task.lock')
     held, _ = depup.read_json(lock)
@@ -342,9 +344,9 @@ def run_task(run_dir, meta, task_dir, task_id, prompt, parse, session, timeout, 
         router = (ROUTER_FACTORY or rr.Router)(timeout=timeout, max_retries=max_retries)
         ctx = {'review_id': task_id, 'review_dir': task_dir, 'reviews_dir': os.path.join(run_dir, 'reviews'),
                'worktree': meta['repo_root'], 'prompt': prompt, 'redact': depup.redact_text, 'parse': parse,
-               'read_dirs': list(read_dirs)}
+               'effort': effort, 'read_dirs': list(read_dirs)}
         try:
-            evidence, selected, done = router.route(ctx, session)
+            evidence, selected, done = router.route(ctx)
         except RuntimeError as exc:
             raise Refusal(str(exc))
         changed = bool(done) and fingerprint(meta['repo_root']) != before
@@ -370,14 +372,6 @@ def finish(task_dir, entry, evidence):
     path = os.path.join(task_dir, 'entry.json')
     depup.atomic_write(path, json.dumps(depup.redact_output(entry), indent=2) + '\n')
     return dict(entry, entry=path)
-
-
-def handoff_next(task_dir, run_dir, task_id):
-    output = os.path.join(task_dir, 'handoff-output.md')
-    return ('Run %s in a fresh-context, read-only native subagent of this session (never the authoring '
-            'conversation). Save its full answer to %s, then run: routed_task.py record %s --task-id %s --output %s '
-            '--by "<harness>/<model>@<effort>"' % (os.path.join(task_dir, 'prompt.md'), output, run_dir, task_id,
-                                                   output))
 
 
 def complete(run_dir, task_dir, entry, text, result, by, artifact_name):
@@ -409,12 +403,11 @@ def outcome(run_dir, task_dir, entry, evidence, selected, done, changed, task_id
                                                task_id, os.path.basename(attempt_dir))
         entry['selected'] = sel
         entry = complete(run_dir, task_dir, entry, text, result, by, artifact_name)
-    elif evidence.get('outcome') == 'handoff':
-        entry.update(status='handoff', next=handoff_next(task_dir, run_dir, task_id))
     else:
+        last = (evidence.get('candidates') or [{}])[-1].get('reason') or 'no reason recorded'
         entry.update(status='unavailable', reason=(
             'the repository tree changed during the task; result discarded' if changed else
-            'no routed model could complete this task (all candidates and the session fallback failed)'))
+            'Claude Opus 5.5 could not complete this task (%s); no fallback by policy' % last))
         if changed:
             entry['tree_changed'] = True
     return finish(task_dir, entry, evidence)
@@ -463,7 +456,7 @@ def cmd_plan(args):
     prompt = plan_prompt(profile, args.kind, subject, root, head, context)
     evidence, selected, done, changed = run_task(
         run_dir, meta, task_dir, task_id, prompt, lambda text: rr.parse_plan_result(text, args.kind),
-        session_of(args), args.timeout, args.max_retries, before)
+        rr.PLAN_EFFORT, args.timeout, args.max_retries, before)
     entry = {'id': task_id, 'task': 'plan', 'kind': args.kind, 'subject': subject, 'skill': profile['skill'],
              'fingerprint': before, 'head': head, 'context_sha256': context_sha, 'advisory': True,
              'candidates': depup.compact_candidates(evidence)}
@@ -476,6 +469,7 @@ def cmd_review(args):
     if not spec:
         raise Refusal('--kind must be one of ' + ', '.join(profile['review_kinds']))
     subject = args.subject or 'candidate'
+    effort = rr.HIGH_EFFORT if (args.high or spec.get('effort') == rr.HIGH_EFFORT) else rr.REVIEW_EFFORT
     root = meta['repo_root']
     if spec.get('rendered_evidence') == 'required':
         if bool(args.rendered_evidence) == bool(args.no_rendered_evidence):
@@ -510,7 +504,7 @@ def cmd_review(args):
             rendered_files = sorted(set(re.findall(r'(?:~|/)[^\s\'"`<>|,;()]+', text)))
     files_sha = hashlib.sha256('\0'.join('%s\0%s' % (f, depup.file_sha256(os.path.realpath(os.path.expanduser(
         f.rstrip('.:'))))) for f in rendered_files).encode()).hexdigest()
-    material = '\0'.join([args.kind, subject, base_sha, before, files_sha] + [t for _, _, t in inputs] +
+    material = '\0'.join([args.kind, subject, effort, base_sha, before, files_sha] + [t for _, _, t in inputs] +
                          [inventory or ''])
     key = hashlib.sha256(material.encode('utf-8', 'replace')).hexdigest()
     task_id = 'review-%s-%s-%s' % (args.kind, depup.review_slug(subject), key[:12])
@@ -545,10 +539,10 @@ def cmd_review(args):
     prompt = review_prompt(profile, args.kind, subject, root, base_sha, head, files, extras)
     read_dirs = inventory_dirs(root, locations) if inventory is not None else []
     evidence, selected, done, changed = run_task(run_dir, meta, task_dir, task_id, prompt, rr.parse_result,
-                                                 session_of(args), args.timeout, args.max_retries, before, read_dirs)
+                                                 effort, args.timeout, args.max_retries, before, read_dirs)
     entry = {'id': task_id, 'task': 'review', 'kind': args.kind, 'subject': subject, 'skill': profile['skill'],
              'required': bool(args.required or (existing or {}).get('required')), 'base': base_sha,
-             'fingerprint': before, 'head': head, 'created': created,
+             'fingerprint': before, 'head': head, 'created': created, 'effort': effort,
              'rendered_evidence': ('manifest' if args.rendered_evidence else
                                    ('none: ' + args.no_rendered_evidence) if args.no_rendered_evidence else None),
              'candidates': depup.compact_candidates(evidence)}
@@ -556,38 +550,6 @@ def cmd_review(args):
         entry['inventory'] = {'sha256': hashlib.sha256(inventory.encode()).hexdigest(), 'main_ref': main_ref,
                               'locations': locations, 'with_prs': bool(args.with_prs)}
     return outcome(run_dir, task_dir, entry, evidence, selected, done, changed, task_id, 'review.md')
-
-
-def cmd_record(args):
-    run_dir, meta, _ = load_run(args.run)
-    if not SAFE.match(args.task_id or ''):
-        raise Refusal('invalid task id')
-    folder = 'plans' if args.task_id.startswith('plan-') else 'reviews'
-    task_dir = os.path.join(run_dir, folder, args.task_id)
-    entry_path = os.path.join(task_dir, 'entry.json')
-    entry, error = depup.read_json(entry_path)
-    if error or not isinstance(entry, dict) or entry.get('status') != 'handoff':
-        raise Refusal('task %s is not waiting for a session handoff' % args.task_id)
-    if fingerprint(meta['repo_root']) != entry.get('fingerprint'):
-        raise Refusal('the candidate changed since the task was prepared; run it again')
-    if not (args.by or '').strip():
-        raise Refusal('--by must name the session harness/model@effort')
-    text = depup.read_text(args.output) or ''
-    if folder == 'plans':
-        result, problem = rr.parse_plan_result(text, entry['kind'])
-    else:
-        result, problem = rr.parse_result(text)
-    if result is None:
-        entry.update(status='unavailable', reason='session output invalid: %s' % problem)
-    else:
-        entry['selected'] = {'priority': 4, 'harness': 'session-native', 'model': args.by.strip(),
-                             'effort': 'session', 'usage': 'unknown'}
-        entry = complete(run_dir, task_dir, entry, text, result, '%s session-subagent %s' % (args.by.strip(),
-                                                                                             args.task_id),
-                         'plan.md' if folder == 'plans' else 'review.md')
-    entry.pop('next', None)
-    depup.atomic_write(entry_path, json.dumps(depup.redact_output(entry), indent=2) + '\n')
-    return dict(entry, entry=entry_path)
 
 
 def cmd_gate(args):
@@ -676,10 +638,7 @@ def build_parser():
     parser = argparse.ArgumentParser(prog='routed_task.py', description=__doc__.split('\n')[0])
     sub = parser.add_subparsers(dest='command')
 
-    def session(p):
-        p.add_argument('--session-harness', help='this session\'s harness (claude-code, opencode, ...)')
-        p.add_argument('--session-model', help='this session\'s exact model id')
-        p.add_argument('--session-effort', help='this session\'s effort')
+    def common(p):
         p.add_argument('--timeout', type=int, default=1800)
         p.add_argument('--max-retries', type=int, default=1)
         p.add_argument('--rerun', action='store_true', help='ignore a reusable completed result')
@@ -693,7 +652,7 @@ def build_parser():
     p.add_argument('--context', required=True)
     p.add_argument('--kind', default='plan')
     p.add_argument('--subject')
-    session(p)
+    common(p)
     p = sub.add_parser('review')
     p.add_argument('run')
     p.add_argument('--kind', required=True)
@@ -701,17 +660,13 @@ def build_parser():
     p.add_argument('--subject')
     p.add_argument('--context')
     p.add_argument('--required', action='store_true')
+    p.add_argument('--high', action='store_true', help='High tier or trigger: review at effort high')
     p.add_argument('--rendered-evidence')
     p.add_argument('--no-rendered-evidence')
     p.add_argument('--location', action='append', help='extra clone/copy path for a git-inventory review')
     p.add_argument('--main-ref', help='default branch (default: origin/HEAD, else main/master)')
     p.add_argument('--with-prs', action='store_true', help='include open PRs (read-only gh pr list)')
-    session(p)
-    p = sub.add_parser('record')
-    p.add_argument('run')
-    p.add_argument('--task-id', required=True)
-    p.add_argument('--output', required=True)
-    p.add_argument('--by', required=True)
+    common(p)
     p = sub.add_parser('gate')
     p.add_argument('run')
     p.add_argument('--require', action='append')
@@ -721,7 +676,7 @@ def build_parser():
     return parser
 
 
-COMMANDS = {'start': cmd_start, 'plan': cmd_plan, 'review': cmd_review, 'record': cmd_record, 'gate': cmd_gate,
+COMMANDS = {'start': cmd_start, 'plan': cmd_plan, 'review': cmd_review, 'gate': cmd_gate,
             'status': cmd_status, 'probe': cmd_probe}
 
 

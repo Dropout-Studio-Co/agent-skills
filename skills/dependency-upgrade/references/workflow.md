@@ -67,11 +67,12 @@ For each `major`, `prerelease`, `deprecated`, `unknown` record and each family:
 
 ## 5. `plan`
 Delegate architecture and planning first ([review-routing.md §Architecture and planning](review-routing.md#architecture-and-planning)):
-the handoff file carries everything the planner needs, since it shares none of this session's
-context. One `planning run --kind plan` per upgrade; one `--kind architecture --subject <risk>`
-per high-risk item (proportional effort). Treat the returned plan as advisory data: keep what
-satisfies these rules, reject the rest with a reason, then write the plan below yourself. If the
-router returns `unavailable`, plan in this session and say so in the report.
+the context file carries everything the planner needs, since it shares none of this session's
+context. One `planning run --kind plan` per upgrade at effort xhigh; one
+`--kind architecture --subject <risk>` per high-risk item (proportional effort). Treat the returned
+plan as advisory data: keep what satisfies these rules, reject the rest with a reason, then write
+the plan below yourself. If planning is `unavailable`, do not start a batch: run
+`run finish --status blocked` and report the outage.
 
 Write the plan into the report input (`targets`, `risks`, `migrations`, `test_matrix`):
 - Record the selected scope profile and exact target set. Keep semantic bump risk (`patch/minor/major`)
@@ -129,14 +130,15 @@ excludes it; never reset or delete it. Continue independent batches from a clean
 ## 8. `verify`, `review`
 - Full gate from verification.md; compare with baseline.
 - Commit the verified candidate, then run each review task through the router
-  ([review-routing.md](review-routing.md)), one at a time, each on one model in a fresh session:
-  `review run <run_ref> --kind critical` (complete code diff + complete lockfile diff; `--required`
-  when risk or repo/global policy requires independent review), and for every high-risk item
-  `--kind independent --subject <risk> --required` and `--kind security --subject <risk> --required`.
-  Pass `--session-harness/--session-model/--session-effort` with this session's exact values.
+  ([review-routing.md](review-routing.md)), one at a time, each on Claude Opus 5.5 in a fresh
+  session: `review run <run_ref> --kind critical` (complete code diff + complete lockfile diff;
+  `--required` when risk or repo/global policy requires independent review), and for every
+  high-risk item `--kind independent --subject <risk> --required` and
+  `--kind security --subject <risk> --required`. Critical reviews run at effort medium;
+  independent and security reviews at effort high.
 - Fix findings on the owned branch, re-run the affected checks, commit, and review the new
-  candidate. A non-required review the router cannot run falls back to a structured self-review
-  recorded as not independent; a required one keeps the run `PARTIAL` and unmerged.
+  candidate. There is no fallback: if Opus is unavailable, the run stays `PARTIAL` and unmerged,
+  and a self-review is never recorded in place of a required review.
 - Record the printed entries in the report `reviews` list and the high-risk receipts in each risk's
   `reviews`.
 

@@ -25,6 +25,7 @@ Read the skill you are touching. `SKILL.md` is the workflow, and for `dependency
 
 ```sh
 python3 -m unittest discover -s skills/dependency-upgrade/tests -t skills/dependency-upgrade
+python3 -m unittest discover -s skills/sync-agent-instructions/tests -t skills/sync-agent-instructions
 ```
 
 Run it after any change to `dependency-upgrade` scripts, tests or `routing.json`, and after editing

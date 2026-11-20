@@ -1,17 +1,18 @@
 #!/usr/bin/env python3
 """Collect a compact digest of past AI-agent sessions for one repository.
 
-Scans local transcript stores of common coding agents (Claude Code, Gemini CLI,
-plus any extra dirs you pass), keeps only sessions whose working
-directory is inside the repo, and prints the high-signal parts: user messages
+Scans local transcript stores of common coding agents (Claude Code and OpenCode,
+plus any extra dirs you pass), keeps only sessions whose working directory
+is inside the repo, and prints the high-signal parts: user messages
 (corrections flagged first) and failed tool calls. Secrets are redacted.
 
 Stdlib only. Usage:
   python3 collect_sessions.py [--repo PATH] [--days 60] [--max-chars 60000]
                               [--extra-dir DIR ...]
 """
-import argparse, hashlib, json, os, re, subprocess, sys, time
+import argparse, json, os, re, sqlite3, subprocess, sys, time
 from pathlib import Path
+from urllib.parse import quote
 
 HOME = Path.home()
 CORRECTION = re.compile(
@@ -130,24 +131,118 @@ def extract(rec):
     return out
 
 
-def candidate_files(root, extra_dirs, cutoff):
+def claude_sessions(root, cutoff):
     claude_home = Path(os.environ.get("CLAUDE_CONFIG_DIR", HOME / ".claude"))
-    gemini_home = HOME / ".gemini"
     enc = re.sub(r"[^A-Za-z0-9]", "-", str(root))
-    found = []
-    # Claude Code: ~/.claude/projects/<encoded-cwd>/*.jsonl (subdirs of repo encode with same prefix)
+    sessions = []
     proj = claude_home / "projects"
-    if proj.is_dir():
-        for d in proj.iterdir():
-            if d.is_dir() and d.name.startswith(enc):
-                found += [("claude-code", f, True) for f in d.glob("*.jsonl")]
-    # Gemini CLI: ~/.gemini/tmp/<sha256(project_root)>/...
-    gdir = gemini_home / "tmp" / hashlib.sha256(str(root).encode()).hexdigest()
-    if gdir.is_dir():
-        found += [("gemini", f, True) for f in gdir.rglob("*.json*")]
-    for d in extra_dirs:
-        found += [("extra", f, False) for f in Path(d).expanduser().rglob("*.json*")]
-    return [(s, f, known) for s, f, known in found if f.is_file() and f.stat().st_mtime >= cutoff]
+    if not proj.is_dir():
+        return sessions
+    # Claude Code: ~/.claude/projects/<encoded-cwd>/*.jsonl (subdirs of repo encode with same prefix)
+    for d in proj.iterdir():
+        if not (d.is_dir() and d.name.startswith(enc)):
+            continue
+        for f in d.glob("*.jsonl"):
+            if not (f.is_file() and f.stat().st_mtime >= cutoff):
+                continue
+            matched, users, errors = True, [], []
+            for rec in read_lines(f):
+                if not matched:
+                    cwd = find_cwd(rec)
+                    if cwd is None:
+                        continue
+                    if not inside(cwd, root):
+                        break
+                    matched = True
+                for kind, t in extract(rec):
+                    (users if kind == "user" else errors).append(redact(t))
+            if matched and (users or errors):
+                sessions.append((f.stat().st_mtime, "claude-code", f.name, users, errors))
+    return sessions
+
+
+def extra_sessions(root, extra_dirs, cutoff):
+    sessions = []
+    for directory in extra_dirs:
+        for f in Path(directory).expanduser().rglob("*.json*"):
+            if not (f.is_file() and f.stat().st_mtime >= cutoff):
+                continue
+            users, errors = [], []
+            for rec in read_lines(f):
+                for kind, t in extract(rec):
+                    (users if kind == "user" else errors).append(redact(t))
+            if users or errors:
+                sessions.append((f.stat().st_mtime, "extra", f.name, users, errors))
+    return sessions
+
+
+def opencode_sessions(root, cutoff):
+    """Read OpenCode's SQLite store read-only; skip with a note when unavailable."""
+    data_home = Path(os.environ.get("XDG_DATA_HOME") or (HOME / ".local" / "share"))
+    db = data_home / "opencode" / "opencode.db"
+    if not db.is_file():
+        print("collect_sessions: no OpenCode database at %s; skipped" % db, file=sys.stderr)
+        return []
+    base = "file:%s?mode=ro" % quote(str(db))
+    conn = None
+    try:
+        conn = sqlite3.connect(base, uri=True)
+    except sqlite3.Error as exc:
+        if Path(str(db) + "-wal").exists():
+            print("collect_sessions: OpenCode database has a WAL and could not be opened read-only; skipped: %s"
+                  % exc, file=sys.stderr)
+            return []
+        try:
+            conn = sqlite3.connect(base + "&immutable=1", uri=True)
+        except sqlite3.Error as second:
+            print("collect_sessions: cannot read OpenCode database %s; skipped: %s" % (db, second),
+                  file=sys.stderr)
+            return []
+    sessions = []
+    try:
+        rows = conn.execute(
+            "SELECT s.id, s.directory, MAX(m.time_created) FROM session_v2 s "
+            "JOIN session_message m ON m.session_id=s.id GROUP BY s.id").fetchall()
+    except (sqlite3.Error, ValueError, KeyError, TypeError) as exc:
+        print("collect_sessions: skipping the OpenCode store (%s): %s" % (db, exc), file=sys.stderr)
+        conn.close()
+        return []
+    try:
+        for session_id, directory, last in rows:
+            try:
+                last = float(last or 0)
+                mtime = last / 1000.0 if last > 1e12 else last
+                if mtime < cutoff or not inside(directory or "", root):
+                    continue
+                users, errors = [], []
+                for mtype, data_text in conn.execute(
+                        "SELECT type, data FROM session_message WHERE session_id = ? ORDER BY seq", (session_id,)):
+                    data = json.loads(data_text)
+                    if not isinstance(data, dict):
+                        continue
+                    if mtype == "user":
+                        text = data.get("text")
+                        if isinstance(text, str) and text.strip():
+                            users.append(redact(text))
+                    elif mtype == "assistant":
+                        for item in data.get("content") or []:
+                            if not isinstance(item, dict) or item.get("type") != "tool":
+                                continue
+                            state = item.get("state") or {}
+                            if isinstance(state, dict) and state.get("status") == "error":
+                                detail = state.get("error") or state.get("output") or item.get("name") or "tool error"
+                                if not isinstance(detail, str):
+                                    detail = json.dumps(detail)
+                                errors.append(redact(detail))
+                if users or errors:
+                    sessions.append((mtime, "opencode", str(session_id), users, errors))
+            except (sqlite3.Error, ValueError, KeyError, TypeError) as exc:
+                print("collect_sessions: skipping an OpenCode session (%s): %s" % (session_id, exc),
+                      file=sys.stderr)
+                continue
+    finally:
+        conn.close()
+    return sessions
 
 
 def main():
@@ -160,27 +255,14 @@ def main():
 
     root = repo_root(a.repo)
     cutoff = time.time() - a.days * 86400
-    sessions = []
-    for source, f, known in candidate_files(root, a.extra_dir, cutoff):
-        matched, users, errors = known, [], []
-        for rec in read_lines(f):
-            if not matched:
-                cwd = find_cwd(rec)
-                if cwd is None:
-                    continue
-                if not inside(cwd, root):
-                    break
-                matched = True
-            for kind, t in extract(rec):
-                (users if kind == "user" else errors).append(redact(t))
-        if matched and (users or errors):
-            sessions.append((f.stat().st_mtime, source, f, users, errors))
+    sessions = claude_sessions(root, cutoff) + extra_sessions(root, a.extra_dir, cutoff)
+    sessions += opencode_sessions(root, cutoff)
 
     sessions.sort(key=lambda s: s[0], reverse=True)
     out = [f"# Session digest for {root}", f"_{len(sessions)} sessions in last {a.days} days, newest first. Corrections marked ⚑._\n"]
     budget = a.max_chars - len("\n".join(out))
-    for mtime, source, f, users, errors in sessions:
-        lines = [f"## {time.strftime('%Y-%m-%d', time.localtime(mtime))} · {source} · {f.name}"]
+    for mtime, source, label, users, errors in sessions:
+        lines = [f"## {time.strftime('%Y-%m-%d', time.localtime(mtime))} · {source} · {label}"]
         flagged = [u for u in users if CORRECTION.search(u)]
         lines += [f"- ⚑ {clip(u, 400)}" for u in flagged]
         lines += [f"- {clip(u, 250)}" for u in users if u not in flagged][:15]

@@ -32,7 +32,7 @@ SKILL.md                entry workflow (progressive disclosure)
 references/             workflow, safety, javascript, ecosystems, parallelism,
                         verification, report-schema
 scripts/depup.py        deterministic helper (stdlib, Python 3.9+), JSON output
-scripts/review_router.py one-model-per-task routing (reviews, architecture, planning) with usage-aware fallback
+scripts/review_router.py one route: Claude Opus 5.5 on Claude Code (reviews, architecture, planning), no fallback
 scripts/routed_task.py  the same router for other skills (consolidate, frontend-ui-ux-overhaul):
                         run dirs, skill profiles (<skill>/routing.json), review gate
 admin/depup-admin.py    installer maintenance: doctor / install / update / uninstall
@@ -45,13 +45,13 @@ Run state (journals, owned worktrees, logs, reports) lives outside repositories 
 
 ## Reviews, architecture and planning
 
-Every review task runs on one model in a fresh read-only session, by priority with usage-aware
-fallback: Claude Opus 5.5 medium (Claude Code) → DeepSeek V4.1 Flash
-1017 high (OpenCode Go) → the invoking session's model and effort. Same order from every harness;
-no substitution, no global setting changes. `depup.py review probe` shows availability without
-model calls. Architecture and planning (`depup.py planning run`) use the same router, priority
-and fallback in fresh read-only sessions and return advisory plans; implementation stays in the
-main session. Details: `references/review-routing.md`.
+Every review task runs on one model in a fresh read-only session: Claude Opus 5.5 only, through
+Claude Code. Reviews run at effort medium (high for independent, security or high-tier reviews);
+architecture and planning (`depup.py planning run`) run at effort xhigh. Same route from every
+harness; no substitution, no fallback, no global setting changes. An Opus outage makes the task
+unavailable and blocks the run. `depup.py review probe` shows availability without model calls.
+Planning returns an advisory plan; implementation stays in the main session. Details:
+`references/review-routing.md`.
 
 ## Maintenance
 
