@@ -23,30 +23,35 @@ up as `Only in ~/.agents/skills/<name>` and are expected; any other difference i
 
 ## Automatic sync
 
-- A LaunchAgent labelled `com.beyourahi.agent-skills-sync` runs `~/.agents/bin/agent-skills-sync` at
-  load and every 300 s. It keeps `~/.agents/skills` and `main` in step in both directions.
+- A LaunchAgent labelled `com.beyourahi.agent-skills-sync` starts the watcher
+  `~/.agents/bin/agent-skills-watch` at login. The watcher runs `~/.agents/bin/agent-skills-sync` at
+  start, on every change under `~/.agents/skills`, and when the network comes back; it can also be
+  run by hand. There is no schedule. The sync keeps `~/.agents/skills` and `main` in step in both
+  directions.
 - Managed skills are every `skills/<name>` on `main`, plus a new real folder in `~/.agents/skills`
   that holds a `SKILL.md` whose frontmatter `name` equals the folder name, an empty
   `.agent-skills-sync` marker, and no entry in `~/.agents/.skill-lock.json`. Symlinked entries are
   ignored.
 - Local edits, additions and deletions are committed and pushed straight to `main`, with the
   subjects `chore(sync): update <name> from local copy`, `feat(sync): add <name>` and
-  `chore(sync): remove <name>`. A local change waits 120 s before it is pushed, and a whole-skill
-  deletion needs two runs before it is committed.
+  `chore(sync): remove <name>`. A local change is pushed at once, with no wait. A whole-skill
+  deletion is committed after an immediate confirmation pass that still finds the folder missing.
 - Changes merged on `main` are installed in the local copy when that copy is unchanged since the
-  last sync. A skill changed on both sides is held, with no write either way and one macOS
-  notification, until both sides match. A skill removed from `main` is retired locally: the folder
+  last sync. They arrive at login, on the next local change, when the network comes back, or at once
+  with `~/.agents/bin/agent-skills-sync`. A skill changed on both sides is held, with no write either
+  way and one macOS notification, until both sides match. A skill removed from `main` is retired locally: the folder
   is kept and the skill is no longer synced.
 - Never synced: `__pycache__/`, `*.pyc`, `.pytest_cache/`, any `graft/` folder, `.DS_Store`,
   `.agent-skills-sync`, `.git/`, `.local-state/`, `*.log`, `.env` and `.env.*` except
-  `.env.example`, and `.dev.vars`.
+  `.env.example`, `.dev.vars`, and editor temp files (`*~`, `*.swp`, `*.swo`, `*.swx`, `*.tmp`,
+  `.#*`, `4913`, `*___jb_tmp___*`, `*___jb_old___*`).
 - A change that holds a home path, a token-like string, or a file over 5 MB is held and not pushed.
 - State and logs live in `~/.local/state/agent-skills-sync/`: `runs.jsonl`, `state.json`,
   `launchd.log` and the sync's own clone in `repo/`.
 - For agents: change a skill in this repository through a PR and never edit
   `~/.agents/skills/<name>` directly, because the sync pushes such an edit to `main` without
-  review. After the merge the sync installs the change on its next run; the rsync above still
-  installs it at once by hand.
+  review. After the merge, run `~/.agents/bin/agent-skills-sync` (or the rsync above) to install
+  the change at once; otherwise it arrives on the next trigger listed above.
 
 ## Layout
 
