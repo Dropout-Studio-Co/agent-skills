@@ -28,9 +28,9 @@ class CollectorTests(unittest.TestCase):
         self.env = dict(os.environ)
         self.env.update({'HOME': self.home, 'XDG_DATA_HOME': self.data, 'CLAUDE_CONFIG_DIR': self.claude})
 
-    def run_collector(self, *extra):
+    def run_collector(self, *extra, cwd=None):
         return subprocess.run([sys.executable, SCRIPT, '--repo', self.root, '--days', '60'] + list(extra),
-                              capture_output=True, text=True, env=self.env)
+                              capture_output=True, text=True, env=self.env, cwd=cwd)
 
     def db_path(self):
         return Path(self.data) / 'opencode' / 'opencode.db'
@@ -102,6 +102,21 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), before_hash)
         self.assertEqual(sorted(os.listdir(path.parent)), before_files, 'no journal or shm files appear')
 
+    def test_sessions_without_a_directory_are_skipped_even_from_inside_the_root(self):
+        self.make_db([
+            ('empty-dir-session', '', 0, [
+                ('user', {'text': 'empty directory message must not appear'})]),
+            ('null-dir-session', None, 0, [
+                ('user', {'text': 'null directory message must not appear'})]),
+            ('inside-session', self.root, 0, [
+                ('user', {'text': 'inside message appears'})]),
+        ])
+        proc = self.run_collector(cwd=self.root)  # cwd equals the repo root: '' must still never match
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn('inside message appears', proc.stdout)
+        self.assertNotIn('empty directory message', proc.stdout)
+        self.assertNotIn('null directory message', proc.stdout)
+
     def test_database_in_wal_mode_is_read_without_new_files(self):
         path = self.make_db([('wal-session', self.root, 0, [
             ('user', {'text': "don't change the wal database"})])])
@@ -120,6 +135,43 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), before_hash)
         self.assertEqual(sorted(os.listdir(path.parent)), before_files, 'no journal or shm files appear')
+
+    def test_live_wal_database_with_a_writer_is_read_without_new_files(self):
+        path = self.make_db([])
+        writer = sqlite3.connect(str(path))
+        self.addCleanup(writer.close)
+        writer.execute('PRAGMA journal_mode=WAL').fetchall()
+        now = int(time.time() * 1000)
+        writer.execute('INSERT INTO session_v2 VALUES (?, ?, ?, ?, ?, ?)',
+                       ('live-session', 'project-1', 'live-session', self.root, now, now))
+        writer.execute('INSERT INTO session_message VALUES (?, ?, ?, ?, ?, ?, ?)',
+                       ('live-session-1', 'live-session', 'user', 1, now, now,
+                        json.dumps({'text': "don't lose the live wal session"})))
+        writer.commit()  # the writer stays open, holding -wal and -shm
+        wal, shm = Path(str(path) + '-wal'), Path(str(path) + '-shm')
+        self.assertTrue(wal.exists(), 'the fixture has a pending write-ahead log')
+        self.assertTrue(shm.exists(), 'the writer holds the shared-memory file open')
+        before_files = sorted(os.listdir(path.parent))
+        proc = self.run_collector()
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn('· opencode · live-session', proc.stdout)
+        self.assertIn('live wal session', proc.stdout)
+        self.assertEqual(sorted(os.listdir(path.parent)), before_files, 'no journal or shm files appear')
+
+    def test_wal_without_shared_memory_is_skipped_with_a_note(self):
+        self.claude_fixture()
+        path = self.make_db([('wal-only', self.root, 0, [
+            ('user', {'text': 'wal only message must not appear'})])])
+        Path(str(path) + '-wal').write_bytes(b'')
+        self.assertFalse(Path(str(path) + '-shm').exists())
+        before_files = sorted(os.listdir(path.parent))
+        proc = self.run_collector()
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn('WAL', proc.stderr)
+        self.assertIn('claude-code', proc.stdout)
+        self.assertIn('hello from claude code', proc.stdout)
+        self.assertNotIn('wal only message', proc.stdout)
+        self.assertEqual(sorted(os.listdir(path.parent)), before_files)
 
     def test_extra_dir_files_are_filtered_by_working_directory(self):
         extra = Path(self.tmp) / 'extra'

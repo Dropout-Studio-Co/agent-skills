@@ -273,6 +273,24 @@ class ReviewGateTests(RoutedCase):
         self.assertIn('no fallback', entry['reason'])
         self.assertEqual(self.rt('gate', run)[0], 1)
 
+    def test_a_required_high_review_is_not_satisfied_by_a_medium_pass(self):
+        run = self.start('frontend-ui-ux-overhaul')
+        self.commit('app.js', 'export const a = 2;\n')
+        fake = FakeHarnesses(self.tmp, reviews={'claude-code': [{'stdout': claude_result(FAIL)},
+                                                                {'stdout': claude_result(GOOD)},
+                                                                {'stdout': claude_result(GOOD)}]})
+        self.use(fake)
+        _, entry = self.rt('review', run, '--kind', 'code', '--base', self.base, '--required', '--high')
+        self.assertEqual((entry['selected']['effort'], entry['verdict']), ('high', 'fail'))
+        _, medium = self.rt('review', run, '--kind', 'code', '--base', self.base, '--rerun')
+        self.assertEqual((medium['selected']['effort'], medium['verdict']), ('medium', 'pass'))
+        code, gate = self.rt('gate', run, '--require', 'code')
+        self.assertEqual(code, 1, 'a medium pass never satisfies a required high review')
+        self.assertIn('review ran at medium but high is required', ' '.join(gate['problems']))
+        _, high = self.rt('review', run, '--kind', 'code', '--base', self.base, '--high', '--rerun')
+        self.assertEqual((high['selected']['effort'], high['verdict']), ('high', 'pass'))
+        self.assertEqual(self.rt('gate', run, '--require', 'code')[0], 0)
+
     def test_tampered_review_artifact_does_not_satisfy_the_gate(self):
         run = self.start('frontend-ui-ux-overhaul')
         self.use(FakeHarnesses(self.tmp, reviews={'claude-code': [{'stdout': claude_result(GOOD)}]}))

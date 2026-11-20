@@ -223,7 +223,9 @@ def opencode_sessions(root, cutoff):
             try:
                 last = float(last or 0)
                 mtime = last / 1000.0 if last > 1e12 else last
-                if mtime < cutoff or not inside(directory or "", root):
+                if not isinstance(directory, str) or not directory.strip():
+                    continue  # no working directory recorded: never match the repo root by accident
+                if mtime < cutoff or not inside(directory, root):
                     continue
                 users, errors = [], []
                 for mtype, data_text in conn.execute(

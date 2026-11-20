@@ -513,10 +513,10 @@ def cmd_review(args):
     existing, _ = depup.read_json(entry_path)
     if isinstance(existing, dict) and existing.get('status') == 'completed' and not args.rerun:
         if args.required:
-            mark_required(run_dir, args.kind, subject)
+            mark_required(run_dir, args.kind, subject, effort)
         return dict(existing, reused=True, note='same candidate and evidence: completed review reused, no model call')
     if args.required:
-        mark_required(run_dir, args.kind, subject)  # before the run: a failed/unavailable task still binds
+        mark_required(run_dir, args.kind, subject, effort)  # before the run: a failed/unavailable task still binds
     created = _dt.datetime.now(_dt.timezone.utc).isoformat()  # microseconds: newest-review order must not tie
     files = write_diff_inputs(root, base_sha, task_dir)
     extras = []
@@ -565,6 +565,7 @@ def cmd_gate(args):
         required.add((kind, subject or 'candidate'))
     required |= {(e['kind'], e['subject']) for e in reviews if e.get('required')}  # once required, always
     required |= {tuple(r) for r in read_required(run_dir)}
+    needed_effort = required_efforts(run_dir)
     latest = {}  # newest review (any status) per kind/subject of the current candidate and run base decides
     for e in sorted((e for e in reviews if e.get('fingerprint') == current and e.get('base') == meta.get('base')),
                     key=lambda e: e.get('created') or ''):
@@ -572,9 +573,13 @@ def cmd_gate(args):
     problems = []
     for kind, subject in sorted(required):
         e = latest.get((kind, subject))
+        needed = needed_effort.get((kind, subject))
         if not (e and e.get('status') == 'completed' and e.get('verdict') == 'pass' and receipt_ok(run_dir, e)):
             problems.append('%s:%s has no passing review of the current candidate (%s)' % (
                 kind, subject, 'latest: %s %s' % (e.get('status'), e.get('verdict') or '') if e else 'not run'))
+        elif needed and effort_rank(e.get('effort')) < effort_rank(needed):
+            problems.append('%s:%s review ran at %s but %s is required' % (
+                kind, subject, e.get('effort') or 'unknown', needed))
     for (kind, subject), e in sorted(latest.items()):
         if e.get('verdict') == 'fail' and (kind, subject) not in required:
             problems.append('%s:%s review of the current candidate failed' % (kind, subject))
@@ -594,15 +599,35 @@ class GateBlocked(Exception):
     pass
 
 
-def mark_required(run_dir, kind, subject):
-    items = read_required(run_dir)
-    if [kind, subject] not in items:
-        depup.atomic_write(os.path.join(run_dir, 'required.json'), json.dumps(items + [[kind, subject]]) + '\n')
+def effort_rank(effort):
+    return rr.EFFORTS.index(effort) if effort in rr.EFFORTS else -1
+
+
+def mark_required(run_dir, kind, subject, effort=None):
+    """Remember (kind, subject) and the highest effort ever requested: a later medium entry never satisfies high."""
+    items = required_items(run_dir)
+    for item in items:
+        if item[0] == kind and item[1] == subject:
+            current = item[2] if len(item) > 2 else None
+            if effort_rank(effort) > effort_rank(current):
+                item[2:] = [effort]
+                depup.atomic_write(os.path.join(run_dir, 'required.json'), json.dumps(items) + '\n')
+            return
+    items.append([kind, subject, effort])
+    depup.atomic_write(os.path.join(run_dir, 'required.json'), json.dumps(items) + '\n')
+
+
+def required_items(run_dir):
+    data, error = depup.read_json(os.path.join(run_dir, 'required.json'))
+    return [r for r in data if isinstance(r, list) and len(r) >= 2] if not error and isinstance(data, list) else []
 
 
 def read_required(run_dir):
-    data, error = depup.read_json(os.path.join(run_dir, 'required.json'))
-    return data if not error and isinstance(data, list) else []
+    return [[r[0], r[1]] for r in required_items(run_dir)]
+
+
+def required_efforts(run_dir):
+    return {(r[0], r[1]): (r[2] if len(r) > 2 else None) for r in required_items(run_dir)}
 
 
 def receipt_ok(run_dir, entry):

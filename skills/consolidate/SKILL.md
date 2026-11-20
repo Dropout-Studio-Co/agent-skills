@@ -56,9 +56,13 @@ RESTORE POINT (write it before STEP 2, and again after the gate, before STEP 4):
 - For every dirty location, a patch (`git diff --binary HEAD` plus staged and untracked data) and an
   archive of its untracked files.
 - `manifest.md` with the restore commands for every ref, bundle, patch, archive, remote branch and
-  PR, plus the exact commit and path each item came from.
+  PR, plus the exact commit and path each item came from, including the command that recovers the
+  temporary refs from the verified bundle.
 - A cleanup never starts unless the restore point for every item on the cleanup list is present and
   verified in the manifest.
+- After STEP 4 and the final report, delete this run's temporary refs
+  (`git for-each-ref --format='%(refname)' refs/consolidate/<UTC>/ | xargs -n1 git update-ref -d`):
+  the verified bundle keeps them.
 
 STEP 2 — RECONCILE:
 - Bring every (c) item into main by merging, cherry-picking, or porting by hand if main has diverged.
@@ -70,7 +74,10 @@ STEP 2 — RECONCILE:
 STEP 3 — VERIFY:
 - Re-check every branch, worktree, stash, clone and PR against the updated main and record the
   evidence for each item in the ledger, together with the restore-point path, the cleanup list
-  ((a)/(b) only) and the kept list ((d) with reasons).
+  ((a)/(b) only) and the kept list ((d) with reasons). Paste the restore point's full `manifest.md`
+  and the verbatim output of every `git bundle verify` into the ledger: the reviewer cannot read
+  the restore point itself, so it checks each cleanup-list item against that pasted manifest and
+  bundle-verify output.
 - INDEPENDENT REVIEW (always, even when no code changed; before any cleanup): run
   `review --kind reconciliation --required --context <ledger> --with-prs` plus `--location <path>`
   for every extra clone (and `--main-ref <branch>` if the default branch is not detected). The
