@@ -183,9 +183,12 @@ work. Never weaken verification to obtain green results.
 ### 16a. Lighthouse 13 before merge (horcrux.app, dropoutstudio.co, beyourahi.com)
 
 For UI changes to `horcrux.app`, `dropoutstudio.co` or `beyourahi.com`, run Lighthouse 13 on the
-changed pages before merge. Record the report path, category scores (performance, accessibility,
-best-practices, SEO) and the URL/viewport for each page in the rendered-evidence manifest used by
-step 17. A missing Lighthouse 13 result is an Important finding and blocks delivery.
+production build of the affected pages before merge, at both mobile and desktop, for all four
+categories: performance, accessibility, best-practices and SEO. Take the median of three serial runs
+per page and viewport, and compare each with the repository's thresholds; a missing threshold is a
+gap to report, not a waiver. Record the report path, the median category scores and the URL/viewport
+for each page in the rendered-evidence manifest used by step 17. A missing Lighthouse 13 result is an
+Important finding and blocks delivery.
 
 ### 17. Independent review (routed, before completion or delivery)
 

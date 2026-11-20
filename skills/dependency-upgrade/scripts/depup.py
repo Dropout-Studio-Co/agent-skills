@@ -2281,7 +2281,7 @@ def cmd_review_run(args):
         if done:
             text, result, outcome, attempt_dir, probe = done
             sel = {'priority': selected['priority'], 'harness': selected['harness'], 'model': selected['model'],
-                   'effort': selected.get('effort') or 'session-default', 'resolved_model': probe.get('resolved_model'),
+                   'effort': selected['effort'], 'resolved_model': probe.get('resolved_model'),
                    'usage': next((c.get('usage') for c in meta['candidates'] if c.get('status') == 'selected'), None)}
             reviewer = '%s/%s@%s fresh session %s/%s' % (sel['harness'], sel['resolved_model'] or sel['model'],
                                                          sel['effort'], review_id, os.path.basename(attempt_dir))
@@ -2445,7 +2445,7 @@ def cmd_planning_run(args):
         if done:
             text, result, outcome, attempt_dir, probe = done
             sel = {'priority': selected['priority'], 'harness': selected['harness'], 'model': selected['model'],
-                   'effort': selected.get('effort') or 'session-default', 'resolved_model': probe.get('resolved_model'),
+                   'effort': selected['effort'], 'resolved_model': probe.get('resolved_model'),
                    'usage': next((c.get('usage') for c in meta['candidates'] if c.get('status') == 'selected'), None)}
             planner = '%s/%s@%s fresh session %s/%s' % (sel['harness'], sel['resolved_model'] or sel['model'],
                                                         sel['effort'], plan_id, os.path.basename(attempt_dir))

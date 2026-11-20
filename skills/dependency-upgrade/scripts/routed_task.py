@@ -361,7 +361,7 @@ def run_task(run_dir, meta, task_dir, task_id, prompt, parse, effort, timeout, m
 
 def selection(selected, probe, candidates):
     return {'priority': selected['priority'], 'harness': selected['harness'], 'model': selected['model'],
-            'effort': selected.get('effort') or 'session-default', 'resolved_model': probe.get('resolved_model'),
+            'effort': selected['effort'], 'resolved_model': probe.get('resolved_model'),
             'usage': next((c.get('usage') for c in candidates if c.get('status') == 'selected'), None)}
 
 

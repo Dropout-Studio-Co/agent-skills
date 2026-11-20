@@ -28,8 +28,8 @@ class CollectorTests(unittest.TestCase):
         self.env = dict(os.environ)
         self.env.update({'HOME': self.home, 'XDG_DATA_HOME': self.data, 'CLAUDE_CONFIG_DIR': self.claude})
 
-    def run_collector(self):
-        return subprocess.run([sys.executable, SCRIPT, '--repo', self.root, '--days', '60'],
+    def run_collector(self, *extra):
+        return subprocess.run([sys.executable, SCRIPT, '--repo', self.root, '--days', '60'] + list(extra),
                               capture_output=True, text=True, env=self.env)
 
     def db_path(self):
@@ -73,7 +73,10 @@ class CollectorTests(unittest.TestCase):
                 ('assistant', {'time': {'created': int(time.time() * 1000)},
                                'content': [{'type': 'tool', 'name': 'bash',
                                             'state': {'status': 'error',
-                                                      'error': 'command failed token=SECRET-TOKEN-VALUE'}}]})]),
+                                                      'input': {'command': 'ls'},
+                                                      'error': {'type': 'permission.rejected',
+                                                                'message': 'Permission denied: shell '
+                                                                           'token=SECRET-TOKEN-VALUE'}}}]})]),
             ('outside-session', os.path.join(self.tmp, 'elsewhere'), 0, [
                 ('user', {'text': 'outside message that must not appear'})]),
             ('old-session', self.root, 400, [
@@ -84,6 +87,7 @@ class CollectorTests(unittest.TestCase):
         self.assertIn('· opencode · inside-session', proc.stdout)
         self.assertIn('⚑', proc.stdout)
         self.assertIn('✗ error', proc.stdout)
+        self.assertIn('permission.rejected: Permission denied: shell', proc.stdout)
         self.assertIn('[REDACTED]', proc.stdout)
         self.assertNotIn('outside message', proc.stdout)
         self.assertNotIn('old message', proc.stdout)
@@ -97,6 +101,40 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), before_hash)
         self.assertEqual(sorted(os.listdir(path.parent)), before_files, 'no journal or shm files appear')
+
+    def test_database_in_wal_mode_is_read_without_new_files(self):
+        path = self.make_db([('wal-session', self.root, 0, [
+            ('user', {'text': "don't change the wal database"})])])
+        conn = sqlite3.connect(str(path))
+        conn.execute('PRAGMA journal_mode=WAL')
+        conn.execute('PRAGMA wal_checkpoint(TRUNCATE)')
+        conn.close()
+        for suffix in ('-wal', '-shm'):
+            leftover = Path(str(path) + suffix)
+            if leftover.exists():
+                leftover.unlink()
+            self.assertFalse(leftover.exists(), 'the fixture starts without %s' % suffix)
+        before_hash = hashlib.sha256(path.read_bytes()).hexdigest()
+        before_files = sorted(os.listdir(path.parent))
+        proc = self.run_collector()
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), before_hash)
+        self.assertEqual(sorted(os.listdir(path.parent)), before_files, 'no journal or shm files appear')
+
+    def test_extra_dir_files_are_filtered_by_working_directory(self):
+        extra = Path(self.tmp) / 'extra'
+        extra.mkdir(parents=True, exist_ok=True)
+        elsewhere = os.path.join(self.tmp, 'another-repo')
+        with open(extra / 'inside.jsonl', 'w', encoding='utf-8') as handle:
+            handle.write(json.dumps({'cwd': self.root, 'type': 'user',
+                                     'message': {'role': 'user', 'content': 'inside extra directory message'}}) + '\n')
+        with open(extra / 'outside.jsonl', 'w', encoding='utf-8') as handle:
+            handle.write(json.dumps({'cwd': elsewhere, 'type': 'user',
+                                     'message': {'role': 'user', 'content': 'outside extra directory message'}}) + '\n')
+        proc = self.run_collector('--extra-dir', str(extra))
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn('inside extra directory message', proc.stdout)
+        self.assertNotIn('outside extra directory message', proc.stdout)
 
     def test_corrupt_or_missing_database_still_prints_claude_sessions(self):
         self.claude_fixture()

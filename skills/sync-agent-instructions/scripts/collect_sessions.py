@@ -167,11 +167,18 @@ def extra_sessions(root, extra_dirs, cutoff):
         for f in Path(directory).expanduser().rglob("*.json*"):
             if not (f.is_file() and f.stat().st_mtime >= cutoff):
                 continue
-            users, errors = [], []
+            matched, users, errors = False, [], []
             for rec in read_lines(f):
+                if not matched:
+                    cwd = find_cwd(rec)
+                    if cwd is None:
+                        continue
+                    if not inside(cwd, root):
+                        break
+                    matched = True
                 for kind, t in extract(rec):
                     (users if kind == "user" else errors).append(redact(t))
-            if users or errors:
+            if matched and (users or errors):
                 sessions.append((f.stat().st_mtime, "extra", f.name, users, errors))
     return sessions
 
@@ -184,20 +191,24 @@ def opencode_sessions(root, cutoff):
         print("collect_sessions: no OpenCode database at %s; skipped" % db, file=sys.stderr)
         return []
     base = "file:%s?mode=ro" % quote(str(db))
+    wal = Path(str(db) + "-wal")
+    shm = Path(str(db) + "-shm")
+    if not wal.exists():
+        # No pending WAL: immutable avoids creating -shm/-wal next to the store.
+        uri = base + "&immutable=1"
+    elif shm.exists():
+        uri = base
+    else:
+        print("collect_sessions: OpenCode database has a WAL but no shared-memory file; skipped: %s" % db,
+              file=sys.stderr)
+        return []
     conn = None
     try:
-        conn = sqlite3.connect(base, uri=True)
+        conn = sqlite3.connect(uri, uri=True)
     except sqlite3.Error as exc:
-        if Path(str(db) + "-wal").exists():
-            print("collect_sessions: OpenCode database has a WAL and could not be opened read-only; skipped: %s"
-                  % exc, file=sys.stderr)
-            return []
-        try:
-            conn = sqlite3.connect(base + "&immutable=1", uri=True)
-        except sqlite3.Error as second:
-            print("collect_sessions: cannot read OpenCode database %s; skipped: %s" % (db, second),
-                  file=sys.stderr)
-            return []
+        print("collect_sessions: cannot read OpenCode database %s; skipped: %s" % (db, exc),
+              file=sys.stderr)
+        return []
     sessions = []
     try:
         rows = conn.execute(
@@ -230,9 +241,21 @@ def opencode_sessions(root, cutoff):
                                 continue
                             state = item.get("state") or {}
                             if isinstance(state, dict) and state.get("status") == "error":
-                                detail = state.get("error") or state.get("output") or item.get("name") or "tool error"
-                                if not isinstance(detail, str):
-                                    detail = json.dumps(detail)
+                                err = state.get("error")
+                                if isinstance(err, dict):
+                                    message, kind = err.get("message"), err.get("type")
+                                    if message and kind:
+                                        detail = "%s: %s" % (kind, message)
+                                    elif message or kind:
+                                        detail = message or kind
+                                    else:
+                                        detail = json.dumps(err)
+                                elif isinstance(err, str) and err:
+                                    detail = err
+                                else:
+                                    detail = state.get("output") or item.get("name") or "tool error"
+                                    if not isinstance(detail, str):
+                                        detail = json.dumps(detail)
                                 errors.append(redact(detail))
                 if users or errors:
                     sessions.append((mtime, "opencode", str(session_id), users, errors))

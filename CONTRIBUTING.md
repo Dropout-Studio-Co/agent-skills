@@ -28,9 +28,10 @@ python3 -m unittest discover -s skills/dependency-upgrade/tests -t skills/depend
 python3 -m unittest discover -s skills/sync-agent-instructions/tests -t skills/sync-agent-instructions
 ```
 
-Run it after any change to `dependency-upgrade` scripts, tests or `routing.json`, and after editing
-`consolidate` or `frontend-ui-ux-overhaul` (their profiles are validated by the routed-task tests).
-Also re-read the file you edited: commands, paths and script names must match the repository.
+Run the dependency-upgrade suite after any change to `dependency-upgrade` scripts, tests or any
+`routing.json` (this also validates the `consolidate` and `frontend-ui-ux-overhaul` profiles). Run
+the collector suite after changes to `sync-agent-instructions` scripts or tests. Also re-read the
+file you edited: commands, paths and script names must match the repository.
 
 ## Installing a change locally
 
