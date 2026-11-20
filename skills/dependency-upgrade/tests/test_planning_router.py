@@ -1,4 +1,4 @@
-"""Architecture/planning routing: same router, priority and fallback as reviews; read-only, advisory.
+"""Architecture/planning routing: one route (Claude Opus 5.5 at xhigh), no fallback; read-only, advisory.
 
 Every CLI is mocked through the review-router fakes; no test makes a model call.
 """
@@ -43,12 +43,13 @@ class PlanningTests(IntegrationCase):
         code, entry = self.run_plan(start['run_ref'])
         self.assertEqual(code, 0, entry)
         self.assertEqual(entry['status'], 'completed')
-        self.assertEqual((entry['selected']['model'], entry['selected']['effort']), ('claude-opus-5-5', 'medium'))
+        self.assertEqual((entry['selected']['model'], entry['selected']['effort']), ('claude-opus-5-5', 'xhigh'))
         self.assertEqual(entry['target'], root, 'plan mode reads the repository (no worktree yet)')
         self.assertEqual(entry['plan']['steps'][0]['id'], 'batch-1')
         calls = fake.review_calls()
         self.assertEqual(len(calls), 1, 'one planner call')
         argv = calls[0]
+        self.assertEqual(argv[argv.index('--effort') + 1], 'xhigh')
         self.assertEqual(argv[argv.index('--tools') + 1], 'Read,Grep,Glob', 'planner is read-only')
         plan_dir = os.path.dirname(entry['entry'])
         self.assertTrue(fake.cwds[fake.calls.index(argv)].startswith(plan_dir), 'planner cwd is outside the repo')
@@ -67,66 +68,48 @@ class PlanningTests(IntegrationCase):
         self.assertTrue(again['reused'])
         self.assertEqual(len(fake.review_calls()), 1, 'same head + handoff: no second model call')
 
-    def test_fallback_order_matches_reviews(self):
+    def test_missing_claude_is_unavailable_with_no_fallback(self):
         start, _ = self.plan_run()
-        self.use(FakeHarnesses(self.tmp, missing={'claude'}, reviews={'opencode': [{'stdout': json.dumps(
-            {'type': 'text', 'part': {'text': PLAN_TEXT}})}]}))
+        fake = FakeHarnesses(self.tmp, missing={'claude'})
+        self.use(fake)
         _, entry = self.run_plan(start['run_ref'])
-        self.assertEqual((entry['selected']['harness'], entry['selected']['model'], entry['selected']['effort']),
-                         ('opencode', 'deepseek-v4.1-flash', 'high'))
-        self.assertEqual(entry['selected']['resolved_model'], 'opencode-go/deepseek-v4.1-flash')
-        self.assertEqual(entry['candidates'][0]['reason'], 'missing-cli', 'fallback reason recorded')
-
-        start, _ = self.plan_run()
-        self.use(FakeHarnesses(self.tmp, missing={'opencode'}, claude_logged_in=False,
-                               reviews={'claude-code': [{'stdout': claude_result(PLAN_TEXT, model='pm')}]}))
-        _, entry = self.run_plan(start['run_ref'], '--session-harness', 'claude-code', '--session-model', 'pm',
-                                 '--session-effort', 'high')
-        self.assertEqual((entry['selected']['priority'], entry['selected']['model']), (4, 'pm'))
+        self.assertEqual(entry['status'], 'unavailable')
+        self.assertIn('Claude Opus 5.5', entry['reason'])
+        self.assertIn('no fallback', entry['reason'])
+        self.assertEqual(fake.review_calls(), [], 'nothing replaces Opus')
+        self.assertFalse([c for c in fake.calls if c and c[0] == 'opencode'])
 
     def test_exhausted_opus_is_remembered_across_planning_and_reviews(self):
         start, _ = self.plan_run()
-        fake = FakeHarnesses(self.tmp, reviews={'claude-code': [{'stdout': EXHAUSTED_EVENTS, 'rc': 1}],
-                                                'opencode': [{'stdout': json.dumps(
-                                                    {'type': 'text', 'part': {'text': PLAN_TEXT}})}]})
+        fake = FakeHarnesses(self.tmp, reviews={'claude-code': [{'stdout': EXHAUSTED_EVENTS, 'rc': 1}]})
         self.use(fake)
         _, entry = self.run_plan(start['run_ref'])
-        self.assertEqual(entry['selected']['harness'], 'opencode')
+        self.assertEqual(entry['status'], 'unavailable')
         self.assertEqual(entry['candidates'][0]['status'], 'exhausted')
         self.assertTrue(os.path.isfile(os.path.join(start['run_dir'], 'plans', entry['id'], 'attempts',
                                                     '01-p1-claude-code', 'DISCARDED')))
         state = os.path.join(start['run_dir'], 'reviews', 'provider-state.json')
         with open(state, encoding='utf-8') as handle:
-            self.assertEqual(json.load(handle)['claude-code/claude-opus-5-5@medium']['status'], 'exhausted')
+            self.assertEqual(json.load(handle)['claude-code/claude-opus-5-5@xhigh']['status'], 'exhausted')
+        calls = len(fake.calls)
+        _, second = self.cli('planning', 'run', start['run_ref'], '--context', self.handoff('other scope\n'))
+        self.assertNotEqual(second['id'], entry['id'])
+        self.assertEqual(len(fake.calls), calls, 'a second planning task makes no call')
         router = make_router(fake)
-        probe = router.probe(rr.PREFERRED[0], os.path.join(start['run_dir'], 'reviews'), 'x')
+        probe = router.probe(dict(rr.PREFERRED[0], effort=rr.PLAN_EFFORT),
+                             os.path.join(start['run_dir'], 'reviews'), 'x')
         self.assertTrue(probe['reason'].startswith('cached'), 'a later review skips the exhausted model')
 
-    def test_invalid_plan_falls_back_and_all_unavailable_hands_off_to_the_session(self):
+    def test_invalid_plan_block_is_incomplete_then_unavailable(self):
         start, _ = self.plan_run()
-        fake = FakeHarnesses(self.tmp, missing={'opencode'},
-                             reviews={'claude-code': [{'stdout': claude_result(GOOD)},  # a review block, not a plan
-                                                      {'stdout': claude_result(PLAN_TEXT, model='pm')}]})
+        fake = FakeHarnesses(self.tmp, reviews={'claude-code': [
+            {'stdout': claude_result(GOOD)},  # a review block, not a plan
+            {'stdout': claude_result(PLAN_TEXT)}]})
         self.use(fake)
-        _, entry = self.run_plan(start['run_ref'], '--session-harness', 'claude-code', '--session-model', 'pm',
-                                 '--session-effort', 'high')
+        _, entry = self.run_plan(start['run_ref'])
         self.assertEqual(entry['candidates'][0]['attempts'][0]['category'], 'incomplete')
-        self.assertEqual((entry['selected']['priority'], entry['selected']['model']), (4, 'pm'),
-                         'final fallback: the session model and effort exactly')
-        start, _ = self.plan_run()
-        self.use(FakeHarnesses(self.tmp, missing={'claude', 'opencode'}))
-        _, entry = self.run_plan(start['run_ref'], '--session-harness', 'freebuff')
-        self.assertEqual(entry['status'], 'handoff')
-        self.assertIn('planning record', entry['next'])
-        out = os.path.join(self.tmp, 'native-plan.md')
-        write(out, PLAN_TEXT)
-        code, rec = self.cli('planning', 'record', start['run_ref'], '--plan-id', entry['id'], '--output', out,
-                             '--planner', 'freebuff/m@high')
-        self.assertEqual((code, rec['status'], rec['selected']['priority']), (0, 'completed', 4))
-        self.use(FakeHarnesses(self.tmp, missing={'claude', 'opencode'}))
-        _, none = self.cli('planning', 'run', start['run_ref'], '--context', self.handoff('other'),
-                           '--session-harness', 'claude-code', '--session-model', 'm')
-        self.assertEqual(none['status'], 'unavailable')
+        self.assertEqual(entry['status'], 'unavailable')
+        self.assertEqual(len(fake.review_calls()), 1, 'no fallback attempt')
 
     def test_planner_that_writes_to_the_tree_is_discarded(self):
         start, root = self.plan_run()
@@ -168,30 +151,25 @@ class PlanningTests(IntegrationCase):
         with open(rep['summary'], encoding='utf-8') as handle:
             summary = handle.read()
         self.assertIn('## Architecture and planning', summary)
-        self.assertIn('architecture db: completed — claude-code/claude-opus-5-5@medium', summary)
+        self.assertIn('architecture db: completed — claude-code/claude-opus-5-5@xhigh', summary)
         self.assertIn('## Reviews', summary)
 
-    def test_handoff_summary_record_guard_and_dirty_tree_reuse_key(self):
+    def test_unavailable_summary_shows_reason_and_dirty_tree_changes_the_reuse_key(self):
         start, root = self.plan_run()
-        self.use(FakeHarnesses(self.tmp, missing={'claude', 'opencode'}))
-        _, entry = self.run_plan(start['run_ref'], '--session-harness', 'freebuff')
+        self.use(FakeHarnesses(self.tmp, missing={'claude'}))
+        _, entry = self.run_plan(start['run_ref'])
+        self.assertEqual(entry['status'], 'unavailable')
         _, rep = self.cli('report', start['run_ref'])
         with open(rep['summary'], encoding='utf-8') as handle:
             summary = handle.read()
-        self.assertIn('plan upgrade: handoff — no routed planner completed', summary)
-        self.assertNotIn('handoff — None', summary)
+        self.assertIn('plan upgrade: unavailable — Claude Opus 5.5 could not complete', summary)
+        self.assertNotIn('unavailable — None', summary)
         write(os.path.join(root, 'b.txt'), 'x')
         sh(['git', 'add', '-A'], root)
         sh(['git', 'commit', '-q', '-m', 'move head'], root)
-        out = os.path.join(self.tmp, 'native-plan.md')
-        write(out, PLAN_TEXT)
-        code, refused = self.cli('planning', 'record', start['run_ref'], '--plan-id', entry['id'], '--output', out,
-                                 '--planner', 'freebuff/m@high')
-        self.assertEqual(code, 1)
-        self.assertIn('head changed', refused['error'])
-        _, first = self.run_plan(start['run_ref'], '--session-harness', 'freebuff')
+        _, first = self.run_plan(start['run_ref'])
         write(os.path.join(root, 'package.json'), {'name': 'r', 'dependencies': {'a': '^1.5.0'}})  # uncommitted
-        _, second = self.run_plan(start['run_ref'], '--session-harness', 'freebuff')
+        _, second = self.run_plan(start['run_ref'])
         self.assertNotEqual(first['id'], second['id'], 'uncommitted work changes the reuse key')
 
     def test_checkout_change_during_planning_is_reported(self):
@@ -216,7 +194,7 @@ class PlanningTests(IntegrationCase):
     def test_nested_planning_is_refused_inside_a_routed_session(self):
         router = rr.Router(environ={rr.GUARD_ENV: '1'})
         with self.assertRaises(RuntimeError):
-            router.route({'review_id': 'x'}, {})
+            router.route({'review_id': 'x'})
 
     def test_plan_parser_is_strict(self):
         self.assertIsNone(rr.parse_plan_result('no block')[0])

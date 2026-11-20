@@ -22,12 +22,10 @@ Commands:
   run finish RUN                            release the repository mutation lock
   rollback   RUN [--apply]                  remove only clean, owned Git state
   report     RUN [--input FILE] [--copy-to DIR]  write report.json + summary.md (+ evidence copy)
-  review run RUN --kind K [--subject S] [--required] [--session-*]  one routed reviewer per review task
-  review record RUN --review-id ID --output F --reviewer R  bind a session-native (handoff) review
+  review run RUN --kind K [--subject S] [--required]  one review task on Claude Opus 5.5 (no fallback)
   review probe [--run RUN]                  reviewer availability, no model calls
-  planning run RUN --context F [--kind plan|architecture] [--subject S] [--session-*]
-                                            architecture/planning on the same routed models, read-only
-  planning record RUN --plan-id ID --output F --planner P  bind a session-native (handoff) plan
+  planning run RUN --context F [--kind plan|architecture] [--subject S]
+                                            architecture/planning on Claude Opus 5.5, read-only
   capabilities                              local toolchain availability
 
 Exit codes: 0 ok, 1 command failed / refused, 2 usage error.
@@ -2268,10 +2266,10 @@ def cmd_review_run(args):
         factory = ROUTER_FACTORY or rr.Router
         router = factory(timeout=args.timeout, max_retries=args.max_retries)
         ctx = {'review_id': review_id, 'review_dir': review_dir, 'reviews_dir': reviews_dir,
-               'worktree': journal['worktree'], 'prompt': prompt, 'redact': redact_text}
-        session = {'harness': args.session_harness, 'model': args.session_model, 'effort': args.session_effort}
+               'worktree': journal['worktree'], 'prompt': prompt, 'redact': redact_text,
+               'effort': rr.HIGH_EFFORT if args.kind in ('independent', 'security') else rr.REVIEW_EFFORT}
         try:
-            evidence, selected, done = router.route(ctx, session)
+            evidence, selected, done = router.route(ctx)
         except RuntimeError as exc:
             raise Refusal(str(exc))
         meta = {'id': review_id, 'kind': args.kind, 'subject': subject, 'required': bool(args.required),
@@ -2283,21 +2281,17 @@ def cmd_review_run(args):
         if done:
             text, result, outcome, attempt_dir, probe = done
             sel = {'priority': selected['priority'], 'harness': selected['harness'], 'model': selected['model'],
-                   'effort': selected.get('effort') or 'session-default', 'resolved_model': probe.get('resolved_model'),
+                   'effort': selected['effort'], 'resolved_model': probe.get('resolved_model'),
                    'usage': next((c.get('usage') for c in meta['candidates'] if c.get('status') == 'selected'), None)}
             reviewer = '%s/%s@%s fresh session %s/%s' % (sel['harness'], sel['resolved_model'] or sel['model'],
                                                          sel['effort'], review_id, os.path.basename(attempt_dir))
             meta = complete_review(run_dir, journal, review_dir, meta, text, result, reviewer, sel)
-        elif evidence.get('outcome') == 'handoff':
-            output = os.path.join(review_dir, 'handoff-output.md')
-            meta.update(status='handoff', next=(
-                'Run %s in a fresh-context, read-only subagent of this session (same model and effort; never the '
-                'authoring conversation). Save its full answer to %s, then run: depup.py review record %s '
-                '--review-id %s --output %s --reviewer "<harness>/<model>@<effort>"'
-                % (os.path.join(review_dir, 'prompt.md'), output, args.run, review_id, output)))
+        elif done is None and meta.get('reason'):
+            meta.update(status='unavailable', reason=meta['reason'])
         else:
-            meta.update(status='unavailable', reason=meta.get('reason') or
-                        'no reviewer could complete this review (all candidates and the session fallback failed)')
+            last = (evidence.get('candidates') or [{}])[-1].get('reason') or 'no reason recorded'
+            meta.update(status='unavailable', reason=(
+                'Claude Opus 5.5 could not complete this review (%s); no fallback by policy' % last))
         evidence.update(finished=now(), entry_status=meta['status'])
         atomic_write(os.path.join(review_dir, 'routing.json'), json.dumps(redact_output(evidence), indent=2) + '\n')
         atomic_write(entry_path, json.dumps(redact_output(meta), indent=2) + '\n')
@@ -2320,35 +2314,6 @@ def pid_alive(pid):
         return False
     except OSError:
         return True  # exists but not ours
-
-
-def cmd_review_record(args):
-    """Bind a review the invoking session ran itself (priority-4 handoff) to the candidate."""
-    rr = review_router()
-    run_dir = run_dir_for(args.run)
-    journal = load_journal(run_dir)
-    if not SAFE_RUN_ID.match(args.review_id or ''):
-        raise Refusal('invalid review id')
-    review_dir = os.path.join(run_dir, 'reviews', args.review_id)
-    entry_path = os.path.join(review_dir, 'entry.json')
-    meta, error = read_json(entry_path)
-    if error or not isinstance(meta, dict) or meta.get('status') != 'handoff':
-        raise Refusal('review %s is not waiting for a session handoff' % args.review_id)
-    if candidate_head(journal) != meta.get('candidate_head'):
-        raise Refusal('the candidate changed since the review was prepared; run the review again')
-    if not (args.reviewer or '').strip():
-        raise Refusal('--reviewer must name the session harness/model@effort')
-    result, problem = rr.parse_result(read_text(args.output) or '')
-    if result is None:
-        meta.update(status='unavailable', reason='session review output invalid: %s' % problem)
-    else:
-        sel = {'priority': 4, 'harness': 'session-native', 'model': args.reviewer.strip(), 'effort': 'session',
-               'usage': 'unknown'}
-        meta = complete_review(run_dir, journal, review_dir, meta, read_text(args.output), result,
-                               '%s session-subagent %s' % (args.reviewer.strip(), args.review_id), sel)
-    meta.pop('next', None)
-    atomic_write(entry_path, json.dumps(redact_output(meta), indent=2) + '\n')
-    return dict(meta, entry=entry_path)
 
 
 def cmd_review_probe(args):
@@ -2463,11 +2428,10 @@ def cmd_planning_run(args):
         atomic_write(os.path.join(plan_dir, 'prompt.md'), prompt)
         router = (ROUTER_FACTORY or rr.Router)(timeout=args.timeout, max_retries=args.max_retries)
         ctx = {'review_id': plan_id, 'review_dir': plan_dir, 'reviews_dir': os.path.join(run_dir, 'reviews'),
-               'worktree': target, 'prompt': prompt, 'redact': redact_text,
+               'worktree': target, 'prompt': prompt, 'redact': redact_text, 'effort': rr.PLAN_EFFORT,
                'parse': lambda text: rr.parse_plan_result(text, args.kind)}
-        session = {'harness': args.session_harness, 'model': args.session_model, 'effort': args.session_effort}
         try:
-            evidence, selected, done = router.route(ctx, session)
+            evidence, selected, done = router.route(ctx)
         except RuntimeError as exc:
             raise Refusal(str(exc))
         meta = {'id': plan_id, 'kind': args.kind, 'subject': subject, 'head': head, 'target': target,
@@ -2481,22 +2445,17 @@ def cmd_planning_run(args):
         if done:
             text, result, outcome, attempt_dir, probe = done
             sel = {'priority': selected['priority'], 'harness': selected['harness'], 'model': selected['model'],
-                   'effort': selected.get('effort') or 'session-default', 'resolved_model': probe.get('resolved_model'),
+                   'effort': selected['effort'], 'resolved_model': probe.get('resolved_model'),
                    'usage': next((c.get('usage') for c in meta['candidates'] if c.get('status') == 'selected'), None)}
             planner = '%s/%s@%s fresh session %s/%s' % (sel['harness'], sel['resolved_model'] or sel['model'],
                                                         sel['effort'], plan_id, os.path.basename(attempt_dir))
             meta = complete_plan(run_dir, journal, plan_dir, meta, text, result, planner, sel)
-        elif evidence.get('outcome') == 'handoff':
-            output = os.path.join(plan_dir, 'handoff-output.md')
-            meta.update(status='handoff', reason='no routed planner completed; waiting for a session-native plan',
-                        next=(
-                'Run %s in a fresh-context, read-only subagent of this session (same model and effort; never the '
-                'authoring conversation). Save its full answer to %s, then run: depup.py planning record %s '
-                '--plan-id %s --output %s --planner "<harness>/<model>@<effort>"'
-                % (os.path.join(plan_dir, 'prompt.md'), output, args.run, plan_id, output)))
+        elif done is None and meta.get('reason'):
+            meta.update(status='unavailable', reason=meta['reason'])
         else:
-            meta.update(status='unavailable', reason=meta.get('reason') or
-                        'no planner could complete this task (all candidates and the session fallback failed)')
+            last = (evidence.get('candidates') or [{}])[-1].get('reason') or 'no reason recorded'
+            meta.update(status='unavailable', reason=(
+                'Claude Opus 5.5 could not complete this plan (%s); no fallback by policy' % last))
         evidence.update(finished=now(), entry_status=meta['status'])
         atomic_write(os.path.join(plan_dir, 'routing.json'), json.dumps(redact_output(evidence), indent=2) + '\n')
         atomic_write(entry_path, json.dumps(redact_output(meta), indent=2) + '\n')
@@ -2507,36 +2466,6 @@ def cmd_planning_run(args):
             os.unlink(lock)
         except OSError:
             pass
-
-
-def cmd_planning_record(args):
-    """Bind a plan the invoking session produced in a fresh native subagent (priority-4 handoff)."""
-    rr = review_router()
-    run_dir = run_dir_for(args.run)
-    journal = load_journal(run_dir)
-    if not SAFE_RUN_ID.match(args.plan_id or ''):
-        raise Refusal('invalid plan id')
-    plan_dir = os.path.join(run_dir, 'plans', args.plan_id)
-    entry_path = os.path.join(plan_dir, 'entry.json')
-    meta, error = read_json(entry_path)
-    if error or not isinstance(meta, dict) or meta.get('status') != 'handoff':
-        raise Refusal('planning task %s is not waiting for a session handoff' % args.plan_id)
-    if (git_state(planning_target(journal)).get('head') or 'none') != meta.get('head'):
-        raise Refusal('the repository head changed since the task was prepared; run planning again')
-    if not (args.planner or '').strip():
-        raise Refusal('--planner must name the session harness/model@effort')
-    text = read_text(args.output) or ''
-    result, problem = rr.parse_plan_result(text, meta.get('kind', 'plan'))
-    if result is None:
-        meta.update(status='unavailable', reason='session plan output invalid: %s' % problem)
-    else:
-        sel = {'priority': 4, 'harness': 'session-native', 'model': args.planner.strip(), 'effort': 'session',
-               'usage': 'unknown'}
-        meta = complete_plan(run_dir, journal, plan_dir, meta, text, result,
-                             '%s session-subagent %s' % (args.planner.strip(), args.plan_id), sel)
-    meta.pop('next', None)
-    atomic_write(entry_path, json.dumps(redact_output(meta), indent=2) + '\n')
-    return dict(meta, entry=entry_path)
 
 
 # ---------------------------------------------------------------- capabilities
@@ -2670,44 +2599,28 @@ def build_parser():
 
     review = sub.add_parser('review')
     vsub = review.add_subparsers(dest='review_command')
-    p = vsub.add_parser('run', help='one review task on one routed model (Opus 5.5 > DeepSeek > session)')
+    p = vsub.add_parser('run', help='one review task on Claude Opus 5.5 (no fallback)')
     p.add_argument('run')
     p.add_argument('--kind', required=True, help='critical | independent | security')
     p.add_argument('--subject', help='risk name (independent/security); critical defaults to full-diff')
     p.add_argument('--required', action='store_true', help='PASS is impossible unless this review completes and passes')
     p.add_argument('--context', help='plan or risk dossier file given to the reviewer as data')
-    p.add_argument('--session-harness', help='invoking harness (claude-code, opencode, ...)')
-    p.add_argument('--session-model', help='invoking session model id (final fallback)')
-    p.add_argument('--session-effort', help='invoking session effort (final fallback)')
     p.add_argument('--timeout', type=int, default=1800, help='seconds per reviewer attempt')
     p.add_argument('--max-retries', type=int, default=1, help='retries for transient service errors only')
     p.add_argument('--rerun', action='store_true', help='repeat a completed review of the same candidate')
-    p = vsub.add_parser('record', help='bind a session-native (handoff) review result')
-    p.add_argument('run')
-    p.add_argument('--review-id', required=True)
-    p.add_argument('--output', required=True)
-    p.add_argument('--reviewer', required=True)
     p = vsub.add_parser('probe', help='reviewer availability without model calls')
     p.add_argument('--run')
 
     planning = sub.add_parser('planning')
     psub = planning.add_subparsers(dest='planning_command')
-    p = psub.add_parser('run', help='architecture/planning on the review router\'s models (read-only, advisory)')
+    p = psub.add_parser('run', help='architecture/planning on Claude Opus 5.5 (no fallback; read-only, advisory)')
     p.add_argument('run')
     p.add_argument('--kind', default='plan', help='plan (whole upgrade, default) | architecture (one high-risk item)')
     p.add_argument('--subject', help='risk name (architecture); plan defaults to upgrade')
     p.add_argument('--context', required=True, help='handoff file: requirements, scope, constraints, findings')
-    p.add_argument('--session-harness', help='invoking harness (claude-code, opencode, ...)')
-    p.add_argument('--session-model', help='invoking session model id (final fallback)')
-    p.add_argument('--session-effort', help='invoking session effort (final fallback)')
     p.add_argument('--timeout', type=int, default=1800, help='seconds per planner attempt')
     p.add_argument('--max-retries', type=int, default=1, help='retries for transient service errors only')
     p.add_argument('--rerun', action='store_true', help='repeat a completed task with the same head and handoff')
-    p = psub.add_parser('record', help='bind a session-native (handoff) plan result')
-    p.add_argument('run')
-    p.add_argument('--plan-id', required=True)
-    p.add_argument('--output', required=True)
-    p.add_argument('--planner', required=True)
     return parser
 
 
@@ -2744,13 +2657,12 @@ def dispatch(args):
     if args.command == 'report':
         return cmd_report(args)
     if args.command == 'review':
-        handler = {'run': cmd_review_run, 'record': cmd_review_record,
-                   'probe': cmd_review_probe}.get(args.review_command)
+        handler = {'run': cmd_review_run, 'probe': cmd_review_probe}.get(args.review_command)
         if handler is None:
             raise SystemExit(2)
         return handler(args)
     if args.command == 'planning':
-        handler = {'run': cmd_planning_run, 'record': cmd_planning_record}.get(args.planning_command)
+        handler = {'run': cmd_planning_run}.get(args.planning_command)
         if handler is None:
             raise SystemExit(2)
         return handler(args)

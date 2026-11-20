@@ -2,7 +2,7 @@
 
 My AI-agent skills, kept in one place: development, automation, code quality and workflow management.
 
-Five skills I use across Claude Code and OpenCode. They live here so they survive a
+Eight skills I use across Claude Code and OpenCode. They live here so they survive a
 reinstall, stay reviewable, and move to another machine in one copy. Each folder is a standard
 Agent Skill: a `SKILL.md` plus the scripts, references and tests it needs. This is a personal
 workflow repository, not a supported product.
@@ -11,10 +11,13 @@ workflow repository, not a supported product.
 
 | Skill                                                        | What it does                                                                                                                                                                                         |
 | ------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [`consolidate`](skills/consolidate/)                         | Gets every unfinished branch, worktree, clone, stash and PR into `main`, verifies the result, then removes the rest once you approve.                                                                |
+| [`consolidate`](skills/consolidate/)                         | Gets every unfinished branch, worktree, clone, stash and PR into `main`, verifies the result, then deletes only what is proven to be in main, after a restore point.                                  |
 | [`dependency-upgrade`](skills/dependency-upgrade/)           | Upgrades a repository's dependencies end to end in an isolated worktree: research, plan, migrate, test, review, verify, deliver.                                                                     |
 | [`execution-protocol`](skills/execution-protocol/)           | Applies an always-on protocol to every development task: Opus 5.5 conducts in Claude Code and plans/gates through `scripts/gate.sh`; DeepSeek V4.1 Flash High implements through `scripts/implement.sh` (Sonnet 5.5 High only as its fallback); merges go through `scripts/premerge-and-merge.sh`. |
 | [`frontend-ui-ux-overhaul`](skills/frontend-ui-ux-overhaul/) | Audits and implements repository-wide frontend, responsive, accessibility, motion and design-system improvements.                                                                                    |
+| [`intrinsic-responsive-ui`](skills/intrinsic-responsive-ui/) | Guides fluid, container-aware responsive layouts built on intrinsic sizing rather than breakpoint patches.                                                                                            |
+| [`review-loop`](skills/review-loop/)                         | Runs an independent, evidence-backed review of a finished change before it lands, with risk tiers and a three-round cap.                                                                             |
+| [`safe-switch`](skills/safe-switch/)                         | Hands the current work off losslessly to a fresh background Claude Code session, on explicit request only.                                                                                           |
 | [`sync-agent-instructions`](skills/sync-agent-instructions/) | Rewrites a repository's `AGENTS.md` from past sessions, git history and the code, keeping `CLAUDE.md` as an `@AGENTS.md` import.                                                                     |
 
 ## Layout
@@ -27,7 +30,10 @@ skills/
 │                              review-schema.json, opencode/, scripts/ (gate.sh, implement.sh,
 │                              implement_lib.py, premerge-and-merge.sh), tests/ (smoke.sh, implement-smoke.sh)
 ├── frontend-ui-ux-overhaul/   SKILL.md, routing.json
-└── sync-agent-instructions/   SKILL.md, scripts/collect_sessions.py
+├── intrinsic-responsive-ui/   SKILL.md
+├── review-loop/               SKILL.md
+├── safe-switch/               SKILL.md
+└── sync-agent-instructions/   SKILL.md, scripts/collect_sessions.py, tests/
 ```
 
 `consolidate` and `frontend-ui-ux-overhaul` delegate their planning and review tasks to
@@ -51,7 +57,7 @@ Claude Code reads only `~/.claude/skills`, so link each skill there once:
 
 ```sh
 cd ~/.claude/skills
-for s in consolidate dependency-upgrade execution-protocol frontend-ui-ux-overhaul sync-agent-instructions; do
+for s in consolidate dependency-upgrade execution-protocol frontend-ui-ux-overhaul intrinsic-responsive-ui review-loop safe-switch sync-agent-instructions; do
   [ -e "$s" ] || ln -s ../../.agents/skills/$s $s
 done
 ```
@@ -78,6 +84,9 @@ out of quota; without it the gates use the account `claude` is signed in with.
 | `dependency-upgrade`      | `/dependency-upgrade [upgrade\|plan\|verify\|resume\|rollback\|status] [scope]` |
 | `execution-protocol`      | Always on (part of every development task)                                      |
 | `frontend-ui-ux-overhaul` | `Run frontend-ui-ux-overhaul.`                                                  |
+| `intrinsic-responsive-ui` | `Use intrinsic-responsive-ui.`                                                  |
+| `review-loop`             | `Review this change with review-loop.`                                          |
+| `safe-switch`             | `Safe Switch`                                                                   |
 | `sync-agent-instructions` | `sync AGENTS.md`                                                                |
 
 `dependency-upgrade` runs only when named explicitly; a casual "update my dependencies" gets a
@@ -88,6 +97,7 @@ read-only plan instead. Details and harness notes are in its
 
 ```sh
 python3 -m unittest discover -s skills/dependency-upgrade/tests -t skills/dependency-upgrade
+python3 -m unittest discover -s skills/sync-agent-instructions/tests -t skills/sync-agent-instructions
 bash skills/execution-protocol/tests/smoke.sh
 ```
 

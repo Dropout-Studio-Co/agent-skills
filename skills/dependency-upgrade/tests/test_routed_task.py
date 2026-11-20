@@ -1,8 +1,8 @@
 """routed_task.py: the shared router applied to consolidate and frontend-ui-ux-overhaul.
 
-Planning and review tasks for other skills run through the same review_router.Router (priority, probes,
-fallback, isolation). Every CLI is mocked through the review-router fakes; no test makes a model call.
-The real skill profiles (<skills>/<skill>/routing.json) are loaded.
+Planning and review tasks for other skills run through the same review_router.Router (one route:
+Claude Opus 5.5, no fallback, isolation). Every CLI is mocked through the review-router fakes;
+no test makes a model call. The real skill profiles (<skills>/<skill>/routing.json) are loaded.
 """
 import contextlib
 import io
@@ -10,7 +10,7 @@ import json
 import os
 
 from tests.support import SKILL_DIR, TempCase, git_init, load, sh, write
-from tests.test_review_router import (GOOD, OPENCODE_MODELS, FakeHarnesses, claude_result, fail, make_router)
+from tests.test_review_router import GOOD, FakeHarnesses, claude_result, fail, make_router
 from tests.test_planning_router import PLAN_TEXT
 
 rt = load('routed_task_under_test', 'scripts/routed_task.py')
@@ -19,7 +19,6 @@ SKILLS = os.path.dirname(SKILL_DIR)
 FAIL = ('Found a lost change.\n%s\n{"verdict": "fail", "summary": "lost work", "findings": [{"severity": '
         '"Important", "file": "feature", "line": 1, "summary": "stash@{0} not in main", "scenario": "dropped"}]}\n%s\n'
         % (rr.RESULT_BEGIN, rr.RESULT_END))
-SESSION = ('--session-harness', 'claude-code', '--session-model', 'claude-opus-5-5', '--session-effort', 'high')
 
 
 class RoutedCase(TempCase):
@@ -79,38 +78,57 @@ class ProfileTests(RoutedCase):
             with open(os.path.join(SKILLS, skill, 'SKILL.md'), encoding='utf-8') as handle:
                 text = handle.read()
             self.assertIn('routed_task.py', text)
-            for model in ('Opus 5.5', 'DeepSeek V4.1 Flash 1017'):
-                self.assertIn(model, text)
+            for required in ('Opus 5.5', 'xhigh'):
+                self.assertIn(required, text)
+            self.assertNotIn('DeepSeek', text)
+            self.assertNotIn('--session-', text)
         self.assertEqual(rt.load_profile('consolidate')['review_kinds']['reconciliation']['evidence'], 'git-inventory')
+        self.assertEqual(rt.load_profile('consolidate')['review_kinds']['reconciliation']['effort'], 'high')
+
+    def test_specialist_skill_does_not_use_a_fallback_model(self):
+        with open(os.path.join(SKILLS, 'frontend-ui-ux-overhaul', 'SKILL.md'), encoding='utf-8') as handle:
+            text = handle.read()
+        self.assertNotIn('DeepSeek', text)
+        self.assertNotIn('--session-', text)
+
+    def test_invalid_profile_effort_is_refused(self):
+        skills = os.path.join(self.tmp, 'skills')
+        os.makedirs(os.path.join(skills, 'demo'))
+        write(os.path.join(skills, 'demo', 'routing.json'), {
+            'skill': 'demo', 'plan_kinds': {'plan': 'x'},
+            'review_kinds': {'code': {'focus': 'x', 'effort': 'max'}}})
+        os.environ['AGENT_ROUTING_SKILLS_DIR'] = skills
+        with self.assertRaises(rt.Refusal):
+            rt.load_profile('demo')
 
     def test_unknown_skill_or_kind_refused(self):
         code, out = self.rt('start', '--skill', 'no-such-skill', '--repo', self.repo)
         self.assertEqual(code, 1)
         self.assertIn('no routing profile', out['error'])
         run = self.start('consolidate')
-        code, out = self.rt('review', run, '--kind', 'ui-ux', '--base', self.base, *SESSION)
+        code, out = self.rt('review', run, '--kind', 'ui-ux', '--base', self.base)
         self.assertEqual(code, 1)
         self.assertIn('--kind must be one of', out['error'])
 
 
 class PlanningTests(RoutedCase):
 
-    def test_1_5_opus_medium_plans_once_read_only_with_isolated_redacted_handoff(self):
+    def test_1_5_opus_xhigh_plans_once_read_only_with_isolated_redacted_handoff(self):
         run = self.start('consolidate')
         fake = FakeHarnesses(self.tmp, reviews={'claude-code': [{'stdout': claude_result(PLAN_TEXT)},
                                                                 {'stdout': claude_result(PLAN_TEXT)}]})
         self.use(fake)
-        code, entry = self.rt('plan', run, '--context', self.handoff(), *SESSION)
+        code, entry = self.rt('plan', run, '--context', self.handoff())
         self.assertEqual(code, 0, entry)
         self.assertEqual(entry['status'], 'completed')
         self.assertTrue(entry['advisory'])
         self.assertEqual((entry['selected']['harness'], entry['selected']['model'], entry['selected']['effort']),
-                         ('claude-code', 'claude-opus-5-5', 'medium'))
+                         ('claude-code', 'claude-opus-5-5', 'xhigh'))
         calls = fake.review_calls()
         self.assertEqual(len(calls), 1, 'exactly one model for the task')
         argv = calls[0]
         self.assertEqual(argv[argv.index('--tools') + 1], 'Read,Grep,Glob')
-        self.assertEqual(argv[argv.index('--effort') + 1], 'medium')
+        self.assertEqual(argv[argv.index('--effort') + 1], 'xhigh')
         self.assertIn('--strict-mcp-config', argv, 'no user MCP servers in reviewer/planner sessions')
         task_dir = os.path.dirname(entry['entry'])
         self.assertTrue(fake.cwds[fake.calls.index(argv)].startswith(task_dir), 'fresh session outside the repo')
@@ -119,131 +137,98 @@ class PlanningTests(RoutedCase):
             prompt = handle.read()
         self.assertIn('authorizes nothing', prompt)
         self.assertIn('consolidate skill', prompt)
-        self.assertIn('Mandatory user approval', prompt, 'binding rules are handed off')
+        self.assertIn('proven in main', prompt, 'binding rules are handed off')
+        self.assertIn('restore point', prompt)
+        self.assertNotIn('Mandatory user approval', prompt)
         with open(os.path.join(task_dir, 'context.md'), encoding='utf-8') as handle:
             context = handle.read()
         self.assertIn('keep main design', context)
         self.assertNotIn('SECRET-TOKEN-VALUE', context)
         self.assertEqual(sh(['git', 'status', '--porcelain'], self.repo).stdout, '', 'planner never writes')
-        _, again = self.rt('plan', run, '--context', self.handoff(), *SESSION)
+        _, again = self.rt('plan', run, '--context', self.handoff())
         self.assertTrue(again['reused'])
         self.assertEqual(len(fake.review_calls()), 1, 'unchanged tree + handoff: no replan')
-        _, changed = self.rt('plan', run, '--context', self.handoff('requirements: new scope\n'), *SESSION)
+        _, changed = self.rt('plan', run, '--context', self.handoff('requirements: new scope\n'))
         self.assertFalse(changed.get('reused'), 'material change replans')
 
     def test_6_high_risk_architecture_task_needs_a_subject(self):
         run = self.start('frontend-ui-ux-overhaul')
-        code, out = self.rt('plan', run, '--context', self.handoff(), '--kind', 'architecture', *SESSION)
+        code, out = self.rt('plan', run, '--context', self.handoff(), '--kind', 'architecture')
         self.assertEqual(code, 1)
         self.assertIn('--subject', out['error'])
         self.use(FakeHarnesses(self.tmp, reviews={'claude-code': [{'stdout': claude_result(PLAN_TEXT)}]}))
         code, entry = self.rt('plan', run, '--context', self.handoff(), '--kind', 'architecture',
-                              '--subject', 'shared Button primitive', *SESSION)
+                              '--subject', 'shared Button primitive')
         self.assertEqual((code, entry['status'], entry['kind']), (0, 'completed', 'architecture'))
         with open(os.path.join(os.path.dirname(entry['entry']), 'prompt.md'), encoding='utf-8') as handle:
             self.assertIn('shared design-system primitive', handle.read())
 
-    def test_2_every_fallback_stage_including_the_invoking_session(self):
+    def test_2_missing_claude_is_unavailable_without_fallback(self):
         run = self.start('consolidate')
-        self.use(FakeHarnesses(self.tmp, missing={'claude'}, reviews={'opencode': [{'stdout': json.dumps(
-            {'type': 'text', 'part': {'text': PLAN_TEXT}})}]}))
-        _, entry = self.rt('plan', run, '--context', self.handoff('a\n'), *SESSION)
-        self.assertEqual((entry['selected']['harness'], entry['selected']['model'], entry['selected']['effort']),
-                         ('opencode', 'deepseek-v4.1-flash', 'high'))
-        self.assertEqual(entry['candidates'][0]['reason'], 'missing-cli')
-
-        fake = FakeHarnesses(self.tmp, missing={'claude'}, opencode_models={'data': [OPENCODE_MODELS['data'][1]]},
-                             reviews={'opencode': [{'stdout': json.dumps(
-                                 {'type': 'text', 'part': {'text': PLAN_TEXT}})}]})
+        fake = FakeHarnesses(self.tmp, missing={'claude'})
         self.use(fake)
-        _, entry = self.rt('plan', run, '--context', self.handoff('c\n'), '--session-harness', 'opencode',
-                           '--session-model', 'some-provider/session-model', '--session-effort', 'high')
-        self.assertEqual((entry['selected']['priority'], entry['selected']['harness'], entry['selected']['model']),
-                         (4, 'opencode', 'some-provider/session-model'))
-        argv = fake.review_calls()[-1]
-        self.assertEqual(argv[argv.index('--model') + 1], 'some-provider/session-model#high',
-                         'session effort preserved')
+        _, entry = self.rt('plan', run, '--context', self.handoff())
+        self.assertEqual(entry['status'], 'unavailable')
+        self.assertIn('Claude Opus 5.5 could not complete', entry['reason'])
+        self.assertIn('no fallback', entry['reason'])
+        self.assertEqual(fake.review_calls(), [])
+        self.assertFalse([c for c in fake.calls if c and c[0] == 'opencode'])
 
 
 class RoutingFailureTests(RoutedCase):
 
     def review(self, run, fake, *extra):
         self.use(fake)
-        return self.rt('review', run, '--kind', 'code', '--base', self.base, *(extra + SESSION))
+        return self.rt('review', run, '--kind', 'code', '--base', self.base, *extra)
 
     def test_3_unknown_quota_is_attempted_not_skipped(self):
         run = self.start('frontend-ui-ux-overhaul')
         fake = FakeHarnesses(self.tmp, reviews={'claude-code': [{'stdout': claude_result(GOOD)}]})
         _, entry = self.review(run, fake)
         self.assertEqual(entry['candidates'][0]['status'], 'selected')
-        self.assertFalse([c for c in fake.calls if c[:3] == ['opencode', 'api', 'model.list']],
-                         'no lower probe, no preliminary call')
+        self.assertEqual(len(fake.review_calls()), 1, 'no preliminary call')
 
-    def test_3_auth_failure_exhaustion_and_unsupported_model_fall_back_without_substitution(self):
+    def test_3_auth_failure_is_unavailable_without_fallback(self):
         run = self.start('frontend-ui-ux-overhaul')
-        models = {'data': [{'id': 'deepseek-v4.1-flash-preview', 'providerID': 'opencode-go', 'status': 'active',
-                            'variants': [{'id': 'high'}]}]}
-        fake = FakeHarnesses(self.tmp, claude_logged_in=False, opencode_models=models,
-                             reviews={'claude-code': [{'stdout': claude_result(GOOD)}]})
+        fake = FakeHarnesses(self.tmp, claude_logged_in=False)
         _, entry = self.review(run, fake)
-        reasons = [c['reason'] for c in entry['candidates']]
-        self.assertEqual(reasons[0], 'not-authenticated')
-        self.assertEqual(reasons[1], 'unsupported-model', 'a near id is never substituted')
-        self.assertEqual(entry['selected']['priority'], 4, 'invoking session (Claude Code, its own model/effort)')
-        argv = fake.review_calls()[-1]
-        self.assertEqual((argv[argv.index('--model') + 1], argv[argv.index('--effort') + 1]),
-                         ('claude-opus-5-5', 'high'))
+        self.assertEqual(entry['status'], 'unavailable')
+        self.assertEqual(entry['candidates'][0]['reason'], 'not-authenticated')
+        self.assertEqual(fake.review_calls(), [], 'a self-review never replaces the unavailable review')
 
-    def test_4_mid_task_exhaustion_and_bounded_transient_retries(self):
+    def test_4_mid_task_exhaustion_and_bounded_transient_retries_block(self):
         run = self.start('frontend-ui-ux-overhaul')
         rejected = claude_result('partial', error=True, status='rejected')
-        fake = FakeHarnesses(self.tmp, reviews={'claude-code': [{'stdout': rejected, 'rc': 1}],
-                                                'opencode': [{'stdout': json.dumps(
-                                                    {'type': 'text', 'part': {'text': GOOD}})}]})
+        fake = FakeHarnesses(self.tmp, reviews={'claude-code': [{'stdout': rejected, 'rc': 1}]})
         _, entry = self.review(run, fake)
-        self.assertEqual(entry['selected']['model'], 'deepseek-v4.1-flash')
+        self.assertEqual(entry['status'], 'unavailable')
         self.assertEqual(entry['candidates'][0]['attempts'][0]['category'], 'exhausted')
         attempts = os.path.join(os.path.dirname(entry['entry']), 'attempts')
         self.assertTrue(any(os.path.isfile(os.path.join(attempts, d, 'DISCARDED')) for d in os.listdir(attempts)))
 
         run = self.start('frontend-ui-ux-overhaul')  # fresh run: the exhaustion above is remembered per run
         busy = fail(stderr='529 overloaded')
-        fake = FakeHarnesses(self.tmp, reviews={'claude-code': [busy, busy],
-                                                'opencode': [{'stdout': json.dumps(
-                                                    {'type': 'text', 'part': {'text': GOOD}})}]})
+        fake = FakeHarnesses(self.tmp, reviews={'claude-code': [busy, busy]})
         _, entry = self.review(run, fake)
-        self.assertEqual(len(entry['candidates'][0]['attempts']), 2, 'one retry, then fall back')
-        self.assertEqual(entry['selected']['model'], 'deepseek-v4.1-flash')
+        self.assertEqual(len(entry['candidates'][0]['attempts']), 2, 'one retry, then block')
+        self.assertEqual(entry['status'], 'unavailable')
         self.assertEqual(len(fake.sleeps), 1)
 
-    def test_11_harness_compatibility(self):
+    def test_11_session_flags_and_record_are_gone(self):
         run = self.start('consolidate')
-        code, out = self.rt('review', run, '--kind', 'code', '--base', self.base, '--session-harness', 'opencode')
-        self.assertEqual(code, 1)
-        self.assertIn('--session-model', out['error'], 'adapter harness must name its model')
-        fake = FakeHarnesses(self.tmp, missing={'claude', 'opencode'})
-        self.use(fake)
-        code, entry = self.rt('review', run, '--kind', 'code', '--base', self.base, '--session-harness', 'pi',
-                              '--session-model', 'x')
-        self.assertEqual(entry['status'], 'handoff', 'pi has no adapter: hand off like any other harness')
-        self.assertFalse([c for c in fake.calls if c and c[0] == 'pi'])
-        code, entry = self.rt('review', run, '--kind', 'code', '--base', self.base, '--session-harness', 'freebuff',
-                              '--session-model', 'x')
-        self.assertEqual(entry['status'], 'handoff', 'a harness without an adapter hands off to a native subagent')
-        self.assertIn('routed_task.py record', entry['next'])
-        out = os.path.join(self.tmp, 'native.md')
-        write(out, GOOD)
-        code, recorded = self.rt('record', run, '--task-id', entry['id'], '--output', out, '--by', 'freebuff/x@high')
-        self.assertEqual((code, recorded['status'], recorded['verdict']), (0, 'completed', 'pass'))
-        code, again = self.rt('record', run, '--task-id', entry['id'], '--output', out, '--by', 'freebuff/x@high')
-        self.assertEqual(code, 1, 'only a pending handoff can be recorded')
+        for argv in (('review', run, '--kind', 'code', '--base', self.base, '--session-harness', 'opencode'),
+                     ('record', run, '--task-id', 'x', '--output', 'x', '--by', 'x')):
+            with self.subTest(argv):
+                with self.assertRaises(SystemExit) as raised:
+                    rt.main(list(argv))
+                self.assertEqual(raised.exception.code, 2)
 
     def test_nested_orchestration_refused(self):
         run = self.start('consolidate')
         os.environ[rr.GUARD_ENV] = '1'
         self.addCleanup(os.environ.pop, rr.GUARD_ENV, None)
         rt.ROUTER_FACTORY = None
-        code, out = self.rt('review', run, '--kind', 'code', '--base', self.base, *SESSION)
+        code, out = self.rt('review', run, '--kind', 'code', '--base', self.base)
         self.assertEqual(code, 1)
         self.assertIn('nested', out['error'])
 
@@ -259,7 +244,7 @@ class ReviewGateTests(RoutedCase):
 
         fake = FakeHarnesses(self.tmp, reviews={'claude-code': [{'stdout': claude_result(FAIL)}]})
         self.use(fake)
-        _, entry = self.rt('review', run, '--kind', 'code', '--base', self.base, '--required', *SESSION)
+        _, entry = self.rt('review', run, '--kind', 'code', '--base', self.base, '--required')
         self.assertEqual(entry['verdict'], 'fail')
         code, gate = self.rt('gate', run)
         self.assertEqual(code, 1, 'required review declared once stays required')
@@ -269,11 +254,11 @@ class ReviewGateTests(RoutedCase):
         self.assertIn('not run', stale['problems'][0], 'the old candidate\'s review never counts')
         fake = FakeHarnesses(self.tmp, reviews={'claude-code': [{'stdout': claude_result(GOOD)}]})
         self.use(fake)
-        _, entry = self.rt('review', run, '--kind', 'code', '--base', self.base, '--required', *SESSION)
+        _, entry = self.rt('review', run, '--kind', 'code', '--base', self.base, '--required')
         self.assertEqual(entry['verdict'], 'pass')
         code, gate = self.rt('gate', run)
         self.assertEqual((code, gate['ok']), (0, True))
-        _, again = self.rt('review', run, '--kind', 'code', '--base', self.base, '--required', *SESSION)
+        _, again = self.rt('review', run, '--kind', 'code', '--base', self.base, '--required')
         self.assertTrue(again['reused'])
         self.assertEqual(len(fake.review_calls()), 1, 'unchanged candidate: no second review')
 
@@ -282,17 +267,34 @@ class ReviewGateTests(RoutedCase):
 
     def test_7_unavailable_required_review_blocks(self):
         run = self.start('frontend-ui-ux-overhaul')
-        bad = fail(stderr='not logged in')
-        self.use(FakeHarnesses(self.tmp, missing={'opencode'},
-                               reviews={'claude-code': [bad, bad]}))
-        _, entry = self.rt('review', run, '--kind', 'code', '--base', self.base, '--required', *SESSION)
+        self.use(FakeHarnesses(self.tmp, missing={'claude'}))
+        _, entry = self.rt('review', run, '--kind', 'code', '--base', self.base, '--required')
         self.assertEqual(entry['status'], 'unavailable')
+        self.assertIn('no fallback', entry['reason'])
         self.assertEqual(self.rt('gate', run)[0], 1)
+
+    def test_a_required_high_review_is_not_satisfied_by_a_medium_pass(self):
+        run = self.start('frontend-ui-ux-overhaul')
+        self.commit('app.js', 'export const a = 2;\n')
+        fake = FakeHarnesses(self.tmp, reviews={'claude-code': [{'stdout': claude_result(FAIL)},
+                                                                {'stdout': claude_result(GOOD)},
+                                                                {'stdout': claude_result(GOOD)}]})
+        self.use(fake)
+        _, entry = self.rt('review', run, '--kind', 'code', '--base', self.base, '--required', '--high')
+        self.assertEqual((entry['selected']['effort'], entry['verdict']), ('high', 'fail'))
+        _, medium = self.rt('review', run, '--kind', 'code', '--base', self.base, '--rerun')
+        self.assertEqual((medium['selected']['effort'], medium['verdict']), ('medium', 'pass'))
+        code, gate = self.rt('gate', run, '--require', 'code')
+        self.assertEqual(code, 1, 'a medium pass never satisfies a required high review')
+        self.assertIn('review ran at medium but high is required', ' '.join(gate['problems']))
+        _, high = self.rt('review', run, '--kind', 'code', '--base', self.base, '--high', '--rerun')
+        self.assertEqual((high['selected']['effort'], high['verdict']), ('high', 'pass'))
+        self.assertEqual(self.rt('gate', run, '--require', 'code')[0], 0)
 
     def test_tampered_review_artifact_does_not_satisfy_the_gate(self):
         run = self.start('frontend-ui-ux-overhaul')
         self.use(FakeHarnesses(self.tmp, reviews={'claude-code': [{'stdout': claude_result(GOOD)}]}))
-        _, entry = self.rt('review', run, '--kind', 'code', '--base', self.base, '--required', *SESSION)
+        _, entry = self.rt('review', run, '--kind', 'code', '--base', self.base, '--required')
         with open(os.path.join(os.path.dirname(entry['entry']), 'review.md'), 'a', encoding='utf-8') as handle:
             handle.write('edited by the author\n')
         self.assertEqual(self.rt('gate', run)[0], 1)
@@ -300,10 +302,30 @@ class ReviewGateTests(RoutedCase):
 
 class SkillSpecificTests(RoutedCase):
 
+    def test_review_effort_default_profile_and_flag(self):
+        run = self.start('frontend-ui-ux-overhaul')
+        self.commit('app.js', 'export const a = 2;\n')
+        fake = FakeHarnesses(self.tmp, reviews={'claude-code': [{'stdout': claude_result(GOOD)},
+                                                                {'stdout': claude_result(GOOD)},
+                                                                {'stdout': claude_result(GOOD)}]})
+        self.use(fake)
+        _, medium = self.rt('review', run, '--kind', 'code', '--base', self.base)
+        self.assertEqual(medium['selected']['effort'], 'medium')
+        _, high = self.rt('review', run, '--kind', 'code', '--base', self.base, '--high')
+        self.assertEqual(high['selected']['effort'], 'high')
+        self.assertFalse(high.get('reused'), 'a high run is never reused from a medium one')
+        runs = self.start('consolidate')
+        _, reconciliation = self.rt('review', runs, '--kind', 'reconciliation')
+        self.assertEqual(reconciliation['selected']['effort'], 'high')
+
+    def test_frontend_profile_requires_lighthouse_evidence(self):
+        rules = rt.load_profile('frontend-ui-ux-overhaul')['rules']
+        self.assertTrue(any('Lighthouse 13' in rule for rule in rules), rules)
+
     def test_10_frontend_visual_reviews_need_rendered_evidence_or_an_honest_absence(self):
         run = self.start('frontend-ui-ux-overhaul')
         for kind in ('ui-ux', 'accessibility'):
-            code, out = self.rt('review', run, '--kind', kind, '--base', self.base, *SESSION)
+            code, out = self.rt('review', run, '--kind', kind, '--base', self.base)
             self.assertEqual(code, 1)
             self.assertIn('--rendered-evidence', out['error'])
         manifest = os.path.join(self.tmp, 'rendered.md')
@@ -312,14 +334,14 @@ class SkillSpecificTests(RoutedCase):
                                                                 {'stdout': claude_result(GOOD)}]})
         self.use(fake)
         _, entry = self.rt('review', run, '--kind', 'ui-ux', '--base', self.base, '--rendered-evidence', manifest,
-                           '--required', *SESSION)
+                           '--required')
         self.assertEqual((entry['status'], entry['rendered_evidence']), ('completed', 'manifest'))
         with open(os.path.join(os.path.dirname(entry['entry']), 'prompt.md'), encoding='utf-8') as handle:
             prompt = handle.read()
         self.assertIn('Rendered/browser evidence manifest', prompt)
         self.assertIn('never claim that check happened', prompt)
         _, entry = self.rt('review', run, '--kind', 'accessibility', '--base', self.base,
-                           '--no-rendered-evidence', 'no browser in this sandbox', *SESSION)
+                           '--no-rendered-evidence', 'no browser in this sandbox')
         self.assertEqual(entry['rendered_evidence'], 'none: no browser in this sandbox')
         with open(os.path.join(os.path.dirname(entry['entry']), 'rendered.txt'), encoding='utf-8') as handle:
             self.assertIn('Visual verification did not happen', handle.read())
@@ -336,10 +358,12 @@ class SkillSpecificTests(RoutedCase):
         run = self.start('consolidate')
         fake = FakeHarnesses(self.tmp, reviews={'claude-code': [{'stdout': claude_result(GOOD)}]})
         self.use(fake)
-        ledger = self.handoff('feature: discard approved by user 2026-11-04\nstash@{0}: discard approved\n')
+        ledger = self.handoff('feature: proven in main at lib/feature.js:1 (commit abc1234)\n'
+                              'stash@{0}: proven in main at lib/app.js:1 (commit abc1234)\n')
         code, entry = self.rt('review', run, '--kind', 'reconciliation', '--base', self.base, '--context', ledger,
-                              '--location', clone, '--required', *SESSION)
+                              '--location', clone, '--required')
         self.assertEqual((code, entry['status']), (0, 'completed'), entry)
+        self.assertEqual(entry['selected']['effort'], 'high')
         with open(os.path.join(os.path.dirname(entry['entry']), 'git-inventory.md'), encoding='utf-8') as handle:
             inventory = handle.read()
         self.assertIn('refs/heads/feature ahead=1 unique=1', inventory)
@@ -354,8 +378,7 @@ class SkillSpecificTests(RoutedCase):
     def test_12_dependency_upgrade_router_is_shared_not_copied(self):
         self.assertEqual(os.path.realpath(rr.__file__), os.path.join(SKILL_DIR, 'scripts', 'review_router.py'))
         self.assertEqual([(c['model'], c['effort'], c['harness']) for c in rr.PREFERRED],
-                         [('claude-opus-5-5', 'medium', 'claude-code'),
-                          ('deepseek-v4.1-flash', 'high', 'opencode')])
+                         [('claude-opus-5-5', 'medium', 'claude-code')])
         with open(os.path.join(SKILL_DIR, 'scripts', 'routed_task.py'), encoding='utf-8') as handle:
             source = handle.read()
         self.assertNotIn('class Router', source, 'no second router implementation')
@@ -367,12 +390,10 @@ class ReviewFindingRegressionTests(RoutedCase):
     def test_rerun_without_required_never_downgrades_and_unavailable_latest_blocks(self):
         run = self.start('frontend-ui-ux-overhaul')
         self.use(FakeHarnesses(self.tmp, reviews={'claude-code': [{'stdout': claude_result(GOOD)}]}))
-        self.rt('review', run, '--kind', 'code', '--required', *SESSION)
+        self.rt('review', run, '--kind', 'code', '--required')
         self.assertEqual(self.rt('gate', run)[0], 0)
-        bad = fail(stderr='not logged in')
-        self.use(FakeHarnesses(self.tmp, missing={'opencode'},
-                               reviews={'claude-code': [bad, bad]}))
-        _, entry = self.rt('review', run, '--kind', 'code', '--rerun', *SESSION)  # forgot --required
+        self.use(FakeHarnesses(self.tmp, missing={'claude'}))
+        _, entry = self.rt('review', run, '--kind', 'code', '--rerun')  # forgot --required
         self.assertEqual(entry['status'], 'unavailable')
         self.assertTrue(entry['required'], 'rerun keeps the required flag')
         code, gate = self.rt('gate', run)
@@ -381,17 +402,15 @@ class ReviewFindingRegressionTests(RoutedCase):
     def test_newer_context_that_cannot_be_reviewed_blocks_an_older_pass(self):
         run = self.start('consolidate')
         self.use(FakeHarnesses(self.tmp, reviews={'claude-code': [{'stdout': claude_result(GOOD)}]}))
-        self.rt('review', run, '--kind', 'reconciliation', '--required', '--context', self.handoff('ledger A\n'),
-                *SESSION)
-        self.use(FakeHarnesses(self.tmp, missing={'claude', 'opencode'}))
-        self.rt('review', run, '--kind', 'reconciliation', '--required', '--context', self.handoff('ledger B\n'),
-                '--session-harness', 'freebuff', '--session-model', 'x')
+        self.rt('review', run, '--kind', 'reconciliation', '--required', '--context', self.handoff('ledger A\n'))
+        self.use(FakeHarnesses(self.tmp, missing={'claude'}))
+        self.rt('review', run, '--kind', 'reconciliation', '--required', '--context', self.handoff('ledger B\n'))
         self.assertEqual(self.rt('gate', run)[0], 1)
 
     def test_base_is_bound_to_the_run(self):
         run = self.start('frontend-ui-ux-overhaul')
         self.commit('app.js', 'export const a = 5;\n')
-        code, out = self.rt('review', run, '--kind', 'code', '--base', 'HEAD', *SESSION)
+        code, out = self.rt('review', run, '--kind', 'code', '--base', 'HEAD')
         self.assertEqual(code, 1)
         self.assertIn('differs from the run base', out['error'])
 
@@ -410,7 +429,7 @@ class ReviewFindingRegressionTests(RoutedCase):
         run = self.start('consolidate')
         fake = FakeHarnesses(self.tmp, reviews={'claude-code': [{'stdout': claude_result(GOOD)}]})
         self.use(fake)
-        _, entry = self.rt('review', run, '--kind', 'reconciliation', '--required', '--location', 'wt', *SESSION)
+        _, entry = self.rt('review', run, '--kind', 'reconciliation', '--required', '--location', 'wt')
         with open(os.path.join(os.path.dirname(entry['entry']), 'git-inventory.md'), encoding='utf-8') as handle:
             text = handle.read()
         for marker in ('UNIQUE-PATCH-LINE', 'STASHED-LINE', 'WORKTREE-EDIT'):
@@ -430,10 +449,10 @@ class ReviewFindingRegressionTests(RoutedCase):
         write(manifest, 'mobile 390x844: %s\nmissing: /nonexistent/x.png\nbuilt with env from %s\n' % (shot, secret))
         run = self.start('frontend-ui-ux-overhaul')
         self.use(FakeHarnesses(self.tmp, reviews={'claude-code': [{'stdout': claude_result(GOOD)}] * 2}))
-        _, entry = self.rt('review', run, '--kind', 'ui-ux', '--rendered-evidence', manifest, *SESSION)
+        _, entry = self.rt('review', run, '--kind', 'ui-ux', '--rendered-evidence', manifest)
         task_dir = os.path.dirname(entry['entry'])
         copied = os.listdir(os.path.join(task_dir, 'rendered-files'))
         self.assertEqual(copied, ['01-mobile.png'])  # the secret file named in the manifest is never copied
         write(shot, 'NEW-SCREENSHOT')  # new screenshot = new review, not a reuse
-        _, again = self.rt('review', run, '--kind', 'ui-ux', '--rendered-evidence', manifest, *SESSION)
+        _, again = self.rt('review', run, '--kind', 'ui-ux', '--rendered-evidence', manifest)
         self.assertFalse(again.get('reused'))
