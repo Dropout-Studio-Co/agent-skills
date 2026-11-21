@@ -186,7 +186,7 @@ class ConsultTests(RoutedCase):
 
     def consult(self, run, *extra):
         return self.rt('plan', run, '--context', self.handoff(), '--kind', 'consult',
-                       '--subject', 'is branch x still needed', *extra)
+                       '--subject', 'consult-1', *extra)
 
     def test_consult_runs_once_on_opus_high_read_only(self):
         run = self.start('consolidate')
@@ -260,8 +260,9 @@ class ConsultTests(RoutedCase):
             text = handle.read()
         self.assertIn('--kind consult', text)
         self.assertIn('selected.effort', text)
-        self.assertNotIn('Triggers, and only these', text)
         self.assertIn('--kind consult --subject consult-<n>', text)
+        self.assertIn('still wanted', text)
+        self.assertIn('returns through PLAN', text)
         step2 = text[text.index('STEP 2 \u2014 RECONCILE'):text.index('STEP 3 \u2014 VERIFY')]
         for required in ('build or test failure', 'do not push', 'git status --porcelain'):
             self.assertIn(required, step2)
