@@ -8,7 +8,7 @@ prepares inputs, binds the result to the candidate and writes the evidence.
 
 | Model | Effort by task kind | Harness |
 | --- | --- | --- |
-| Claude Opus 5.5 (`claude-opus-5-5`) | `xhigh` for plans and architecture; `medium` for critical reviews; `high` for independent, security or high-tier reviews | Claude Code `claude -p` |
+| Claude Opus 5.5 (`claude-opus-5-5`) | `xhigh` for plans and architecture; `medium` for critical reviews; `high` for independent, security or high-tier reviews and for consolidate consults | Claude Code `claude -p` |
 
 There is no fallback and nothing is substituted. Never change global defaults, accounts or
 credentials. Pre-run checks make no model calls: the CLI is on `PATH` and runs; `claude --help`
@@ -120,7 +120,8 @@ statuses, retry, isolation, recursion guard); there is no second router. Each sk
 optional `effort` of `medium` or `high`; `evidence: git-inventory` adds helper-collected Git facts;
 `rendered_evidence: required` needs `--rendered-evidence` or an explicit `--no-rendered-evidence`
 reason). A review kind that declares `"effort": "high"`, or any review run with `--high`, runs at
-effort high; every other review runs at medium. Plans always run at xhigh. The effort is part of the
+effort high; every other review runs at medium. Plans and architecture tasks always run at xhigh; a consolidate
+`consult` (an advisory plan kind only that profile declares) runs at high. The effort is part of the
 reuse key, so a high run is never reused from a medium one.
 
 Runs live in `~/.local/state/agent-routing/<skill>/<repo-key>/<run-id>/`

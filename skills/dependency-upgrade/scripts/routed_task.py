@@ -10,7 +10,8 @@ tree, reuse, and required-review gating. Helpers are reused from depup.py.
 
 Commands (all print JSON; exit 0 ok, 1 refused/blocked, 2 usage):
   start  --skill S --repo P [--base REF]          create a run; REF (default HEAD) is the base every review uses
-  plan   RUN --context F [--kind plan|architecture] [--subject S]   one read-only planner at xhigh
+  plan   RUN --context F [--kind plan|architecture|consult] [--subject S]   one read-only planner at xhigh;
+         a consolidate consult (--subject required) runs at effort high, plans stay at xhigh
   review RUN --kind K [--base REF] [--subject S] [--context F] [--required] [--high]
          [--rendered-evidence F | --no-rendered-evidence WHY] [--location P]... [--with-prs]
   gate   RUN [--require KIND[:SUBJECT]]...        required reviews pass for the CURRENT candidate?
@@ -437,7 +438,7 @@ def cmd_plan(args):
         raise Refusal('--kind must be one of ' + ', '.join(profile['plan_kinds']))
     subject = args.subject or ('task' if args.kind == 'plan' else None)
     if not subject:
-        raise Refusal('--subject is required for an architecture task')
+        raise Refusal('--subject is required for %s task' % ('a consult' if args.kind == 'consult' else 'an %s' % args.kind))
     handoff = depup.redact_text(depup.read_text(args.context) or '')
     if not handoff.strip():
         raise Refusal('--context must name a non-empty handoff file (requirements, scope, constraints, findings)')
@@ -454,9 +455,10 @@ def cmd_plan(args):
     depup.atomic_write(context, handoff)
     head = depup.git_state(root).get('head') or 'none'
     prompt = plan_prompt(profile, args.kind, subject, root, head, context)
+    effort = rr.HIGH_EFFORT if args.kind == 'consult' else rr.PLAN_EFFORT
     evidence, selected, done, changed = run_task(
         run_dir, meta, task_dir, task_id, prompt, lambda text: rr.parse_plan_result(text, args.kind),
-        rr.PLAN_EFFORT, args.timeout, args.max_retries, before)
+        effort, args.timeout, args.max_retries, before)
     entry = {'id': task_id, 'task': 'plan', 'kind': args.kind, 'subject': subject, 'skill': profile['skill'],
              'fingerprint': before, 'head': head, 'context_sha256': context_sha, 'advisory': True,
              'candidates': depup.compact_candidates(evidence)}
