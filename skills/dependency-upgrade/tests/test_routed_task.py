@@ -260,8 +260,35 @@ class ConsultTests(RoutedCase):
             text = handle.read()
         self.assertIn('--kind consult', text)
         self.assertIn('selected.effort', text)
+        self.assertNotIn('Triggers, and only these', text)
+        self.assertIn('--kind consult --subject consult-<n>', text)
+        step2 = text[text.index('STEP 2 \u2014 RECONCILE'):text.index('STEP 3 \u2014 VERIFY')]
+        for required in ('build or test failure', 'do not push', 'git status --porcelain'):
+            self.assertIn(required, step2)
+        step3 = text[text.index('STEP 3 \u2014 VERIFY'):text.index('STEP 4 \u2014 CLEANUP')]
+        for required in ('unclear re-check', 're-run the reconciliation review'):
+            self.assertIn(required, step3)
+        step4 = text[text.index('STEP 4 \u2014 CLEANUP'):text.index('If planning, a consult')]
+        self.assertNotIn('consult', step4.lower())
         focus = rt.load_profile('consolidate')['plan_kinds']['consult']
+        self.assertIn('batch', focus)
         self.assertIn('never treat your recommendation as proof', focus)
+
+    def test_consult_runs_while_a_merge_is_in_progress(self):
+        sh(['git', 'checkout', '-q', '-b', 'side'], self.repo)
+        self.commit('clash.txt', 'side\n', 'side change')
+        sh(['git', 'checkout', '-q', '-'], self.repo)
+        self.commit('clash.txt', 'main\n', 'main change')
+        merge = sh(['git', 'merge', 'side'], self.repo, check=False)
+        self.assertNotEqual(merge.returncode, 0)
+        self.assertTrue(os.path.exists(os.path.join(self.repo, '.git', 'MERGE_HEAD')))
+        run = self.start('consolidate')
+        fake = FakeHarnesses(self.tmp, reviews={'claude-code': [{'stdout': claude_result(CONSULT_TEXT)}]})
+        self.use(fake)
+        code, entry = self.consult(run)
+        self.assertEqual((code, entry['status']), (0, 'completed'), entry)
+        self.assertEqual(len(fake.review_calls()), 1)
+        self.assertTrue(os.path.exists(os.path.join(self.repo, '.git', 'MERGE_HEAD')))
 
 
 class RoutingFailureTests(RoutedCase):

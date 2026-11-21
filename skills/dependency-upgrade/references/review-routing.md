@@ -120,9 +120,9 @@ statuses, retry, isolation, recursion guard); there is no second router. Each sk
 optional `effort` of `medium` or `high`; `evidence: git-inventory` adds helper-collected Git facts;
 `rendered_evidence: required` needs `--rendered-evidence` or an explicit `--no-rendered-evidence`
 reason). A review kind that declares `"effort": "high"`, or any review run with `--high`, runs at
-effort high; every other review runs at medium. Plans and architecture tasks always run at xhigh; a consolidate
-`consult` (an advisory plan kind only that profile declares) runs at high. The effort is part of the
-reuse key, so a high run is never reused from a medium one.
+effort high; every other review runs at medium. Plans and architecture tasks always run at xhigh; a
+consolidate `consult` (an advisory plan kind only that profile declares) runs at high. The effort is
+part of the reuse key, so a high run is never reused from a medium one.
 
 Runs live in `~/.local/state/agent-routing/<skill>/<repo-key>/<run-id>/`
 (`AGENT_ROUTING_STATE_DIR`). `start --base` (default HEAD, before any change) fixes the review base

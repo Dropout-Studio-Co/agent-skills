@@ -2,7 +2,7 @@
   "skill": "consolidate",
   "role": "reconcile every piece of unfinished Git work (branches, worktrees, clones, stashes, uncommitted changes, PRs) into main, then clean up only what is proven safe",
   "rules": [
-    "Fully autonomous: decide from evidence and the repository's own instructions and never pause. When the evidence does not settle a decision, consult once; keep anything still uncertain after the consult.",
+    "Fully autonomous: decide from evidence and the repository's own instructions and never pause. When the evidence does not settle a decision, consult once; keep any item still uncertain after the consult and stop on any other unsettled decision.",
     "An item is deleted, dropped, closed or removed only when its evidence proves it is in main (or superseded there) and its copy is present in the verified restore point.",
     "Keep every item still uncertain after a consult, and every in-progress (a live process cwd inside the location, or changes within 24 h), foreign (author other than the signed-in gh user, forks, bots) or ignored-non-cache item untouched; kept items are never integrated, deleted, dropped or closed.",
     "A restore point is written before the first change (before STEP 2) and again after the gate, before cleanup.",
@@ -11,7 +11,7 @@
   ],
   "plan_kinds": {
     "plan": "Reconciliation plan from the audit: check each item's evidence against the four classes (in main / superseded by a cited main commit / still-needed / keep); for still-needed items choose merge, cherry-pick or hand port and the order (dependencies, shared files, likely conflicts); how to preserve uncommitted work first; the build/test commands; the kept list with a reason per item; and the deletion evidence for every cleanup-list item (proven in main by git cherry, ancestor, reverse-apply or blob match, or a cited main commit SHA and file:line). Flag anything that could lose work.",
-    "consult": "Research and analyze the one uncertain or ambiguous decision named in the handoff, using the handoff evidence and the repository. Brainstorm the realistic options, weigh what each could lose, and recommend the best course of action, citing exact evidence (commit SHA, file:line, patch) for every fact. Steps are optional. If the evidence does not settle it, put the item under holds and recommend keeping it. Never recommend integrating or deleting an in-progress, foreign or ignored-non-cache item, and never treat your recommendation as proof: an item is deletable only with the evidence the four classes require.",
+    "consult": "Research and analyze the one decision, or one batch of item classifications, named in the handoff, using the handoff evidence and the repository. Brainstorm the realistic options, weigh what each could lose, and recommend the best course of action, citing exact evidence (commit SHA, file:line, patch) for every fact. Steps are optional. If the evidence does not settle it, put it under holds and recommend keeping an item or stopping on a failure. Never recommend integrating or deleting an in-progress, foreign or ignored-non-cache item, and never treat your recommendation as proof: an item is deletable only with the evidence the four classes require.",
     "architecture": "Deeper analysis of one high-risk reconciliation item (diverged design, large conflict, data/schema, auth, deploy config): the safest integration route, alternatives rejected, conflict strategy that keeps main's design, verification and recovery."
   },
   "review_kinds": {
