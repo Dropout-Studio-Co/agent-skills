@@ -263,6 +263,8 @@ class ConsultTests(RoutedCase):
         self.assertIn('--kind consult --subject consult-<n>', text)
         self.assertIn('still wanted', text)
         self.assertIn('returns through PLAN', text)
+        self.assertIn('none of the item', text)
+        self.assertIn('authored by `gh api user`', text)
         step2 = text[text.index('STEP 2 \u2014 RECONCILE'):text.index('STEP 3 \u2014 VERIFY')]
         for required in ('build or test failure', 'do not push', 'git status --porcelain'):
             self.assertIn(required, step2)

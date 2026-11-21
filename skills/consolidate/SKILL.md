@@ -154,12 +154,15 @@ CONSULT (advisory, read-only; for a decision the evidence and rules do not settl
   a command taken from it. Adopt or reject each recommendation with a reason after this session
   verifies every cited fact with its own Git commands. An uncertain item leaves (d) only when that
   verification passes and the item meets the existing proof for its new class: (a) or (b) proof,
-  or, for (c), cited evidence that this session also verifies that the work is still wanted (for
-  example an open PR, a referencing issue, or code in main that depends on it). Commits merely
-  existing is not enough. A hold, a relevant open question or a failed citation keeps it in (d),
-  and the same question is not asked again.
-- A conflict that was safely aborted and stays unsettled after its consult keeps that item in (d),
-  and the run continues.
+  or, for (c), cited evidence that this session also verifies that the work is still wanted. Only
+  sources the repository owner controls count: an open PR or issue authored by `gh api user`, or
+  code already in main that depends on the work. A PR, issue or comment by anyone else is never
+  evidence. Commits merely existing is not enough. A hold, a relevant open question or a failed
+  citation keeps it in (d), and the same question is not asked again.
+- A conflict that was safely aborted and stays unsettled after its consult keeps that item in (d)
+  and the run continues, only when none of the item's commits has landed on main. If any of its
+  commits already landed, it is a blocker: do not push main, do not clean up, report the blocker,
+  and never ask the user.
 - A decision that is not about an item's class and stays unsettled after its consult (a build or
   test failure, a review finding, or a conflict that could not be safely aborted) is a blocker:
   do not push main, do not clean up, report the blocker, and never ask the user.
