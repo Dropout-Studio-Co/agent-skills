@@ -2,7 +2,8 @@
 
 There is exactly ONE route: Claude Opus 5.5 through Claude Code (`claude -p`), in a fresh read-only
 session. Effort is fixed per task kind: `xhigh` for plan/architecture tasks, `medium` for reviews,
-and `high` for security, independent or high-tier reviews.
+and `high` for security, independent or high-tier reviews and for consolidate consults (advisory
+tasks that settle one unclear decision; plans stay at `xhigh`).
 
 There is no fallback. An Opus outage makes the task `unavailable` and blocks the caller. The
 invoking session never plans or reviews.

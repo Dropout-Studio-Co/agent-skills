@@ -69,12 +69,13 @@ class RoutedCase(TempCase):
 class ProfileTests(RoutedCase):
 
     def test_both_skills_ship_valid_profiles_and_document_the_router(self):
-        for skill, kinds in (('consolidate', {'reconciliation', 'code'}),
-                             ('frontend-ui-ux-overhaul', {'code', 'ui-ux', 'accessibility'})):
+        for skill, kinds, plan_kinds in (
+                ('consolidate', {'reconciliation', 'code'}, {'plan', 'architecture', 'consult'}),
+                ('frontend-ui-ux-overhaul', {'code', 'ui-ux', 'accessibility'}, {'plan', 'architecture'})):
             profile = rt.load_profile(skill)
             self.assertEqual(profile['skill'], skill)
             self.assertEqual(set(profile['review_kinds']), kinds)
-            self.assertEqual(set(profile['plan_kinds']), {'plan', 'architecture'})
+            self.assertEqual(set(profile['plan_kinds']), plan_kinds)
             with open(os.path.join(SKILLS, skill, 'SKILL.md'), encoding='utf-8') as handle:
                 text = handle.read()
             self.assertIn('routed_task.py', text)
@@ -173,6 +174,124 @@ class PlanningTests(RoutedCase):
         self.assertIn('no fallback', entry['reason'])
         self.assertEqual(fake.review_calls(), [])
         self.assertFalse([c for c in fake.calls if c and c[0] == 'opencode'])
+
+
+CONSULT = {'summary': 'keep it', 'decisions': [{'decision': 'keep the branch', 'rationale': 'unclear owner',
+                                                   'alternatives': ['delete: unproven']}],
+           'risks': [], 'holds': [{'item': 'branch x', 'reason': 'unclear'}], 'open_questions': []}
+CONSULT_TEXT = 'Consult follows.\n%s\n%s\n%s\n' % (rr.PLAN_BEGIN, json.dumps(CONSULT), rr.PLAN_END)
+
+
+class ConsultTests(RoutedCase):
+
+    def consult(self, run, *extra):
+        return self.rt('plan', run, '--context', self.handoff(), '--kind', 'consult',
+                       '--subject', 'consult-1', *extra)
+
+    def test_consult_runs_once_on_opus_high_read_only(self):
+        run = self.start('consolidate')
+        fake = FakeHarnesses(self.tmp, reviews={'claude-code': [{'stdout': claude_result(CONSULT_TEXT)},
+                                                                {'stdout': claude_result(CONSULT_TEXT)}]})
+        self.use(fake)
+        code, entry = self.consult(run)
+        self.assertEqual(code, 0, entry)
+        self.assertEqual(entry['status'], 'completed')
+        self.assertTrue(entry['advisory'])
+        self.assertEqual((entry['selected']['model'], entry['selected']['effort']), ('claude-opus-5-5', 'high'))
+        calls = fake.review_calls()
+        self.assertEqual(len(calls), 1)
+        argv = calls[0]
+        self.assertEqual(argv[argv.index('--effort') + 1], 'high')
+        self.assertEqual(argv[argv.index('--tools') + 1], 'Read,Grep,Glob')
+        self.assertIn('--strict-mcp-config', argv)
+        task_dir = os.path.dirname(entry['entry'])
+        self.assertTrue(fake.cwds[fake.calls.index(argv)].startswith(task_dir))
+        self.assertEqual(sh(['git', 'status', '--porcelain'], self.repo).stdout, '')
+        _, again = self.consult(run)
+        self.assertTrue(again['reused'])
+        self.assertEqual(len(fake.review_calls()), 1, 'same tree and handoff: no second model call')
+
+    def test_consult_needs_subject_and_is_limited_to_declaring_profiles(self):
+        run = self.start('consolidate')
+        code, out = self.rt('plan', run, '--context', self.handoff(), '--kind', 'consult')
+        self.assertEqual(code, 1)
+        self.assertIn('--subject is required for a consult task', out['error'])
+        other = self.start('frontend-ui-ux-overhaul')
+        fake = FakeHarnesses(self.tmp, reviews={'claude-code': [{'stdout': claude_result(CONSULT_TEXT)}]})
+        self.use(fake)
+        code, out = self.rt('plan', other, '--context', self.handoff(), '--kind', 'consult', '--subject', 's')
+        self.assertEqual(code, 1)
+        self.assertIn('--kind must be one of', out['error'])
+        self.assertEqual(fake.review_calls(), [])
+
+    def test_consult_outage_is_unavailable_without_fallback(self):
+        run = self.start('consolidate')
+        fake = FakeHarnesses(self.tmp, missing={'claude'})
+        self.use(fake)
+        _, entry = self.consult(run)
+        self.assertEqual(entry['status'], 'unavailable')
+        self.assertIn('no fallback', entry['reason'])
+        self.assertEqual(fake.review_calls(), [])
+        self.assertFalse([c for c in fake.calls if c and c[0] == 'opencode'])
+
+    def test_consult_never_satisfies_the_gate(self):
+        run = self.start('consolidate')
+        self.use(FakeHarnesses(self.tmp, reviews={'claude-code': [{'stdout': claude_result(CONSULT_TEXT)}]}))
+        _, entry = self.consult(run)
+        self.assertEqual(entry['status'], 'completed')
+        code, gate = self.rt('gate', run, '--require', 'reconciliation')
+        self.assertEqual(code, 1)
+        self.assertIn('not run', gate['problems'][0])
+
+    def test_plan_and_architecture_stay_xhigh_beside_consult(self):
+        run = self.start('consolidate')
+        fake = FakeHarnesses(self.tmp, reviews={'claude-code': [{'stdout': claude_result(PLAN_TEXT)},
+                                                                {'stdout': claude_result(PLAN_TEXT)}]})
+        self.use(fake)
+        _, plan = self.rt('plan', run, '--context', self.handoff())
+        _, arch = self.rt('plan', run, '--context', self.handoff(), '--kind', 'architecture', '--subject', 'big')
+        for entry in (plan, arch):
+            self.assertEqual(entry['selected']['effort'], 'xhigh')
+        for argv in fake.review_calls():
+            self.assertEqual(argv[argv.index('--effort') + 1], 'xhigh')
+
+    def test_consolidate_skill_documents_consult_boundaries(self):
+        with open(os.path.join(SKILLS, 'consolidate', 'SKILL.md'), encoding='utf-8') as handle:
+            text = handle.read()
+        self.assertIn('--kind consult', text)
+        self.assertIn('selected.effort', text)
+        self.assertIn('--kind consult --subject consult-<n>', text)
+        self.assertIn('still wanted', text)
+        self.assertIn('returns through PLAN', text)
+        self.assertIn('none of the item', text)
+        self.assertIn('authored by `gh api user`', text)
+        step2 = text[text.index('STEP 2 \u2014 RECONCILE'):text.index('STEP 3 \u2014 VERIFY')]
+        for required in ('build or test failure', 'do not push', 'git status --porcelain'):
+            self.assertIn(required, step2)
+        step3 = text[text.index('STEP 3 \u2014 VERIFY'):text.index('STEP 4 \u2014 CLEANUP')]
+        for required in ('unclear re-check', 're-run the reconciliation review'):
+            self.assertIn(required, step3)
+        step4 = text[text.index('STEP 4 \u2014 CLEANUP'):text.index('If planning, a consult')]
+        self.assertNotIn('consult', step4.lower())
+        focus = rt.load_profile('consolidate')['plan_kinds']['consult']
+        self.assertIn('batch', focus)
+        self.assertIn('never treat your recommendation as proof', focus)
+
+    def test_consult_runs_while_a_merge_is_in_progress(self):
+        sh(['git', 'checkout', '-q', '-b', 'side'], self.repo)
+        self.commit('clash.txt', 'side\n', 'side change')
+        sh(['git', 'checkout', '-q', '-'], self.repo)
+        self.commit('clash.txt', 'main\n', 'main change')
+        merge = sh(['git', 'merge', 'side'], self.repo, check=False)
+        self.assertNotEqual(merge.returncode, 0)
+        self.assertTrue(os.path.exists(os.path.join(self.repo, '.git', 'MERGE_HEAD')))
+        run = self.start('consolidate')
+        fake = FakeHarnesses(self.tmp, reviews={'claude-code': [{'stdout': claude_result(CONSULT_TEXT)}]})
+        self.use(fake)
+        code, entry = self.consult(run)
+        self.assertEqual((code, entry['status']), (0, 'completed'), entry)
+        self.assertEqual(len(fake.review_calls()), 1)
+        self.assertTrue(os.path.exists(os.path.join(self.repo, '.git', 'MERGE_HEAD')))
 
 
 class RoutingFailureTests(RoutedCase):
