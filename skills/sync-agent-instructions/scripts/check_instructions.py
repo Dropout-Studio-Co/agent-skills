@@ -35,7 +35,7 @@ HERE = Path(__file__).resolve().parent
 GIT_STRIP = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR")
 EXIT_OK, EXIT_BLOCKED, EXIT_INVALID = 0, 1, 2
 DEFAULT_SKILLS_DIR = ".agents/skills"
-BRANCH_NAME = re.compile(r"^[A-Za-z0-9._/-]+$")
+BRANCH_NAME = re.compile(r"\A[A-Za-z0-9._/-]+\Z")
 
 
 def valid_branch(name):
@@ -186,7 +186,8 @@ def is_surface_path(rel, root):
         return not _path_escapes_root(root, rel)
     prefix = skills_dir(root).rstrip("/") + "/"
     if rel.startswith(prefix):
-        if _path_escapes_root(root, prefix.rstrip("/"), include_leaf=True):
+        if _path_escapes_root(root, prefix.rstrip("/"), include_leaf=True) or \
+                _path_escapes_root(root, rel):
             return False
         rest = rel[len(prefix):]
         return rest.count("/") == 1 and rest.endswith("/SKILL.md")
@@ -654,6 +655,11 @@ class References:
         return self._ignored[ref]
 
     def classify(self, ref, file_rel):
+        raw_cmd = ref.strip()
+        if raw_cmd and not raw_cmd.startswith("-") and probable_command(raw_cmd):
+            if PLACEHOLDER.search(raw_cmd):
+                return "scoped"
+            return self._command(raw_cmd)
         ref = strip_reference(ref)
         if not ref or ref.startswith("-"):
             return None
@@ -663,8 +669,6 @@ class References:
             return "external"
         if PLACEHOLDER.search(ref):
             return "scoped"
-        if probable_command(ref):
-            return self._command(ref)
         if looks_like_path(ref):
             memory_dir = (self.root / file_rel).parent
             for base in (self.root, memory_dir):
@@ -708,12 +712,34 @@ class References:
             return self._package_script(name)
         if command in SCRIPT_RUNNERS:
             rest = tokens[1:]
-            if command in ("python", "python3") and "-m" in rest:
-                return "external"
+            inline_flags = {
+                "python": ("-m", "-c"), "python3": ("-m", "-c"),
+                "bash": ("-c",), "sh": ("-c",), "zsh": ("-c",),
+                "node": ("-e", "--eval", "-p", "--print"),
+                "ruby": ("-e",), "perl": ("-e", "-E"),
+                "deno": ("eval",), "php": ("-r",),
+            }
+            value_flags = {
+                "pytest": ("-k", "-m", "-o", "-c", "-n", "--rootdir", "--maxfail", "--tb"),
+                "python": ("-W", "-X"), "python3": ("-W", "-X"),
+                "bash": ("-o", "+o"), "sh": ("-o", "+o"), "zsh": ("-o", "+o"),
+                "node": ("-r", "--require", "--import", "--env-file"),
+            }
+            skip_next = False
             for token in rest:
+                if skip_next:
+                    skip_next = False
+                    continue
+                if token in inline_flags.get(command, ()):
+                    return "external"
+                if token in value_flags.get(command, ()):
+                    skip_next = True
+                    continue
                 if token.startswith("-"):
                     continue
-                return self.classify(token, "AGENTS.md")
+                if looks_like_path(token):
+                    return self.classify(token, "AGENTS.md")
+                return "external"
             return "external"
         if command in COMMON_CLIS:
             return "external"
@@ -1237,8 +1263,11 @@ def diff_lines(base_text, proposed_text):
 
 
 def read_stage_file(stage, folder, rel):
-    path = Path(stage) / folder / rel
-    if not path.exists():
+    folder_root = Path(stage) / folder
+    if _path_escapes_root(folder_root, rel, include_leaf=True):
+        return ""
+    path = folder_root / normalize_rel(rel)
+    if not path.is_file() or path.is_symlink():
         return ""
     return path.read_text("utf-8", "replace")
 
@@ -1267,12 +1296,16 @@ def _read_private_input(path):
         return None, None, "is unreadable"
     try:
         info = os.fstat(handle)
+        if not stat.S_ISREG(info.st_mode):
+            return None, None, "must be a regular file"
         chunks = []
         while True:
             chunk = os.read(handle, 65536)
             if not chunk:
                 break
             chunks.append(chunk)
+    except OSError:
+        return None, None, "is unreadable"
     finally:
         os.close(handle)
     return b"".join(chunks), stat.S_IMODE(info.st_mode), None
@@ -1372,12 +1405,28 @@ def validate_gate(stage_path, evidence_path, claims_path):
             return invalid("gate", "proposed path escapes the stage: %s" % rel)
         if _path_escapes_root(repo_root, rel, include_leaf=True):
             return invalid("gate", "proposed path escapes the repository: %s" % rel)
+    proposed_root = Path(stage) / "proposed"
     for claim in claims["claims"]:
         rel = str(claim["file"]).replace(os.sep, "/")
         if not is_surface_path(rel, repo_root):
             return invalid("gate", "claim names a non-surface file: %s" % rel)
         if _path_escapes_root(repo_root, rel):
             return invalid("gate", "claim names a path outside the repository: %s" % rel)
+        if _path_escapes_root(proposed_root, rel, include_leaf=True):
+            return invalid("gate", "claim names a path outside the stage: %s" % rel)
+        if claim.get("type") == "Move":
+            target = claim.get("target")
+            if not isinstance(target, str) or not target:
+                return invalid("gate", "Move claim needs a target")
+            target_rel = normalize_rel(target)
+            if os.path.isabs(target_rel) or ".." in Path(target_rel).parts:
+                return invalid("gate", "Move target is not a safe relative path: %s" % target)
+            if not is_surface_path(target_rel, repo_root):
+                return invalid("gate", "Move target is not a surface path: %s" % target)
+            if _path_escapes_root(repo_root, target_rel):
+                return invalid("gate", "Move target escapes the repository: %s" % target)
+            if _path_escapes_root(proposed_root, target_rel, include_leaf=True):
+                return invalid("gate", "Move target escapes the stage: %s" % target)
 
     refs = References(repo_root)
     budget_base = _stage_budget(stage, "base", repo_root)
@@ -1890,6 +1939,8 @@ def _add_supported(claim, index, rel, added, root):
         tracked = set(refs.tracked)
         target = normalize_rel(target)
         if target not in tracked:
+            return False
+        if _path_escapes_root(root, target, include_leaf=True) or (root / target).is_symlink():
             return False
         if not any(needle in line for line in added):
             return False

@@ -2130,5 +2130,77 @@ class DocsTests(unittest.TestCase):
             self.assertTrue(os.path.isdir(os.path.join(HERE, 'tests')), name)
 
 
+class GateR2RegressionTests(unittest.TestCase):
+    """Regressions caught in Review R2 and Security R2."""
+
+    def test_script_runners_flag_with_argument_are_external(self):
+        module = load_module('checker_r2_flags', SCRIPT)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            subprocess.check_call(['git', 'init', '-q', str(root)])
+            (root / 'scripts').mkdir()
+            (root / 'scripts/run.py').write_text('print(1)\n', encoding='utf-8')
+            subprocess.check_call(['git', '-C', str(root), 'add', 'scripts/run.py'])
+            refs = module.References(root)
+            for cmd in (
+                'pytest -k test_foo',
+                'pytest -k foo.py',
+                'pytest -m slow',
+                'pytest -o addopts=',
+                'python3 -c "print(1)"',
+                'python3 -c "import foo.bar"',
+                'node -e "console.log(1)"',
+                'bash -c "echo hi"',
+                'ruby -e "puts 1"',
+                'php -r "echo 1;"',
+            ):
+                self.assertEqual(refs.classify(cmd, 'AGENTS.md'), 'external', cmd)
+            self.assertEqual(refs.classify('python3 scripts/run.py', 'AGENTS.md'), 'ok')
+            self.assertEqual(refs.classify('python3 -W default scripts/run.py', 'AGENTS.md'), 'ok')
+            self.assertEqual(refs.classify('python3 scripts/missing.py', 'AGENTS.md'), 'stale')
+
+    def test_move_target_traversal_rejected_before_stage_read(self):
+        module = load_module('checker_r2_move', SCRIPT)
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            repo = tmp_path / 'repo'
+            repo.mkdir()
+            subprocess.check_call(['git', 'init', '-q', str(repo)])
+            (repo / 'AGENTS.md').write_text('# Rules\n- Keep things simple.\n', encoding='utf-8')
+            subprocess.check_call(['git', '-C', str(repo), 'add', 'AGENTS.md'])
+            subprocess.check_call([
+                'git', '-C', str(repo), '-c', 'user.name=t', '-c', 'user.email=t@example.invalid',
+                'commit', '-qm', 'init'
+            ])
+            stage = tmp_path / 'stage'
+            code, _ = module.stage_command(str(repo), str(stage))
+            self.assertEqual(code, 0)
+            manifest = json.loads((stage / 'manifest.json').read_text(encoding='utf-8'))
+            ev = tmp_path / 'evidence.json'
+            ev.write_text(json.dumps({'version': 1, 'repo_id': manifest['repo']['id'], 'sessions': []}),
+                          encoding='utf-8')
+            os.chmod(ev, 0o600)
+            secret = tmp_path / 'outside.txt'
+            secret.write_text('top-secret-line\n', encoding='utf-8')
+            claims = tmp_path / 'claims.json'
+            claims.write_text(json.dumps({
+                'version': 1,
+                'claims': [{
+                    'id': 'm1',
+                    'type': 'Move',
+                    'file': 'AGENTS.md',
+                    'target': str(secret),
+                    'removed': ['- Keep things simple.'],
+                    'added': ['top-secret-line'],
+                }],
+            }), encoding='utf-8')
+            os.chmod(claims, 0o600)
+            gcode, payload = module.validate_gate(str(stage), str(ev), str(claims))
+            self.assertEqual(gcode, 2)
+            self.assertEqual(payload['status'], 'invalid')
+            self.assertEqual(module.read_stage_file(str(stage), 'proposed', str(secret)), '')
+            self.assertFalse(module.valid_branch('main\n'))
+
+
 if __name__ == '__main__':
     unittest.main()
