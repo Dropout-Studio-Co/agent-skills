@@ -431,8 +431,24 @@ def first_non_comment_line(text):
     return None, None
 
 
-def check_imports(repo):
-    root = repo.root
+def _read_memory(path, rel, links, fallback):
+    try:
+        if path.exists() or path.is_symlink():
+            return path.read_text("utf-8", "replace")
+    except OSError:
+        return None
+    if rel in links and fallback is not None:
+        try:
+            return (Path(fallback) / rel).read_text("utf-8", "replace")
+        except OSError:
+            return None
+    return None
+
+
+def check_imports(repo, links=None, fallback_root=None):
+    root = Path(repo.root)
+    links = dict(links or {})
+    fallback = Path(fallback_root) if fallback_root is not None else None
     errors = []
     directories = set()
     for rel in surface_paths(root):
@@ -446,25 +462,29 @@ def check_imports(repo):
         claude = directory / "CLAUDE.md"
         rel_agents = os.path.relpath(str(agents), str(root)).replace(os.sep, "/")
         rel_claude = os.path.relpath(str(claude), str(root)).replace(os.sep, "/")
-        if not agents.exists() and not agents.is_symlink():
-            if claude.exists() or claude.is_symlink() or directory == root:
+        agents_link = links.get(rel_agents)
+        claude_link = links.get(rel_claude)
+        agents_present = agents.exists() or agents.is_symlink() or agents_link is not None
+        claude_present = claude.exists() or claude.is_symlink() or claude_link is not None
+        if not agents_present:
+            if claude_present or directory == root:
                 errors.append({"file": rel_agents, "error": "missing AGENTS.md"})
             continue
-        if not claude.exists() and not claude.is_symlink():
-            if directory == root:
-                errors.append({"file": rel_claude, "error": "missing CLAUDE.md import"})
+        if not claude_present:
+            errors.append({"file": rel_claude, "error": "missing CLAUDE.md import"})
             continue
-        if claude.is_symlink():
+        if claude.is_symlink() or claude_link is not None:
+            target = os.readlink(str(claude)) if claude.is_symlink() else str(claude_link)
+            candidate = os.path.normpath(os.path.join(str(directory), target))
             try:
-                same = os.path.realpath(str(claude)) == os.path.realpath(str(agents))
+                same = os.path.realpath(candidate) == os.path.realpath(str(agents))
             except OSError:
                 same = False
             if not same:
                 errors.append({"file": rel_claude, "error": "symlink points elsewhere"})
             continue
-        try:
-            text = claude.read_text("utf-8", "replace")
-        except OSError:
+        text = _read_memory(claude, rel_claude, links, fallback)
+        if text is None:
             errors.append({"file": rel_claude, "error": "unreadable CLAUDE.md"})
             continue
         if re.search(r"`\s*@AGENTS\.md\s*`", text):
@@ -472,10 +492,7 @@ def check_imports(repo):
         _index, first = first_non_comment_line(text)
         if first != "@AGENTS.md":
             errors.append({"file": rel_claude, "error": "missing @AGENTS.md import"})
-        try:
-            agents_text = agents.read_text("utf-8", "replace")
-        except OSError:
-            agents_text = ""
+        agents_text = _read_memory(agents, rel_agents, links, fallback) or ""
         agents_lines = {line.strip() for line in agents_text.splitlines()
                         if len(line.strip()) >= 4 and not line.strip().startswith("#")}
         for number, line in enumerate(text.splitlines(), 1):
@@ -719,9 +736,117 @@ def collect_references(repo, entries):
 
 
 LEAD_KEYS = ("gaps", "entries", "items", "leads")
-ALL_PROJECT = {"all", "all-project", "allprojects", "*", ""}
-V1_KEYS = {"version", "domain", "project", "scope", "instruction", "proposedInstruction",
-           "text", "source", "sessions", "count", "id", "title", "kind"}
+ALL_PROJECT = {"all", "all-project", "allprojects", "project", "*", ""}
+
+
+def _sighting_transcript(source):
+    if not isinstance(source, str):
+        return ""
+    if " · " in source:
+        parts = source.split(" · ")
+        if len(parts) >= 2 and parts[1].strip():
+            return parts[1].strip()
+    return source.split(":", 1)[-1].strip()
+
+
+def _entry_text(entry):
+    text = (entry.get("proposedInstruction") or entry.get("instruction")
+            or entry.get("text") or "")
+    return text.strip() if isinstance(text, str) else ""
+
+
+def _entry_count(value):
+    if isinstance(value, bool):
+        return 0
+    if isinstance(value, int):
+        return value
+    if isinstance(value, (dict, list)):
+        return len(value)
+    return 0
+
+
+def _make_lead(text, count, transcript):
+    return {"proposedInstruction": redact(text), "sessions": count,
+            "transcript": transcript, "unverified": True}
+
+
+def _list_route(entry):
+    domain = entry.get("domain", entry.get("project", entry.get("scope", "all")))
+    token = str(domain).strip().lower() if domain is not None else ""
+    return "lead" if token in ALL_PROJECT else "candidate"
+
+
+def _ledger_items(data):
+    """Route version 1 gap-ledger entries, including the dict-of-sightings schema."""
+    items = []
+    entries = data.get("entries")
+    if isinstance(entries, dict):
+        for key in sorted(entries):
+            entry = entries[key]
+            if not isinstance(entry, dict):
+                continue
+            text = _entry_text(entry)
+            if not text:
+                continue
+            raw = entry.get("sessions")
+            if isinstance(raw, dict):
+                sightings = [item for item in raw.values() if isinstance(item, dict)]
+            elif isinstance(raw, list):
+                sightings = [item for item in raw if isinstance(item, dict)]
+            else:
+                sightings = []
+            count = len(raw) if isinstance(raw, (dict, list)) else 0
+            transcript = _sighting_transcript(sightings[0].get("source")) if sightings else ""
+            domains = [str(item.get("domain")).strip().lower() for item in sightings
+                       if item.get("domain") is not None and str(item.get("domain")).strip()]
+            route = "lead" if not domains or all(domain == "project" for domain in domains) \
+                else "candidate"
+            items.append((route, _make_lead(text, count, transcript)))
+        return items
+    if isinstance(entries, list):
+        listed = entries
+    else:
+        listed = []
+        for key in ("gaps", "items", "leads"):
+            value = data.get(key)
+            if isinstance(value, list):
+                listed = value
+                break
+    for entry in listed:
+        if not isinstance(entry, dict):
+            continue
+        text = _entry_text(entry)
+        if not text:
+            continue
+        count = _entry_count(entry.get("sessions", entry.get("count")))
+        items.append((_list_route(entry),
+                      _make_lead(text, count, _sighting_transcript(entry.get("source")))))
+    return items
+
+
+def _summary_items(data):
+    """Route version 1 evidence-summary gaps and report-only gaps."""
+    items = []
+    for key in ("gaps", "reportOnlyGaps"):
+        value = data.get(key)
+        if not isinstance(value, list):
+            continue
+        for entry in value:
+            if not isinstance(entry, dict):
+                continue
+            text = _entry_text(entry)
+            if not text:
+                continue
+            try:
+                orchestration = int(entry.get("orchestrationSightings") or 0)
+            except (TypeError, ValueError):
+                orchestration = 0
+            candidate = (orchestration > 0 or bool(entry.get("majorityOrchestration"))
+                         or bool(entry.get("mixed")) or _list_route(entry) == "candidate")
+            items.append(("candidate" if candidate else "lead",
+                          _make_lead(text, _entry_count(entry.get("sessions")),
+                                     _sighting_transcript(entry.get("source")))))
+    return items
 
 
 def read_backpass(repo):
@@ -744,33 +869,9 @@ def read_backpass(repo):
         if not isinstance(data, dict) or data.get("version") != 1:
             notes.append("%s: unsupported version" % name)
             continue
-        entries = []
-        for key in LEAD_KEYS:
-            value = data.get(key)
-            if isinstance(value, list):
-                entries = value
-                break
-        for entry in entries:
-            if not isinstance(entry, dict):
-                continue
-            domain = entry.get("domain", entry.get("project", entry.get("scope", "all")))
-            domain = str(domain).strip().lower() if domain is not None else ""
-            text = (entry.get("proposedInstruction") or entry.get("instruction")
-                    or entry.get("text") or "")
-            if not isinstance(text, str) or not text.strip():
-                continue
-            source = entry.get("source")
-            transcript = ""
-            if isinstance(source, str):
-                transcript = source.split(":", 1)[-1]
-            count = entry.get("sessions", entry.get("count"))
-            if isinstance(count, list):
-                count = len(count)
-            if not isinstance(count, int):
-                count = 0
-            item = {"proposedInstruction": redact(text.strip()), "sessions": count,
-                    "transcript": transcript, "unverified": True}
-            if domain in ALL_PROJECT:
+        items = _ledger_items(data) if name == "gap-ledger.json" else _summary_items(data)
+        for route, item in items:
+            if route == "lead":
                 leads.append(item)
             else:
                 candidates.append(item)
@@ -946,7 +1047,8 @@ def quote_problem(citation, index):
         return "quote is too short"
     if "..." in quote or "…" in quote:
         return "quote is elided"
-    if "[REDACTED]" in quote.upper() or "REDACT" in quote.upper():
+    upper = quote.upper()
+    if any(marker in upper for marker in ("[REDACTED]", "<REDACTED>", "[REDACT]")):
         return "quote contains a redaction marker"
     session = index.get(session_id)
     if session is None:
@@ -1097,13 +1199,13 @@ def check_evidence_file(path, repo_id):
 def check_claims_file(path):
     target = Path(path)
     if not target.is_file() or target.is_symlink():
-        return "claims must be a regular file"
+        return None, "claims must be a regular file"
     if not outside_worktree(target):
-        return "claims are inside a git worktree"
+        return None, "claims are inside a git worktree"
     try:
-        return json.loads(target.read_text("utf-8", "replace"))
+        return json.loads(target.read_text("utf-8", "replace")), None
     except (OSError, ValueError):
-        return None
+        return None, "claims are not valid JSON"
 
 
 def move_target_problem(claim, root, proposed_root):
@@ -1134,9 +1236,9 @@ def validate_gate(stage_path, evidence_path, claims_path):
     evidence_problem = check_evidence_file(evidence_path, repo_id)
     if evidence_problem:
         return invalid("gate", evidence_problem)
-    raw_claims = check_claims_file(claims_path)
-    if raw_claims is None:
-        return invalid("gate", "claims are not valid JSON")
+    raw_claims, claims_problem = check_claims_file(claims_path)
+    if claims_problem:
+        return invalid("gate", claims_problem)
     claims, problem = normalize_claims(raw_claims)
     if problem:
         finding = _finding(None, "", "claim_schema", problem)
@@ -1177,8 +1279,6 @@ def validate_gate(stage_path, evidence_path, claims_path):
     reported = []
     expected_removed, expected_added = _expected_lines(claims["claims"])
     allowed = _allowed_extras(claims["claims"], stage)
-    move_targets = {normalize_rel(claim.get("target") or "")
-                    for claim in claims["claims"] if claim.get("type") == "Move"}
 
     changed_files = []
     for rel in sorted(set(files) | set(proposed)):
@@ -1201,10 +1301,22 @@ def validate_gate(stage_path, evidence_path, claims_path):
         _compare_lines(rel, removed, expected_removed.get(rel, []),
                        allowed.get(rel, []), findings, "removed")
         _compare_lines(rel, added, expected_added.get(rel, []),
-                       allowed.get(rel, []), findings, "added",
-                       allow_extra=rel in move_targets)
+                       allowed.get(rel, []), findings, "added")
+        for line in added:
+            if redact(line) != line:
+                findings.append(_finding(None, rel, "redaction_triggered",
+                                         "an added line contains a secret or home path that "
+                                         "redaction would change"))
         _check_added_references(rel, added, refs, findings,
                                 shell_fence_lines(proposed_text))
+
+    if any(rel.endswith("AGENTS.md") or rel.endswith("CLAUDE.md") for rel in changed_files):
+        links = {entry["path"]: entry.get("link") for entry in manifest["files"]
+                 if entry.get("link")}
+        proposed_tree = type("ProposedTree", (), {"root": Path(stage) / "proposed"})()
+        for error in check_imports(proposed_tree, links=links, fallback_root=repo_root)["errors"]:
+            findings.append(_finding(None, error.get("file", ""), "import_check",
+                                     error.get("error", "import check failed")))
 
     for rel in sorted(set(expected_removed) | set(expected_added)):
         if rel and rel not in files and rel not in proposed:
@@ -1327,12 +1439,10 @@ def _allowed_extras(claims, stage):
     return extras
 
 
-def _compare_lines(rel, actual, expected, extras, findings, label, allow_extra=False):
+def _compare_lines(rel, actual, expected, extras, findings, label):
     counter = Counter(actual)
     expected_counter = Counter(expected)
     extra_counter = Counter(extras)
-    if allow_extra:
-        return
     if counter - expected_counter - extra_counter:
         findings.append(_finding(None, rel, "unmapped_hunk",
                                  "%s lines are not mapped to a claim" % label))
@@ -1409,7 +1519,9 @@ def _check_claim(claim, stage, claims, index, root, budget_base):
             if not rel.endswith("CLAUDE.md"):
                 findings.append(_finding(claim.get("id"), rel, "import_target",
                                          "import Fix must repair CLAUDE.md"))
-            agents = read_stage_file(stage, "proposed", "AGENTS.md")
+            directory = os.path.dirname(rel)
+            agents_rel = (directory + "/AGENTS.md") if directory else "AGENTS.md"
+            agents = read_stage_file(stage, "proposed", agents_rel)
             for line in claim.get("removed") or []:
                 if line not in agents.splitlines():
                     findings.append(_finding(claim.get("id"), rel, "import_missing_line",
@@ -1430,6 +1542,9 @@ def _check_claim(claim, stage, claims, index, root, budget_base):
             findings.append(_finding(claim.get("id"), rel, "add_unsupported",
                                      "Add claim has no passing evidence"))
         for citation in claim.get("citations") or []:
+            problem = quote_problem(citation, index)
+            if problem:
+                findings.append(_finding(claim.get("id"), rel, "quote_invalid", problem))
             quote = citation.get("quote")
             if isinstance(quote, str):
                 for line in added:
@@ -1449,14 +1564,18 @@ def _check_claim(claim, stage, claims, index, root, budget_base):
                 findings.append(_finding(claim.get("id"), rel, "remove_protected",
                                          "protected boundary line cannot be removed"))
         if basis == "repo_disproof":
-            stale = False
-            for line in removed:
-                if any(item["class"] == "stale" for item in references_in(line, rel, refs)):
-                    stale = True
-            if not stale:
+            non_empty = [line for line in removed if line.strip()]
+            missing = [line for line in non_empty
+                       if not any(item["class"] == "stale"
+                                  for item in references_in(line, rel, refs))]
+            if not non_empty or missing:
                 findings.append(_finding(claim.get("id"), rel, "remove_unsupported",
                                          "Remove needs a checker-confirmed stale reference"))
         elif basis == "corroborated_harm":
+            for citation in claim.get("citations") or []:
+                problem = quote_problem(citation, index)
+                if problem:
+                    findings.append(_finding(claim.get("id"), rel, "quote_invalid", problem))
             if not _corroborated(claim, index, rel, removed, refs):
                 findings.append(_finding(claim.get("id"), rel, "remove_unsupported",
                                          "Remove needs correction quotes from two sessions"))
@@ -1494,9 +1613,9 @@ def _check_claim(claim, stage, claims, index, root, budget_base):
             if position is not None and marked[position]:
                 findings.append(_finding(claim.get("id"), rel, "move_protected",
                                          "protected boundary line cannot move"))
-        target_text = read_stage_file(stage, "proposed", target)
         moved = list(claim.get("removed") or [])
-        if moved and "\n".join(moved) not in target_text:
+        if moved and not _moved_bytes_match(Path(stage) / "base" / rel,
+                                            Path(stage) / "proposed" / target, moved):
             findings.append(_finding(claim.get("id"), rel, "move_not_identical",
                                      "moved lines must stay byte-identical and in order"))
         if target.endswith("SKILL.md"):
@@ -1519,6 +1638,26 @@ def _check_claim(claim, stage, claims, index, root, budget_base):
                 findings.append(_finding(claim.get("id"), rel, "move_missing_bridge",
                                          "target directory needs a one-line @AGENTS.md bridge"))
     return findings
+
+
+def _moved_bytes_match(base_path, target_path, moved):
+    try:
+        base = Path(base_path).read_bytes()
+        target = Path(target_path).read_bytes()
+    except OSError:
+        return False
+    raw_lines = base.splitlines(keepends=True)
+    decoded = [line.rstrip(b"\r\n").decode("utf-8", "replace") for line in raw_lines]
+    wanted = list(moved)
+    if not wanted:
+        return True
+    for index in range(len(decoded) - len(wanted) + 1):
+        if decoded[index:index + len(wanted)] != wanted:
+            continue
+        chunk = b"".join(raw_lines[index:index + len(wanted)])
+        if chunk and chunk in target:
+            return True
+    return False
 
 
 def _without_refs(line):
@@ -1730,6 +1869,7 @@ def _write_patch(stage, manifest, root):
 def _write_in_place(stage, manifest, root, changed):
     known = {entry["path"]: entry for entry in manifest.get("files", [])}
     written = []
+    temp = None
     try:
         for rel in changed:
             live = root / rel
@@ -1744,8 +1884,14 @@ def _write_in_place(stage, manifest, root, changed):
             except OSError:
                 pass
             os.replace(temp, str(live))
+            temp = None
             written.append((rel, existed))
     except OSError as exc:
+        if temp is not None:
+            try:
+                os.unlink(temp)
+            except OSError:
+                pass
         for rel, existed in written:
             live = root / rel
             try:

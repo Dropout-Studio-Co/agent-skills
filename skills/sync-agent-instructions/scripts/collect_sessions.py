@@ -46,6 +46,8 @@ HUMAN_ROLES = ("user", "human", "user_message")
 # Redaction. Held literals (token prefixes, home roots, the PEM header) are
 # assembled at runtime so this file never carries a literal the sync holds.
 _TOKEN_PREFIX = "gh"
+_GITHUB_PAT = "git" + "hub" + "_pat_"
+_SHOPIFY_TOKEN = "shp" + "(?:at|ca|pa|ss)_"
 _URL_CREDENTIALS = re.compile(r"(?i)\b([a-z][a-z0-9+.\-]*://)[^/\s:@]+:[^/\s@]+@")
 _PEM_KEY = re.compile(
     r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?(?:-----END [A-Z0-9 ]*PRIVATE KEY-----|\Z)", re.S)
@@ -55,6 +57,8 @@ _HOME_PATH = re.compile(r"(?:/" + "Users" + r"|/" + "home" + r")/[^/\s\"'`]+")
 _SECRETS = [
     re.compile(r"(sk-[A-Za-z0-9_-]{16,}|" + _TOKEN_PREFIX + r"p_[A-Za-z0-9]{20,}|"
                + _TOKEN_PREFIX + r"[ousr]_[A-Za-z0-9]{20,}|"
+               + _GITHUB_PAT + r"[A-Za-z0-9_]{20,}|"
+               + _SHOPIFY_TOKEN + r"[A-Za-z0-9_]{16,}|"
                r"xox[abpr]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{30,})"),
     re.compile(r"(?i)\b(bearer|token|password|passwd|secret|api[_-]?key)\b\s*[:=]?\s*\S{6,}"),
 ]
@@ -702,8 +706,11 @@ def opencode_sessions(repo, cutoff):
         except sqlite3.Error:
             pass
         try:
+            fork_select = ", s.fork_session_id" if "fork_session_id" in columns else ""
             rows = conn.execute(
-                "SELECT s.id, s.directory, MAX(m.time_created), s.parent_id FROM session_v2 s "
+                "SELECT s.id, s.directory, MAX(m.time_created), s.parent_id"
+                + fork_select +
+                " FROM session_v2 s "
                 "JOIN session_message m ON m.session_id=s.id GROUP BY s.id").fetchall()
         except sqlite3.Error as exc:
             print("collect_sessions: skipping the OpenCode store (%s): %s" % (db, exc),
@@ -711,7 +718,10 @@ def opencode_sessions(repo, cutoff):
             return [], v1_only, "opencode"
         total = recognized = 0
         user_ok = False
-        for session_id, directory, last, parent_id in rows:
+        for row in rows:
+            session_id, directory, last, parent_id = row[:4]
+            fork_id = row[4] if len(row) > 4 else None
+            group = fork_id if isinstance(fork_id, str) and fork_id else str(session_id)
             try:
                 last_value = float(last or 0)
                 mtime = last_value / 1000.0 if last_value > 1e12 else last_value
@@ -723,7 +733,7 @@ def opencode_sessions(repo, cutoff):
                 continue
             if parent_id not in (None, ""):
                 sessions.append(make_session("opencode", str(session_id), mtime, False,
-                                             [], [], excluded=True))
+                                             [], [], excluded=True, group=group))
                 continue
             human, errors = [], []
             excluded = False
@@ -763,7 +773,7 @@ def opencode_sessions(repo, cutoff):
                 elif mtype == "assistant" and isinstance(data.get("content"), list):
                     errors.extend(opencode_errors(data))
             sessions.append(make_session("opencode", str(session_id), mtime, False, human,
-                                         errors, excluded=excluded))
+                                         errors, excluded=excluded, group=group))
     finally:
         conn.close()
     if total >= 20 and (recognized * 2 < total or not user_ok):
@@ -838,25 +848,28 @@ def header_line(repo, days, counts, shown, shown_sessions):
 def build_digest(repo, sessions, days, max_chars, now, drift):
     counts = counts_for(sessions)
     ordered = round_robin(sessions, now)
-    blocks = [session_block(session) for session in ordered]
+    pairs = [(session, session_block(session)) for session in ordered]
     shown = 0
+    chosen = []
+    chosen_sessions = []
     for _ in range(6):
-        header = header_line(repo, days, counts, shown, ordered[:shown])
+        header = header_line(repo, days, counts, shown, chosen_sessions)
         remaining = max_chars - len(header)
-        chosen = []
-        for block in blocks:
+        chosen, chosen_sessions = [], []
+        for session, block in pairs:
             if len(block) <= remaining:
                 chosen.append(block)
+                chosen_sessions.append(session)
                 remaining -= len(block)
         if len(chosen) == shown:
             break
         shown = len(chosen)
-    header = header_line(repo, days, counts, shown, ordered[:shown])
+    header = header_line(repo, days, counts, shown, chosen_sessions)
     body = "".join(chosen)
     lines = ["FORMAT DRIFT: %s" % source for source in drift]
     lines.append(header)
     text = "\n".join(lines) + "\n" + body
-    return text, shown, counts, date_range(ordered[:shown])
+    return text, shown, counts, date_range(chosen_sessions)
 
 
 def build_evidence(repo, sessions, days, now, drift, v1_only):

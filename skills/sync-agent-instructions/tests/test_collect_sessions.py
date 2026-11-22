@@ -287,7 +287,8 @@ class CollectorCase(unittest.TestCase):
         conn.execute('CREATE TABLE project (id text PRIMARY KEY)')
         conn.execute("INSERT INTO project VALUES ('project-1')")
         if 'session_v2' not in missing:
-            columns = 'id text PRIMARY KEY, project_id text, slug text, directory text, '
+            columns = ('id text PRIMARY KEY, project_id text, slug text, directory text, '
+                       'fork_session_id text, ')
             if parent_column:
                 columns += 'parent_id text, '
             columns += 'time_created integer, time_updated integer'
@@ -298,12 +299,12 @@ class CollectorCase(unittest.TestCase):
                          'data text)')
         for session_id, directory, age_days, messages in sessions:
             now = int((time.time() - age_days * 86400) * 1000)
+            values = [session_id, 'project-1', session_id, directory, None]
             if parent_column:
-                conn.execute('INSERT INTO session_v2 VALUES (?, ?, ?, ?, ?, ?, ?)',
-                             (session_id, 'project-1', session_id, directory, None, now, now))
-            else:
-                conn.execute('INSERT INTO session_v2 VALUES (?, ?, ?, ?, ?, ?)',
-                             (session_id, 'project-1', session_id, directory, now, now))
+                values.append(None)
+            values.extend([now, now])
+            conn.execute('INSERT INTO session_v2 VALUES (%s)'
+                         % ','.join('?' * len(values)), tuple(values))
             if 'session_message' not in missing:
                 for seq, (kind, data) in enumerate(messages, 1):
                     conn.execute('INSERT INTO session_message VALUES (?, ?, ?, ?, ?, ?, ?)',
@@ -506,6 +507,27 @@ class CollectorExclusionTests(CollectorCase):
         self.assertIn('parent session message', proc.stdout)
         self.assertNotIn('child session message', proc.stdout)
 
+    def test_forked_opencode_sessions_share_the_fork_group(self):
+        path = self.make_db([
+            ('origin-session', self.root, 0, [
+                transcript_fixtures.opencode_user('origin session message')]),
+            ('branch-session', self.root, 0, [
+                transcript_fixtures.opencode_user('branch session message')]),
+        ])
+        conn = sqlite3.connect(str(path))
+        conn.execute("UPDATE session_v2 SET fork_session_id='origin-session' "
+                     "WHERE id='branch-session'")
+        conn.commit()
+        conn.close()
+        evidence = os.path.join(self.tmp, 'evidence.json')
+        proc = self.run_collector('--evidence-out', evidence)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        with open(evidence, encoding='utf-8') as handle:
+            payload = json.load(handle)
+        groups = {session['id']: session['group'] for session in payload['sessions']}
+        self.assertEqual(groups['opencode:branch-session'], 'origin-session')
+        self.assertEqual(groups['opencode:origin-session'], 'origin-session')
+
     def test_pasted_spans_are_removed_and_the_rest_is_kept(self):
         self.write_session(self.root, 'pasted.jsonl', [
             transcript_fixtures.record(
@@ -566,6 +588,26 @@ class CollectorSamplingTests(CollectorCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn('small message survives', proc.stdout)
         self.assertNotIn('BIGSTART', proc.stdout)
+
+    def test_date_range_uses_only_the_shown_sessions(self):
+        now = time.time()
+        big = [transcript_fixtures.record('BIGSTART message %d %s' % (i, 'x' * 400))
+               for i in range(15)]
+        self.write_session(self.root, 'big.jsonl', big, mtime=now)
+        self.write_session(self.root, 'small.jsonl',
+                           [transcript_fixtures.record('small message survives')],
+                           mtime=now - 9 * 86400)
+        proc = self.run_collector('--max-chars', '1500')
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn('small message survives', proc.stdout)
+        self.assertNotIn('BIGSTART', proc.stdout)
+        match = re.search(r'(\d+) shown\. (\S+) to (\S+)\.', proc.stdout)
+        self.assertIsNotNone(match, proc.stdout)
+        shown, start, end = match.groups()
+        self.assertEqual(shown, '1')
+        self.assertEqual(start, time.strftime('%Y-%m-%d',
+                                              time.localtime(now - 9 * 86400)))
+        self.assertEqual(end, start)
 
     def test_counts_and_date_range_are_reported(self):
         now = time.time()

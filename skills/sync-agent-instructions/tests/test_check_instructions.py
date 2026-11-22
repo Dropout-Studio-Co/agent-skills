@@ -248,6 +248,32 @@ class CommandContractTests(CheckerCase):
         self.assertEqual(proc.returncode, 2)
         self.assertFalse(os.path.exists(inside))
 
+    def test_gate_rejects_invalid_or_unsafe_claims_with_exit_two(self):
+        self.stage()
+        evidence = self.evidence([])
+        gate_path = os.path.join(self.stage_dir, 'gate.json')
+        inside = os.path.join(self.repo, 'claims.json')
+        with open(inside, 'w', encoding='utf-8') as handle:
+            json.dump({'version': 1, 'claims': [], 'explained_stale': []}, handle)
+        proc = self.checker('gate', '--stage', self.stage_dir, '--evidence', evidence,
+                            '--claims', inside, '--json')
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertFalse(os.path.exists(gate_path))
+        real = self.claims([])
+        link = os.path.join(self.private, 'claims-link.json')
+        os.symlink(real, link)
+        proc = self.checker('gate', '--stage', self.stage_dir, '--evidence', evidence,
+                            '--claims', link, '--json')
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertFalse(os.path.exists(gate_path))
+        broken = os.path.join(self.private, 'claims-broken.json')
+        with open(broken, 'w', encoding='utf-8') as handle:
+            handle.write('{not json')
+        proc = self.checker('gate', '--stage', self.stage_dir, '--evidence', evidence,
+                            '--claims', broken, '--json')
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+        self.assertFalse(os.path.exists(gate_path))
+
     def test_gate_rejects_missing_evidence_and_apply_rejects_a_missing_gate(self):
         self.stage()
         claims_path = self.claims([])
@@ -431,6 +457,50 @@ class ImportCheckTests(CheckerCase):
         self.assertIn('line duplicated from AGENTS.md',
                       [error['error'] for error in report['errors']])
 
+    def test_nested_agents_without_claude_fails(self):
+        self.write('sub/AGENTS.md', '# Sub\n\n- Keep this subtree tidy.\n')
+        self.commit('nested orphan')
+        report = self.import_report()
+        self.assertFalse(report['ok'])
+        self.assertTrue(any(error['file'] == 'sub/CLAUDE.md'
+                            and error['error'] == 'missing CLAUDE.md import'
+                            for error in report['errors']), report)
+
+    def test_nested_import_fix_reads_the_sibling_agents(self):
+        duplicate = '- Keep this subtree tidy.'
+        self.write('sub/AGENTS.md', '# Sub\n\n' + duplicate + '\n')
+        self.write('sub/CLAUDE.md', '@AGENTS.md\n' + duplicate + '\n')
+        self.commit('duplicated nested line')
+        self.stage()
+        self.proposed('sub/CLAUDE.md', '@AGENTS.md\n')
+        claim = {'id': 'f1', 'type': 'Fix', 'file': 'sub/CLAUDE.md',
+                 'removed': [duplicate], 'added': [], 'basis': 'import'}
+        code, payload = self.gate([claim])
+        self.assertEqual(code, 0, payload)
+
+    def test_gate_blocks_broken_imports_in_the_proposed_tree(self):
+        self.stage()
+        self.proposed('CLAUDE.md', '`@AGENTS.md`\n')
+        claim = {'id': 'f1', 'type': 'Fix', 'file': 'CLAUDE.md',
+                 'removed': ['@AGENTS.md'], 'added': ['`@AGENTS.md`'], 'basis': 'import'}
+        code, payload = self.gate([claim])
+        self.assertEqual(code, 1)
+        self.assertIn('import_check', self.codes(payload))
+
+    def test_gate_accepts_a_symlinked_claude_md(self):
+        os.remove(os.path.join(self.repo, 'CLAUDE.md'))
+        os.symlink('AGENTS.md', os.path.join(self.repo, 'CLAUDE.md'))
+        self.write('package.json', json.dumps({'name': 'x', 'marker': 'needle'}))
+        self.commit('symlinked bridge')
+        self.stage()
+        line = '- The needle marker is documented in `AGENTS.md`.'
+        self.proposed('AGENTS.md', self.base_read('AGENTS.md') + line + '\n')
+        claim = {'id': 'a1', 'type': 'Add', 'file': 'AGENTS.md', 'removed': [],
+                 'added': [line], 'basis': 'repo_proof',
+                 'proof': {'file': 'package.json', 'contains': 'needle'}}
+        code, payload = self.gate([claim])
+        self.assertEqual(code, 0, payload)
+
     def test_nested_memory_files_get_the_same_check(self):
         self.write('sub/AGENTS.md', '# Sub\n\n- Keep this subtree tidy.\n')
         self.write('sub/CLAUDE.md', '@AGENTS.md\n')
@@ -531,6 +601,25 @@ class ClaimContractTests(CheckerCase):
         self.assertEqual(code, 1)
         self.assertIn('phantom_line', self.codes(payload))
 
+    def test_added_lines_that_redaction_would_change_are_blocked(self):
+        self.write('package.json', json.dumps({'name': 'x', 'marker': 'needle'}))
+        self.commit('proof')
+        samples = ['gh' + 'p_' + 'a' * 36, 'alice' + '@' + 'example.test',
+                   '/' + 'Users' + '/alice/private']
+        for sample in samples:
+            with self.subTest(sample):
+                if os.path.isdir(self.stage_dir):
+                    shutil.rmtree(self.stage_dir)
+                self.stage()
+                line = '- The needle note mentions ' + sample + '.'
+                self.proposed('AGENTS.md', self.base_read('AGENTS.md') + line + '\n')
+                claim = {'id': 'a1', 'type': 'Add', 'file': 'AGENTS.md', 'removed': [],
+                         'added': [line], 'basis': 'repo_proof',
+                         'proof': {'file': 'package.json', 'contains': 'needle'}}
+                code, payload = self.gate([claim])
+                self.assertEqual(code, 1, payload)
+                self.assertIn('redaction_triggered', self.codes(payload))
+
     def test_unknown_claim_key_and_type_block(self):
         self.stage()
         self.proposed('AGENTS.md', self.base_read('AGENTS.md') + '- added\n')
@@ -566,13 +655,13 @@ class QuoteGateTests(CheckerCase):
                          errors=['error text mentions routing profiles before editing']),
         ]
 
-    def run_add(self, citations, added=None):
+    def run_add(self, citations, added=None, sessions=None):
         self.stage()
         added = added or [self.LINE]
         self.proposed('AGENTS.md', self.base_read('AGENTS.md') + '\n'.join(added) + '\n')
         claim = {'id': 'a1', 'type': 'Add', 'file': 'AGENTS.md', 'removed': [],
                  'added': added, 'basis': 'sessions', 'citations': citations}
-        return self.gate([claim], sessions=self.sessions)
+        return self.gate([claim], sessions=sessions if sessions is not None else self.sessions)
 
     def test_two_related_quotes_pass(self):
         code, payload = self.run_add([
@@ -620,6 +709,27 @@ class QuoteGateTests(CheckerCase):
             added=[self.Q1])
         self.assertEqual(code, 1)
         self.assertIn('quote_verbatim', self.codes(payload))
+
+    def test_a_quote_with_the_word_redact_passes(self):
+        first = 'please do not redact the helper names in logs'
+        second = 'the helper names in logs are useful'
+        sessions = [
+            self.session('claude-code:one', messages=[self.message(first, msg='r1')]),
+            self.session('claude-code:two', messages=[self.message(second, msg='r2')]),
+        ]
+        line = '- Use `skills/consolidate/SKILL.md` when the helper names in logs matter.'
+        code, payload = self.run_add([
+            {'session': 'claude-code:one', 'quote': first},
+            {'session': 'claude-code:two', 'quote': second}], added=[line], sessions=sessions)
+        self.assertEqual(code, 0, payload)
+
+    def test_a_bad_citation_aside_valid_ones_is_reported(self):
+        code, payload = self.run_add([
+            {'session': 'claude-code:one', 'quote': self.Q1},
+            {'session': 'claude-code:two', 'quote': self.Q2},
+            {'session': 'claude-code:one', 'quote': 'routing profiles'}])
+        self.assertEqual(code, 1)
+        self.assertIn('quote_invalid', self.codes(payload))
 
 
 class AddGateTests(CheckerCase):
@@ -780,6 +890,18 @@ class RemoveGateTests(CheckerCase):
         code, payload = self.gate([claim])
         self.assertEqual(code, 0, payload)
 
+    def test_repo_disproof_rejects_a_valid_line_beside_a_stale_one(self):
+        valid = '- Keep the fixture quiet.'
+        self.stage()
+        proposed = self.base_read('AGENTS.md').replace(self.stale + '\n', '')
+        proposed = proposed.replace(valid + '\n', '')
+        self.proposed('AGENTS.md', proposed)
+        claim = {'id': 'r1', 'type': 'Remove', 'file': 'AGENTS.md',
+                 'removed': [self.stale, valid], 'added': [], 'basis': 'repo_disproof'}
+        code, payload = self.gate([claim])
+        self.assertEqual(code, 1)
+        self.assertIn('remove_unsupported', self.codes(payload))
+
     def test_corroborated_harm_needs_two_correction_sessions(self):
         line = '- Keep the fixture quiet.'
         self.write('AGENTS.md', DEFAULT_AGENTS + '\n' + line + '\n')
@@ -799,7 +921,13 @@ class RemoveGateTests(CheckerCase):
                  'citations': [{'session': 'claude-code:a',
                                 'quote': 'stop keeping the fixture quiet'},
                                {'session': 'claude-code:b',
-                                'quote': 'keeping the fixture quiet is wrong'}]}
+                                'quote': 'keeping the fixture quiet is wrong'},
+                               {'session': 'claude-code:a', 'quote': 'quiet'}]}
+        code, payload = self.gate([claim], sessions=sessions)
+        self.assertEqual(code, 1)
+        self.assertIn('quote_invalid', self.codes(payload))
+
+        claim['citations'] = claim['citations'][:2]
         code, payload = self.gate([claim], sessions=sessions)
         self.assertEqual(code, 0, payload)
 
@@ -909,19 +1037,24 @@ class MoveTests(CheckerCase):
         self.write('.backpassrc.json', json.dumps({'budgetTokens': 1}))
         self.commit('move fixture')
 
+    def rewrite_base_crlf(self):
+        text = self.read('AGENTS.md')
+        self.write('AGENTS.md', text.replace('\n', '\r\n'))
+        self.commit('crlf base')
+
     def do_move(self, target, lines=None, bridge='@AGENTS.md\n', crlf=False, target_text=None):
         lines = lines or self.lines
         self.stage()
         base = self.base_read('AGENTS.md')
         remaining = base
         for line in lines:
-            remaining = remaining.replace(line + '\n', '')
+            remaining = remaining.replace(line + '\r\n', '').replace(line + '\n', '')
         self.proposed('AGENTS.md', remaining)
         if target_text is None:
             body = '\r\n'.join(lines) + '\r\n' if crlf else '\n'.join(lines) + '\n'
             if target.endswith('SKILL.md'):
-                body = '---\nname: moved\ndescription: moved procedure\n---\n\n' + body
-            target_text = '# Moved\n\n' + body
+                body = '---\nname: moved\ndescription: moved procedure\n---\n' + body
+            target_text = body
         self.proposed(target, target_text)
         if bridge is not None:
             directory = os.path.dirname(target)
@@ -937,14 +1070,42 @@ class MoveTests(CheckerCase):
         self.assertEqual(payload['status'], 'pass')
 
     def test_move_is_byte_identical_with_crlf(self):
+        self.rewrite_base_crlf()
         code, payload = self.do_move('sub/AGENTS.md', crlf=True)
         self.assertEqual(code, 0, payload)
         with open(os.path.join(self.stage_dir, 'proposed', 'sub', 'AGENTS.md'), 'rb') as handle:
             self.assertIn(b'\r\n', handle.read())
 
+    def test_move_from_crlf_to_lf_is_blocked(self):
+        self.rewrite_base_crlf()
+        code, payload = self.do_move('sub/AGENTS.md', crlf=False)
+        self.assertEqual(code, 1)
+        self.assertIn('move_not_identical', self.codes(payload))
+
+    def test_move_from_lf_to_crlf_is_blocked(self):
+        code, payload = self.do_move('sub/AGENTS.md', crlf=True)
+        self.assertEqual(code, 1)
+        self.assertIn('move_not_identical', self.codes(payload))
+
     def test_skill_move_passes(self):
         code, payload = self.do_move('.agents/skills/moved/SKILL.md', bridge=None)
         self.assertEqual(code, 0, payload)
+
+    def test_extra_line_in_a_move_target_blocks(self):
+        target = 'sub/AGENTS.md'
+        self.stage()
+        base = self.base_read('AGENTS.md')
+        remaining = base
+        for line in self.lines:
+            remaining = remaining.replace(line + '\n', '')
+        self.proposed('AGENTS.md', remaining)
+        self.proposed(target, '\n'.join(self.lines) + '\n- An extra unmoved line.\n')
+        self.proposed('sub/CLAUDE.md', '@AGENTS.md\n')
+        claim = {'id': 'm1', 'type': 'Move', 'file': 'AGENTS.md', 'removed': self.lines,
+                 'added': [], 'target': target}
+        code, payload = self.gate([claim])
+        self.assertEqual(code, 1)
+        self.assertIn('unmapped_hunk', self.codes(payload))
 
     def test_wrong_subtree_blocks(self):
         code, payload = self.do_move('other/AGENTS.md')
@@ -992,6 +1153,92 @@ class BackpassTests(CheckerCase):
         with open(os.path.join(directory, 'evidence-summary.json'), 'w', encoding='utf-8') as handle:
             json.dump({'version': 1, 'entries': []}, handle)
         return directory
+
+    def write_ledger(self, entries, summary=None):
+        directory = os.path.join(self.repo, '.backpass')
+        os.makedirs(directory, exist_ok=True)
+        with open(os.path.join(directory, 'gap-ledger.json'), 'w', encoding='utf-8') as handle:
+            json.dump({'version': 1, 'entries': entries}, handle)
+        with open(os.path.join(directory, 'evidence-summary.json'), 'w',
+                  encoding='utf-8') as handle:
+            json.dump(summary or {'version': 1, 'gaps': []}, handle)
+        return directory
+
+    def test_real_gap_ledger_sightings_route_and_hide_project_paths(self):
+        entries = {
+            'gap-one': {
+                'proposedInstruction': 'Run the collector tests before merging.',
+                'sessions': {
+                    'h1': {'domain': 'project',
+                           'source': 'claude · uuid-one · 2026-11-06',
+                           'project': '/very/secret/project', 'projectRoot': '/very/secret/root'},
+                    'h2': {'domain': 'Project',
+                           'source': 'claude · uuid-two · 2026-11-07',
+                           'project': '/very/secret/other', 'projectRoot': '/very/secret/other'},
+                },
+            },
+            'gap-two': {
+                'proposedInstruction': 'Answer briefly in every repository.',
+                'sessions': {
+                    'h3': {'domain': 'orchestration',
+                           'source': 'claude · uuid-three · 2026-11-08',
+                           'project': '/very/secret/project', 'projectRoot': '/very/secret/project'},
+                },
+            },
+        }
+        directory = self.write_ledger(entries)
+        before = {}
+        for name in os.listdir(directory):
+            with open(os.path.join(directory, name), 'rb') as handle:
+                before[name] = hashlib.sha256(handle.read()).hexdigest()
+        _code, payload = self.check()
+        self.assertEqual(len(payload['leads']), 1)
+        self.assertEqual(len(payload['user_global_candidates']), 1)
+        lead = payload['leads'][0]
+        self.assertEqual(lead['transcript'], 'uuid-one')
+        self.assertEqual(lead['sessions'], 2)
+        self.assertTrue(lead['unverified'])
+        self.assertNotIn('secret', json.dumps(payload))
+        for name in os.listdir(directory):
+            with open(os.path.join(directory, name), 'rb') as handle:
+                self.assertEqual(hashlib.sha256(handle.read()).hexdigest(), before[name])
+
+    def test_evidence_summary_orchestration_sightings_route_to_candidates(self):
+        summary = {
+            'version': 1,
+            'gaps': [
+                {'proposedInstruction': 'Prefer the shared logger.', 'sessions': 2,
+                 'orchestrationSightings': 0, 'mixed': False,
+                 'majorityOrchestration': False},
+                {'proposedInstruction': 'Always use tabs.', 'sessions': 3,
+                 'orchestrationSightings': 2, 'mixed': True,
+                 'majorityOrchestration': True},
+            ],
+            'reportOnlyGaps': [
+                {'proposedInstruction': 'Consider a drawer instead.', 'sessions': 1,
+                 'orchestrationSightings': 1, 'mixed': False,
+                 'majorityOrchestration': False},
+            ],
+        }
+        self.write_ledger({}, summary)
+        _code, payload = self.check()
+        self.assertIn('Prefer the shared logger.', [lead['proposedInstruction']
+                                                   for lead in payload['leads']])
+        candidates = [item['proposedInstruction']
+                      for item in payload['user_global_candidates']]
+        self.assertIn('Always use tabs.', candidates)
+        self.assertIn('Consider a drawer instead.', candidates)
+
+    def test_list_entries_with_project_domain_are_leads(self):
+        self.write_backpass(self.repo, {'version': 1, 'gaps': [
+            {'domain': 'project', 'instruction': 'Keep the helper beside its caller.',
+             'source': 'claude-code:proj1', 'sessions': 1},
+            {'domain': 'web', 'instruction': 'Prefer the drawer.', 'source': 'claude-code:web1',
+             'sessions': 1},
+        ]})
+        _code, payload = self.check()
+        self.assertEqual([lead['transcript'] for lead in payload['leads']], ['proj1'])
+        self.assertEqual(len(payload['user_global_candidates']), 1)
 
     def test_project_and_other_domains_route_and_backpass_is_unchanged(self):
         directory = self.write_backpass(self.repo)
@@ -1218,8 +1465,41 @@ class ConcurrentEditTests(CheckerCase):
         code, _out = self.apply()
         self.assertEqual(code, 1)
 
+    def test_failed_replacement_leaves_no_temp_file(self):
+        self.write('sub/AGENTS.md', '# Sub\n\n- Sub line.\n')
+        self.commit('sub base')
+        self.stage()
+        self.proposed('AGENTS.md', self.base_read('AGENTS.md') + '- first added line\n')
+        self.proposed('sub/AGENTS.md', self.base_read('sub/AGENTS.md') + '- second line\n')
+        module = load_module('checker_for_temp_cleanup', SCRIPT)
+        stage = Path(self.stage_dir)
+        manifest = module.load_manifest(stage)
+        original = self.read('AGENTS.md')
+        real_copy = module.shutil.copyfile
+        calls = {'count': 0}
+
+        def flaky(source, target):
+            calls['count'] += 1
+            if calls['count'] == 2:
+                raise OSError('injected replacement failure')
+            return real_copy(source, target)
+
+        module.shutil.copyfile = flaky
+        try:
+            code, payload = module._write_in_place(
+                stage, manifest, Path(self.repo),
+                ['AGENTS.md', 'sub/AGENTS.md'])
+        finally:
+            module.shutil.copyfile = real_copy
+        self.assertEqual(code, 1, payload)
+        self.assertEqual(self.read('AGENTS.md'), original)
+        leftovers = [name for name in os.listdir(os.path.join(self.repo, 'sub'))
+                     if name.startswith('.sync-')]
+        self.assertEqual(leftovers, [])
+
     def test_failed_replacement_restores_the_base(self):
         self.write('sub/AGENTS.md', '# Sub\n\n- Sub line.\n')
+        self.write('sub/CLAUDE.md', '@AGENTS.md\n')
         self.write('package.json', json.dumps({'name': 'x', 'marker': 'needle'}))
         self.git('add', '-A')
         self.commit('sub')
@@ -1254,15 +1534,31 @@ class SyncSafetyTests(unittest.TestCase):
         fragments = [
             r"/" + "Users" + r"/[^/\s]+",
             r"/" + "home" + r"/[^/\s]+",
+            "sk" + "-" + "ant" + r"-[A-Za-z0-9_-]{16,}",
             "gh" + r"p_[A-Za-z0-9]{20,}",
-            "gh" + r"[ousr]_[A-Za-z0-9]{20,}",
-            "sk" + r"-[A-Za-z0-9_-]{16,}",
-            "xo" + r"x[abpr]-[A-Za-z0-9-]{10,}",
+            "gh" + r"o_[A-Za-z0-9]{20,}",
+            "github" + r"_pat_[A-Za-z0-9_]{20,}",
             "AK" + r"IA[0-9A-Z]{16}",
-            "AI" + r"za[0-9A-Za-z_-]{30,}",
+            "xo" + r"x[abpr]-[A-Za-z0-9-]{10,}",
             "-----BEGIN " + r"[A-Z0-9 ]*PRIVATE KEY-----",
         ]
         return re.compile("|".join(fragments))
+
+    def test_the_hold_regex_catches_each_held_pattern(self):
+        pattern = self.hold_regex()
+        samples = [
+            "/" + "Users" + "/alice/x",
+            "/" + "home" + "/alice/x",
+            "sk" + "-" + "ant" + "-" + "a" * 24,
+            "gh" + "p_" + "a" * 36,
+            "gh" + "o_" + "a" * 36,
+            "github" + "_pat_" + "a" * 30,
+            "AK" + "IA" + "A" * 16,
+            "xo" + "x" + "b" + "-" + "a" * 12,
+            "-----BEGIN " + "RSA PRIVATE KEY-----",
+        ]
+        for sample in samples:
+            self.assertTrue(pattern.search(sample), sample)
 
     def test_every_skill_file_is_free_of_held_literals(self):
         pattern = self.hold_regex()
@@ -1280,9 +1576,13 @@ class SyncSafetyTests(unittest.TestCase):
         with open(COLLECTOR, encoding='utf-8') as handle:
             source = handle.read()
         self.assertNotIn("gh" + "p_", source)
+        self.assertNotIn("github" + "_pat_", source)
         module = load_module('collector_for_redaction', COLLECTOR)
-        sample = "gh" + "p_" + "e" * 36
-        self.assertIn('[REDACTED]', module.redact('token ' + sample))
+        samples = ("gh" + "p_" + "e" * 36,
+                   "github" + "_pat_" + "A" * 30,
+                   "shp" + "at_" + "b" * 20)
+        for sample in samples:
+            self.assertIn('[REDACTED]', module.redact('value ' + sample))
 
 
 class DocsTests(unittest.TestCase):
