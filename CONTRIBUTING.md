@@ -11,10 +11,10 @@ Read the skill you are touching. `SKILL.md` is the workflow, and for `dependency
 ## Invariants
 
 - **Folder names are the skill names.** `consolidate` and `frontend-ui-ux-overhaul` resolve
-  `../dependency-upgrade/scripts/routed_task.py` and their own `routing.json` from their location.
+  `../dependency-upgrade/scripts/review_task.py` and their own `task-profile.json` from their location.
   Renaming or splitting `skills/dependency-upgrade` breaks both.
 - **Skills stay self-contained.** A folder must work when copied alone into a global skills root,
-  except for the shared routing scripts above.
+  except for the shared fresh-context task scripts above.
 - **Frontmatter stays valid.** Every `SKILL.md` keeps `name` and `description`; the description
   states what the skill does and when to use it.
 - **No machine-specific paths.** Document the canonical install root (`~/.agents/skills/<skill>`,
@@ -29,7 +29,7 @@ python3 -m unittest discover -s skills/sync-agent-instructions/tests -t skills/s
 ```
 
 Run the dependency-upgrade suite after any change to `dependency-upgrade` scripts, tests or any
-`routing.json` (this also validates the `consolidate` and `frontend-ui-ux-overhaul` profiles). Run
+`task-profile.json` (this also validates the `consolidate` and `frontend-ui-ux-overhaul` profiles). Run
 the collector and checker suite after changes to `sync-agent-instructions` scripts or tests.
 
 `sync-agent-instructions` ships two stdlib-only helpers. `scripts/collect_sessions.py` collects

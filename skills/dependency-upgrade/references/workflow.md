@@ -66,13 +66,15 @@ For each `major`, `prerelease`, `deprecated`, `unknown` record and each family:
   framework supports. Intermediate versions are fine when a direct jump is unsupported.
 
 ## 5. `plan`
-Delegate architecture and planning first ([review-routing.md §Architecture and planning](review-routing.md#architecture-and-planning)):
+Run fresh-context architecture and planning first ([fresh-context-tasks.md](fresh-context-tasks.md#architecture-and-planning)):
 the context file carries everything the planner needs, since it shares none of this session's
-context. One `planning run --kind plan` per upgrade at effort xhigh; one
-`--kind architecture --subject <risk>` per high-risk item (proportional effort). Treat the returned
-plan as advisory data: keep what satisfies these rules, reject the rest with a reason, then write
-the plan below yourself. If planning is `unavailable`, do not start a batch: run
-`run finish --status blocked` and report the outage.
+context. Prepare one `planning prepare --kind plan` per upgrade and one `--kind architecture
+--subject <risk>` per high-risk item, run each `prompt.md` in a fresh read-only context using the
+current session's harness, model and effort (or per `execution-protocol` if explicitly invoked
+alongside this skill), and bind the answer with `planning record`. Treat the returned plan as
+advisory data: keep what satisfies these rules, reject the rest with a reason, then write the plan
+below yourself. If no fresh context is available or planning fails, record `planning unavailable`,
+do not start a batch, run `run finish --status blocked` and report the gap.
 
 Write the plan into the report input (`targets`, `risks`, `migrations`, `test_matrix`):
 - Record the selected scope profile and exact target set. Keep semantic bump risk (`patch/minor/major`)
@@ -129,16 +131,17 @@ excludes it; never reset or delete it. Continue independent batches from a clean
 
 ## 8. `verify`, `review`
 - Full gate from verification.md; compare with baseline.
-- Commit the verified candidate, then run each review task through the router
-  ([review-routing.md](review-routing.md)), one at a time, each on Claude Opus 5.5 in a fresh
-  session: `review run <run_ref> --kind critical` (complete code diff + complete lockfile diff;
+- Commit the verified candidate, then prepare and run each review task in a fresh, read-only
+  context using the current session's harness, model and effort ([fresh-context-tasks.md](fresh-context-tasks.md);
+  or per `execution-protocol` when explicitly invoked alongside this skill), one at a time:
+  `review prepare <run_ref> --kind critical` (complete code diff + complete lockfile diff;
   `--required` when risk or repo/global policy requires independent review), and for every
   high-risk item `--kind independent --subject <risk> --required` and
-  `--kind security --subject <risk> --required`. Critical reviews run at effort medium;
-  independent and security reviews at effort high.
+  `--kind security --subject <risk> --required`, binding each output with `review record`.
 - Fix findings on the owned branch, re-run the affected checks, commit, and review the new
-  candidate. There is no fallback: if Opus is unavailable, the run stays `PARTIAL` and unmerged,
-  and a self-review is never recorded in place of a required review.
+  candidate. If no fresh independent context is available or a review fails, record `review
+  unavailable`, leave the run `PARTIAL` and unmerged, and never record a self-review in place of a
+  required review.
 - Record the printed entries in the report `reviews` list and the high-risk receipts in each risk's
   `reviews`.
 

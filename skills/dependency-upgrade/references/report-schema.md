@@ -31,17 +31,14 @@ are ignored. Supply the rest as one JSON object (all keys optional; unknown keys
   "links": [{"name": "uuid changelog", "url": "https://github.com/uuidjs/uuid/blob/main/CHANGELOG.md",
              "version": "11.1.0", "retrieved": "2026-11-02"}],
   "reviews": [{"id": "critical-full-diff-1a2b3c4d5e6f", "kind": "critical|independent|security",
-               "subject": "full-diff", "required": true, "status": "completed|unavailable",
-               "verdict": "pass|fail", "candidate_head": "<commit>", "evidence": "reviews/<id>/receipt.json",
-               "selected": {"priority": 1, "harness": "claude-code", "model": "claude-opus-5-5",
-                            "effort": "medium", "usage": "confirmed|unknown"},
-               "candidates": [{"priority": 1, "status": "exhausted", "reason": "run failed: exhausted",
-                               "checks": ["..."], "attempts": [{"category": "exhausted"}]}],
+               "subject": "full-diff", "required": true, "status": "completed|pending|unavailable",
+               "verdict": "pass|fail", "candidate_head": "<commit>", "reviewer": "fresh-context-1 (...)",
+               "evidence": "reviews/<id>/receipt.json",
                "finding_counts": {"Important": 0, "Nit": 1, "Pre-existing": 0}}],
   "planning": [{"id": "plan-upgrade-1a2b3c4d-5e6f7a8b9c0d", "kind": "plan|architecture", "subject": "upgrade",
-                "status": "completed|unavailable", "head": "<commit>", "planner": "claude-code/claude-opus-5-5@xhigh ...",
-                "selected": {"priority": 1, "harness": "claude-code", "model": "claude-opus-5-5", "effort": "xhigh"},
-                "candidates": [], "result": "plans/<id>/plan.json", "evidence": "plans/<id>/receipt.json"}],
+                "status": "completed|pending|unavailable", "head": "<commit>",
+                "planner": "fresh-context-1 (...)",
+                "result": "plans/<id>/plan.json", "evidence": "plans/<id>/receipt.json"}],
   "delivery": {"mode": "direct-PR | local-only", "pushed": true, "pr": "https://github.com/...",
                "checks": "green", "merged": false, "reason": "why it stopped where it did"},
   "remaining_actions": ["Only physically human-only steps belong here"],
@@ -82,7 +79,7 @@ no high-risk item is blocked, no `skipped_checks` entry has
 `required: true`, no upgrade has status `held`/`blocked`/`failed`, every `reviews` entry with
 `required: true` is `completed` with verdict `pass` and a valid receipt for the current candidate,
 and no review of the current candidate has verdict `fail`. Copy `reviews` entries verbatim from
-`depup.py review run` output ([review-routing.md](review-routing.md)). `planning` is written by the
+`depup.py review record` output ([fresh-context-tasks.md](fresh-context-tasks.md)). `planning` is written by the
 helper from `<run_dir>/plans/*/entry.json` (input values are ignored) and never gates `PASS`. `risk` describes the version
 bump; `impact_tier` describes the affected system and consequences. High-risk items do not require
 user approval; disposition follows the documented risk protocol. Corrections are listed in

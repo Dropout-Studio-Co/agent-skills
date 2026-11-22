@@ -22,10 +22,13 @@ Commands:
   run finish RUN                            release the repository mutation lock
   rollback   RUN [--apply]                  remove only clean, owned Git state
   report     RUN [--input FILE] [--copy-to DIR]  write report.json + summary.md (+ evidence copy)
-  review run RUN --kind K [--subject S] [--required]  one review task on Claude Opus 5.5 (no fallback)
-  review probe [--run RUN]                  reviewer availability, no model calls
-  planning run RUN --context F [--kind plan|architecture] [--subject S]
-                                            architecture/planning on Claude Opus 5.5, read-only
+  review prepare RUN --kind K [--subject S] [--required] [--context F]  prepare a fresh-context review
+  review record RUN --review-id ID --output F --reviewer R              bind a fresh-context review
+  review unavailable RUN --review-id ID --reason WHY                    record an unavailable review
+  planning prepare RUN --context F [--kind plan|architecture] [--subject S]
+                                            prepare a fresh-context plan/architecture task
+  planning record RUN --plan-id ID --output F --planner P               bind a fresh-context plan
+  planning unavailable RUN --plan-id ID --reason WHY                    record an unavailable plan
   capabilities                              local toolchain availability
 
 Exit codes: 0 ok, 1 command failed / refused, 2 usage error.
@@ -40,7 +43,6 @@ import json
 import os
 import re
 import shutil
-import signal
 import socket
 import subprocess
 import sys
@@ -2078,27 +2080,15 @@ def render_summary(report):
     if plans:
         lines += ['', '## Architecture and planning', '']
         for p in plans:
-            sel = p.get('selected') or {}
-            fallbacks = ['#%s %s/%s: %s (%s)' % (c.get('priority'), c.get('harness'), c.get('model'), c.get('status'),
-                                                 c.get('reason')) for c in p.get('candidates') or []
-                         if isinstance(c, dict) and c.get('status') not in ('selected', None)]
-            how = ('%s/%s@%s' % (sel.get('harness'), sel.get('resolved_model') or sel.get('model'), sel.get('effort'))
-                   if sel else p.get('reason'))
-            lines.append('- %s %s: %s — %s%s' % (p.get('kind'), p.get('subject'), p.get('status'), how,
-                                                 ('; fallbacks: ' + '; '.join(fallbacks)) if fallbacks else ''))
+            how = p.get('planner') or p.get('reason') or p.get('status')
+            lines.append('- %s %s: %s — %s' % (p.get('kind'), p.get('subject'), p.get('status'), how))
     reviews = [r for r in report.get('reviews') or [] if isinstance(r, dict)]
     if reviews:
         lines += ['', '## Reviews', '']
         for r in reviews:
-            sel = r.get('selected') or {}
-            fallbacks = ['#%s %s/%s: %s (%s)' % (c.get('priority'), c.get('harness'), c.get('model'), c.get('status'),
-                                                 c.get('reason')) for c in r.get('candidates') or []
-                         if isinstance(c, dict) and c.get('status') not in ('selected', None)]
-            how = ('%s/%s@%s, usage %s' % (sel.get('harness'), sel.get('resolved_model') or sel.get('model'),
-                                           sel.get('effort'), sel.get('usage') or 'unknown')) if sel else r.get('reason')
-            lines.append('- %s %s%s: %s %s — %s%s' % (r.get('kind'), r.get('subject'), ' (required)' if r.get('required')
-                                                     else '', r.get('status'), r.get('verdict') or '', how,
-                                                     ('; fallbacks: ' + '; '.join(fallbacks)) if fallbacks else ''))
+            how = r.get('reviewer') or r.get('reason') or r.get('status')
+            lines.append('- %s %s%s: %s %s — %s' % (r.get('kind'), r.get('subject'), ' (required)' if r.get('required')
+                                                    else '', r.get('status'), r.get('verdict') or '', how))
     delivery = report.get('delivery')
     if isinstance(delivery, dict) and delivery:
         lines += ['', '## Delivery', '']
@@ -2148,14 +2138,14 @@ def copy_evidence(run_dir, target, repo_root):
 
 # --------------------------------------------------------------------- reviews
 
-ROUTER_FACTORY = None  # tests inject a Router factory; None uses review_router.Router
+SAFE_TASK_ID = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]{0,120}$')
 
 
-def review_router():
-    """Load the sibling routing module by path (never from the repository or the working directory)."""
+def task_protocol():
+    """Load the sibling prompt/parser module by path (never from the repository or the working directory)."""
     import importlib.util
-    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'review_router.py')
-    spec = importlib.util.spec_from_file_location('depup_review_router', path)
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'task_protocol.py')
+    spec = importlib.util.spec_from_file_location('depup_task_protocol', path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -2166,12 +2156,12 @@ def review_slug(text):
     return '%s-%s' % (readable, hashlib.sha256(str(text).encode('utf-8')).hexdigest()[:8])  # exact subject, no collisions
 
 
-def write_review_inputs(rr, worktree, base, candidate, review_dir):
+def write_review_inputs(tp, worktree, base, candidate, review_dir):
     """Complete code diff and lockfile diff of base..candidate, redacted, inside the review directory."""
-    lock_specs = [':(glob)**/' + name for name in rr.LOCKFILES]
+    lock_specs = [':(glob)**/' + name for name in tp.LOCKFILES]
     diffs = {
         'code.diff': ['diff', '--no-color', '--no-ext-diff', base, candidate, '--', '.'] +
-                     [':(exclude,glob)**/' + name for name in rr.LOCKFILES],
+                     [':(exclude,glob)**/' + name for name in tp.LOCKFILES],
         'lockfile.diff': ['diff', '--no-color', '--no-ext-diff', base, candidate, '--'] + lock_specs,
         'diffstat.txt': ['diff', '--stat', '--no-color', base, candidate],
     }
@@ -2187,9 +2177,9 @@ def write_review_inputs(rr, worktree, base, candidate, review_dir):
             'stat': os.path.join(review_dir, 'diffstat.txt')}
 
 
-def review_target(args, journal, rr):
-    if args.kind not in rr.KINDS:
-        raise Refusal('--kind must be one of ' + ', '.join(rr.KINDS))
+def review_target(args, journal, tp):
+    if args.kind not in tp.KINDS:
+        raise Refusal('--kind must be one of ' + ', '.join(tp.KINDS))
     subject = args.subject or ('full-diff' if args.kind == 'critical' else None)
     if not subject:
         raise Refusal('--subject <risk name> is required for independent and security reviews')
@@ -2199,20 +2189,7 @@ def review_target(args, journal, rr):
     return subject, candidate, '%s-%s-%s' % (args.kind, review_slug(subject), candidate[:12])
 
 
-def compact_candidates(evidence):
-    keys = ('priority', 'harness', 'model', 'effort', 'status', 'usage', 'reason', 'resets_at', 'resolved_model',
-            'checks')
-    out = []
-    for record in evidence.get('candidates', []):
-        item = {k: record.get(k) for k in keys if record.get(k) not in (None, [], '')}
-        item['attempts'] = [{k: a.get(k) for k in ('category', 'reason', 'rc', 'seconds', 'usage',
-                                                    'models_reported') if a.get(k) not in (None, '')}
-                            for a in record.get('attempts', [])]
-        out.append(item)
-    return out
-
-
-def complete_review(run_dir, journal, review_dir, meta, text, result, reviewer, selected):
+def complete_review(run_dir, journal, review_dir, meta, text, result, reviewer):
     review_md = os.path.join(review_dir, 'review.md')
     header = '<!-- depup review %s (%s %s) by %s on %s -->\n' % (meta['id'], meta['kind'], meta['subject'], reviewer,
                                                               meta['candidate_head'])
@@ -2225,116 +2202,110 @@ def complete_review(run_dir, journal, review_dir, meta, text, result, reviewer, 
     counts = {s: len([f for f in result['findings'] if f['severity'] == s]) for s in ('Important', 'Nit', 'Pre-existing')}
     meta.update(status='completed', verdict=result['verdict'], summary=result.get('summary'),
                 finding_counts=counts, findings=result['findings'], result_corrections=result.get('corrections'),
-                selected=selected, reviewer=reviewer,
+                reviewer=reviewer,
                 evidence=os.path.relpath(os.path.join(review_dir, 'receipt.json'), run_dir), completed=now())
     return meta
 
 
-def cmd_review_run(args):
-    rr = review_router()
+def cmd_review_prepare(args):
+    tp = task_protocol()
     run_dir = run_dir_for(args.run)
     journal = load_journal(run_dir)
-    subject, candidate, review_id = review_target(args, journal, rr)
+    subject, candidate, review_id = review_target(args, journal, tp)
     reviews_dir = os.path.join(run_dir, 'reviews')
     review_dir = os.path.join(reviews_dir, review_id)
     entry_path = os.path.join(review_dir, 'entry.json')
     existing, _ = read_json(entry_path)
     if isinstance(existing, dict) and existing.get('status') == 'completed' and not args.rerun:
-        return dict(existing, reused=True, note='completed review for this exact candidate reused; no model call')
-    lock = os.path.join(review_dir, 'review.lock')
-    held, _ = read_json(lock)
-    if isinstance(held, dict) and not pid_alive(held.get('pid')):
-        try:
-            os.unlink(lock)  # its holder died (killed by a tool timeout): reclaim instead of blocking forever
-        except FileNotFoundError:
-            pass
-    try:
-        exclusive_create(lock, json.dumps({'pid': os.getpid(), 'at': now()}))
-    except FileExistsError:
-        raise Refusal('review %s is already running (lock %s); never start a duplicate review' % (review_id, lock))
-    previous = signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))  # run `finally`, stop the reviewer
-    try:
-        files = write_review_inputs(rr, journal['worktree'], journal.get('worktree_base') or journal['base_commit'],
-                                    candidate, review_dir)
-        context = None
-        if args.context:
-            context = os.path.join(review_dir, 'context' + (os.path.splitext(args.context)[1] or '.txt'))
-            atomic_write(context, redact_text(read_text(args.context) or ''))
-        prompt = rr.build_prompt(args.kind, subject, journal['worktree'],
-                                 journal.get('worktree_base') or journal['base_commit'], candidate, files, context)
-        atomic_write(os.path.join(review_dir, 'prompt.md'), prompt)
-        factory = ROUTER_FACTORY or rr.Router
-        router = factory(timeout=args.timeout, max_retries=args.max_retries)
-        ctx = {'review_id': review_id, 'review_dir': review_dir, 'reviews_dir': reviews_dir,
-               'worktree': journal['worktree'], 'prompt': prompt, 'redact': redact_text,
-               'effort': rr.HIGH_EFFORT if args.kind in ('independent', 'security') else rr.REVIEW_EFFORT}
-        try:
-            evidence, selected, done = router.route(ctx)
-        except RuntimeError as exc:
-            raise Refusal(str(exc))
-        meta = {'id': review_id, 'kind': args.kind, 'subject': subject, 'required': bool(args.required),
-                'candidate_head': candidate, 'routing': os.path.relpath(os.path.join(review_dir, 'routing.json'), run_dir),
-                'candidates': compact_candidates(evidence)}
-        if done and candidate_head(journal) != candidate:
-            done = None
-            meta['reason'] = 'the owned worktree changed during the review; result discarded'
-        if done:
-            text, result, outcome, attempt_dir, probe = done
-            sel = {'priority': selected['priority'], 'harness': selected['harness'], 'model': selected['model'],
-                   'effort': selected['effort'], 'resolved_model': probe.get('resolved_model'),
-                   'usage': next((c.get('usage') for c in meta['candidates'] if c.get('status') == 'selected'), None)}
-            reviewer = '%s/%s@%s fresh session %s/%s' % (sel['harness'], sel['resolved_model'] or sel['model'],
-                                                         sel['effort'], review_id, os.path.basename(attempt_dir))
-            meta = complete_review(run_dir, journal, review_dir, meta, text, result, reviewer, sel)
-        elif done is None and meta.get('reason'):
-            meta.update(status='unavailable', reason=meta['reason'])
-        else:
-            last = (evidence.get('candidates') or [{}])[-1].get('reason') or 'no reason recorded'
-            meta.update(status='unavailable', reason=(
-                'Claude Opus 5.5 could not complete this review (%s); no fallback by policy' % last))
-        evidence.update(finished=now(), entry_status=meta['status'])
-        atomic_write(os.path.join(review_dir, 'routing.json'), json.dumps(redact_output(evidence), indent=2) + '\n')
+        if args.required and not existing.get('required'):
+            existing['required'] = True
+            atomic_write(entry_path, json.dumps(redact_output(existing), indent=2) + '\n')
+        return dict(existing, reused=True, note='completed review for this exact candidate reused')
+    files = write_review_inputs(tp, journal['worktree'], journal.get('worktree_base') or journal['base_commit'],
+                                candidate, review_dir)
+    context = None
+    if args.context:
+        context = os.path.join(review_dir, 'context' + (os.path.splitext(args.context)[1] or '.txt'))
+        atomic_write(context, redact_text(read_text(args.context) or ''))
+    prompt = tp.build_prompt(args.kind, subject, journal['worktree'],
+                             journal.get('worktree_base') or journal['base_commit'], candidate, files, context)
+    prompt_path = os.path.join(review_dir, 'prompt.md')
+    output_path = os.path.join(review_dir, 'output.md')
+    atomic_write(prompt_path, prompt)
+    meta = {
+        'id': review_id, 'kind': args.kind, 'subject': subject,
+        'required': bool(args.required or (isinstance(existing, dict) and existing.get('required'))),
+        'candidate_head': candidate, 'status': 'pending', 'created': now(),
+        'prompt_path': prompt_path, 'output_path': output_path,
+        'next': (
+            'Run %s in a fresh, read-only independent context using this session\'s current harness, model and '
+            'effort (never self-review in the authoring conversation; follow execution-protocol only if '
+            'explicitly invoked alongside this skill). Save its full answer to %s, then run: '
+            'depup.py review record %s --review-id %s --output %s --reviewer "<fresh-context-id>". '
+            'If no fresh independent context is available, run: '
+            'depup.py review unavailable %s --review-id %s --reason "<why>".'
+            % (prompt_path, output_path, args.run, review_id, output_path, args.run, review_id)),
+    }
+    atomic_write(entry_path, json.dumps(redact_output(meta), indent=2) + '\n')
+    return dict(meta, entry=entry_path)
+
+
+def cmd_review_record(args):
+    """Validate and bind a fresh-context review output to its prepared candidate."""
+    tp = task_protocol()
+    run_dir = run_dir_for(args.run)
+    journal = load_journal(run_dir)
+    if not SAFE_TASK_ID.match(args.review_id or ''):
+        raise Refusal('invalid review id')
+    review_dir = os.path.join(run_dir, 'reviews', args.review_id)
+    entry_path = os.path.join(review_dir, 'entry.json')
+    meta, error = read_json(entry_path)
+    if error or not isinstance(meta, dict) or meta.get('status') != 'pending':
+        raise Refusal('review %s is not pending' % args.review_id)
+    if not (args.reviewer or '').strip():
+        raise Refusal('--reviewer must identify the fresh-context reviewer')
+    if candidate_head(journal) != meta.get('candidate_head'):
+        meta.update(status='unavailable', tree_changed=True,
+                    reason='the owned worktree changed since the review was prepared; result discarded')
+        meta.pop('next', None)
         atomic_write(entry_path, json.dumps(redact_output(meta), indent=2) + '\n')
         return dict(meta, entry=entry_path)
-    finally:
-        signal.signal(signal.SIGTERM, previous)
-        try:
-            os.unlink(lock)
-        except OSError:
-            pass
+    text = read_text(args.output)
+    if text is None:
+        raise Refusal('--output file could not be read: %s' % args.output)
+    result, problem = tp.parse_result(text)
+    if result is None:
+        meta.update(status='unavailable', reason='fresh-context review output invalid: %s' % problem)
+    else:
+        reviewer = '%s (%s)' % (args.reviewer.strip(), args.review_id)
+        meta = complete_review(run_dir, journal, review_dir, meta, text, result, reviewer)
+    meta.pop('next', None)
+    atomic_write(entry_path, json.dumps(redact_output(meta), indent=2) + '\n')
+    return dict(meta, entry=entry_path)
 
 
-def pid_alive(pid):
-    if not isinstance(pid, int) or pid <= 0:
-        return False
-    try:
-        os.kill(pid, 0)
-        return True
-    except ProcessLookupError:
-        return False
-    except OSError:
-        return True  # exists but not ours
-
-
-def cmd_review_probe(args):
-    """Availability of the preferred reviewers without any model call."""
-    rr = review_router()
-    reviews_dir = os.path.join(run_dir_for(args.run), 'reviews') if args.run else os.path.join(state_root(), '.probe')
-    router = (ROUTER_FACTORY or rr.Router)()
-    out = []
-    for candidate in rr.PREFERRED:
-        probe = router.probe(candidate, reviews_dir, 'probe')
-        out.append({'priority': candidate['priority'], 'harness': candidate['harness'], 'model': candidate['model'],
-                    'effort': candidate['effort'], 'status': probe['status'], 'usage': probe['usage'],
-                    'reason': probe['reason'], 'checks': probe['checks']})
-    selected = next((c for c in out if c['status'] in (rr.AVAILABLE, rr.UNKNOWN)), None)
-    return {'candidates': out, 'would_try_first': selected and '%s/%s@%s' % (
-        selected['harness'], selected['model'], selected['effort']), 'model_calls': 0}
+def cmd_review_unavailable(args):
+    """Explicitly mark a pending review unavailable; never satisfies PASS when required."""
+    run_dir = run_dir_for(args.run)
+    load_journal(run_dir)
+    if not SAFE_TASK_ID.match(args.review_id or ''):
+        raise Refusal('invalid review id')
+    review_dir = os.path.join(run_dir, 'reviews', args.review_id)
+    entry_path = os.path.join(review_dir, 'entry.json')
+    meta, error = read_json(entry_path)
+    if error or not isinstance(meta, dict) or meta.get('status') != 'pending':
+        raise Refusal('review %s is not pending' % args.review_id)
+    reason = (args.reason or '').strip()
+    if not reason:
+        raise Refusal('--reason must explain why the fresh-context review could not run')
+    meta.update(status='unavailable', reason=reason)
+    meta.pop('next', None)
+    atomic_write(entry_path, json.dumps(redact_output(meta), indent=2) + '\n')
+    return dict(meta, entry=entry_path)
 
 
 # --------------------------------------------------------------------- planning
-# Architecture and planning tasks reuse the review router unchanged (priority, probes, fallback,
-# run-wide provider state in <run_dir>/reviews/provider-state.json); only prompt and parser differ.
+# Fresh-context planning tasks use the same prepare/record/unavailable workflow as reviews.
 # Planners are read-only and advisory: the main session implements and stays bound by this skill.
 
 def planning_target(journal):
@@ -2364,7 +2335,7 @@ def planning_entries(run_dir):
     return entries
 
 
-def complete_plan(run_dir, journal, plan_dir, meta, text, result, planner, selected):
+def complete_plan(run_dir, journal, plan_dir, meta, text, result, planner):
     plan_md = os.path.join(plan_dir, 'plan.md')
     atomic_write(plan_md, '<!-- depup %s %s (%s) by %s on %s -->\n' % (
         meta['kind'], meta['id'], meta['subject'], planner, meta['head']) + redact_text(text))
@@ -2374,19 +2345,19 @@ def complete_plan(run_dir, journal, plan_dir, meta, text, result, planner, selec
                'subject': meta['subject'], 'context_sha256': meta['context_sha256'], 'planner': planner,
                'artifact': os.path.relpath(plan_md, run_dir), 'artifact_sha256': file_sha256(plan_md)}
     atomic_write(os.path.join(plan_dir, 'receipt.json'), json.dumps(receipt, indent=2) + '\n')
-    meta.update(status='completed', summary=result['summary'], planner=planner, selected=selected,
+    meta.update(status='completed', summary=result['summary'], planner=planner,
                 counts={k: len(result.get(k) or []) for k in ('decisions', 'steps', 'risks', 'holds', 'open_questions')},
                 result=os.path.relpath(result_path, run_dir), plan=result,
                 evidence=os.path.relpath(os.path.join(plan_dir, 'receipt.json'), run_dir), completed=now())
     return meta
 
 
-def cmd_planning_run(args):
-    rr = review_router()
+def cmd_planning_prepare(args):
+    tp = task_protocol()
     run_dir = run_dir_for(args.run)
     journal = load_journal(run_dir)
-    if args.kind not in rr.PLAN_KINDS:
-        raise Refusal('--kind must be one of ' + ', '.join(rr.PLAN_KINDS))
+    if args.kind not in tp.PLAN_KINDS:
+        raise Refusal('--kind must be one of ' + ', '.join(tp.PLAN_KINDS))
     subject = args.subject or ('upgrade' if args.kind == 'plan' else None)
     if not subject:
         raise Refusal('--subject <risk name> is required for an architecture task')
@@ -2405,67 +2376,87 @@ def cmd_planning_run(args):
     entry_path = os.path.join(plan_dir, 'entry.json')
     existing, _ = read_json(entry_path)
     if isinstance(existing, dict) and existing.get('status') == 'completed' and not args.rerun:
-        return dict(existing, reused=True, note='completed plan for this exact head and handoff reused; no model call')
-    lock = os.path.join(plan_dir, 'plan.lock')
-    held, _ = read_json(lock)
-    if isinstance(held, dict) and not pid_alive(held.get('pid')):
-        try:
-            os.unlink(lock)
-        except FileNotFoundError:
-            pass
-    try:
-        exclusive_create(lock, json.dumps({'pid': os.getpid(), 'at': now()}))
-    except FileExistsError:
-        raise Refusal('planning task %s is already running (lock %s); never start a duplicate' % (plan_id, lock))
-    previous = signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
-    try:
-        context = os.path.join(plan_dir, 'context' + (os.path.splitext(args.context)[1] or '.txt'))
-        atomic_write(context, handoff)
-        note = '' if target == journal.get('worktree') else (
-            ' (the user checkout; it may hold uncommitted work that the upgrade excludes, and the upgrade '
-            'itself starts from the freshly fetched upstream default branch)')
-        prompt = rr.build_plan_prompt(args.kind, subject, target, head, context, note)
-        atomic_write(os.path.join(plan_dir, 'prompt.md'), prompt)
-        router = (ROUTER_FACTORY or rr.Router)(timeout=args.timeout, max_retries=args.max_retries)
-        ctx = {'review_id': plan_id, 'review_dir': plan_dir, 'reviews_dir': os.path.join(run_dir, 'reviews'),
-               'worktree': target, 'prompt': prompt, 'redact': redact_text, 'effort': rr.PLAN_EFFORT,
-               'parse': lambda text: rr.parse_plan_result(text, args.kind)}
-        try:
-            evidence, selected, done = router.route(ctx)
-        except RuntimeError as exc:
-            raise Refusal(str(exc))
-        meta = {'id': plan_id, 'kind': args.kind, 'subject': subject, 'head': head, 'target': target,
-                'context_sha256': context_sha,
-                'routing': os.path.relpath(os.path.join(plan_dir, 'routing.json'), run_dir),
-                'candidates': compact_candidates(evidence)}
-        if done and tree_fingerprint(target) != before:
-            done = None
-            meta.update(tree_changed=True, reason='the repository tree changed during planning (by the planner or '
-                        'another writer); result discarded. Inspect %s before relying on it' % target)
-        if done:
-            text, result, outcome, attempt_dir, probe = done
-            sel = {'priority': selected['priority'], 'harness': selected['harness'], 'model': selected['model'],
-                   'effort': selected['effort'], 'resolved_model': probe.get('resolved_model'),
-                   'usage': next((c.get('usage') for c in meta['candidates'] if c.get('status') == 'selected'), None)}
-            planner = '%s/%s@%s fresh session %s/%s' % (sel['harness'], sel['resolved_model'] or sel['model'],
-                                                        sel['effort'], plan_id, os.path.basename(attempt_dir))
-            meta = complete_plan(run_dir, journal, plan_dir, meta, text, result, planner, sel)
-        elif done is None and meta.get('reason'):
-            meta.update(status='unavailable', reason=meta['reason'])
-        else:
-            last = (evidence.get('candidates') or [{}])[-1].get('reason') or 'no reason recorded'
-            meta.update(status='unavailable', reason=(
-                'Claude Opus 5.5 could not complete this plan (%s); no fallback by policy' % last))
-        evidence.update(finished=now(), entry_status=meta['status'])
-        atomic_write(os.path.join(plan_dir, 'routing.json'), json.dumps(redact_output(evidence), indent=2) + '\n')
+        return dict(existing, reused=True, note='completed plan for this exact head and handoff reused')
+    context = os.path.join(plan_dir, 'context' + (os.path.splitext(args.context)[1] or '.txt'))
+    atomic_write(context, handoff)
+    note = '' if target == journal.get('worktree') else (
+        ' (the user checkout; it may hold uncommitted work that the upgrade excludes, and the upgrade '
+        'itself starts from the freshly fetched upstream default branch)')
+    prompt = tp.build_plan_prompt(args.kind, subject, target, head, context, note)
+    prompt_path = os.path.join(plan_dir, 'prompt.md')
+    output_path = os.path.join(plan_dir, 'output.md')
+    atomic_write(prompt_path, prompt)
+    meta = {
+        'id': plan_id, 'kind': args.kind, 'subject': subject, 'head': head, 'target': target,
+        'fingerprint': before, 'context_sha256': context_sha, 'status': 'pending', 'created': now(),
+        'prompt_path': prompt_path, 'output_path': output_path,
+        'next': (
+            'Run %s in a fresh, read-only context using this session\'s current harness, model and effort '
+            '(never the authoring conversation, unless execution-protocol was explicitly invoked alongside '
+            'this skill). Save its full answer to %s, then run: '
+            'depup.py planning record %s --plan-id %s --output %s --planner "<fresh-context-id>". '
+            'If no fresh context is available, run: '
+            'depup.py planning unavailable %s --plan-id %s --reason "<why>".'
+            % (prompt_path, output_path, args.run, plan_id, output_path, args.run, plan_id)),
+    }
+    atomic_write(entry_path, json.dumps(redact_output(meta), indent=2) + '\n')
+    return dict(meta, entry=entry_path)
+
+
+def cmd_planning_record(args):
+    """Validate and bind a fresh-context plan output to its prepared tree and handoff."""
+    tp = task_protocol()
+    run_dir = run_dir_for(args.run)
+    journal = load_journal(run_dir)
+    if not SAFE_TASK_ID.match(args.plan_id or ''):
+        raise Refusal('invalid plan id')
+    plan_dir = os.path.join(run_dir, 'plans', args.plan_id)
+    entry_path = os.path.join(plan_dir, 'entry.json')
+    meta, error = read_json(entry_path)
+    if error or not isinstance(meta, dict) or meta.get('status') != 'pending':
+        raise Refusal('plan %s is not pending' % args.plan_id)
+    if not (args.planner or '').strip():
+        raise Refusal('--planner must identify the fresh-context planner')
+    target = meta.get('target') or planning_target(journal)
+    if tree_fingerprint(target) != meta.get('fingerprint'):
+        meta.update(status='unavailable', tree_changed=True,
+                    reason='the repository tree changed during planning (by the planner or another writer); '
+                           'result discarded. Inspect %s before relying on it' % target)
+        meta.pop('next', None)
         atomic_write(entry_path, json.dumps(redact_output(meta), indent=2) + '\n')
         return dict(meta, entry=entry_path)
-    finally:
-        signal.signal(signal.SIGTERM, previous)
-        try:
-            os.unlink(lock)
-        except OSError:
-            pass
+    text = read_text(args.output)
+    if text is None:
+        raise Refusal('--output file could not be read: %s' % args.output)
+    result, problem = tp.parse_plan_result(text, meta['kind'])
+    if result is None:
+        meta.update(status='unavailable', reason='fresh-context plan output invalid: %s' % problem)
+    else:
+        planner = '%s (%s)' % (args.planner.strip(), args.plan_id)
+        meta = complete_plan(run_dir, journal, plan_dir, meta, text, result, planner)
+    meta.pop('next', None)
+    atomic_write(entry_path, json.dumps(redact_output(meta), indent=2) + '\n')
+    return dict(meta, entry=entry_path)
+
+
+def cmd_planning_unavailable(args):
+    """Explicitly mark a pending planning task unavailable."""
+    run_dir = run_dir_for(args.run)
+    load_journal(run_dir)
+    if not SAFE_TASK_ID.match(args.plan_id or ''):
+        raise Refusal('invalid plan id')
+    plan_dir = os.path.join(run_dir, 'plans', args.plan_id)
+    entry_path = os.path.join(plan_dir, 'entry.json')
+    meta, error = read_json(entry_path)
+    if error or not isinstance(meta, dict) or meta.get('status') != 'pending':
+        raise Refusal('plan %s is not pending' % args.plan_id)
+    reason = (args.reason or '').strip()
+    if not reason:
+        raise Refusal('--reason must explain why the fresh-context plan could not run')
+    meta.update(status='unavailable', reason=reason)
+    meta.pop('next', None)
+    atomic_write(entry_path, json.dumps(redact_output(meta), indent=2) + '\n')
+    return dict(meta, entry=entry_path)
 
 
 # ---------------------------------------------------------------- capabilities
@@ -2599,28 +2590,40 @@ def build_parser():
 
     review = sub.add_parser('review')
     vsub = review.add_subparsers(dest='review_command')
-    p = vsub.add_parser('run', help='one review task on Claude Opus 5.5 (no fallback)')
+    p = vsub.add_parser('prepare', help='prepare a fresh-context, read-only review task')
     p.add_argument('run')
     p.add_argument('--kind', required=True, help='critical | independent | security')
     p.add_argument('--subject', help='risk name (independent/security); critical defaults to full-diff')
     p.add_argument('--required', action='store_true', help='PASS is impossible unless this review completes and passes')
     p.add_argument('--context', help='plan or risk dossier file given to the reviewer as data')
-    p.add_argument('--timeout', type=int, default=1800, help='seconds per reviewer attempt')
-    p.add_argument('--max-retries', type=int, default=1, help='retries for transient service errors only')
-    p.add_argument('--rerun', action='store_true', help='repeat a completed review of the same candidate')
-    p = vsub.add_parser('probe', help='reviewer availability without model calls')
-    p.add_argument('--run')
+    p.add_argument('--rerun', action='store_true', help='prepare again even when a completed review exists')
+    p = vsub.add_parser('record', help='validate and bind a fresh-context review output')
+    p.add_argument('run')
+    p.add_argument('--review-id', required=True)
+    p.add_argument('--output', required=True)
+    p.add_argument('--reviewer', required=True, help='fresh-context reviewer identifier')
+    p = vsub.add_parser('unavailable', help='mark a pending review unavailable (never satisfies PASS)')
+    p.add_argument('run')
+    p.add_argument('--review-id', required=True)
+    p.add_argument('--reason', required=True)
 
     planning = sub.add_parser('planning')
     psub = planning.add_subparsers(dest='planning_command')
-    p = psub.add_parser('run', help='architecture/planning on Claude Opus 5.5 (no fallback; read-only, advisory)')
+    p = psub.add_parser('prepare', help='prepare a fresh-context, read-only architecture/planning task')
     p.add_argument('run')
     p.add_argument('--kind', default='plan', help='plan (whole upgrade, default) | architecture (one high-risk item)')
     p.add_argument('--subject', help='risk name (architecture); plan defaults to upgrade')
     p.add_argument('--context', required=True, help='handoff file: requirements, scope, constraints, findings')
-    p.add_argument('--timeout', type=int, default=1800, help='seconds per planner attempt')
-    p.add_argument('--max-retries', type=int, default=1, help='retries for transient service errors only')
-    p.add_argument('--rerun', action='store_true', help='repeat a completed task with the same head and handoff')
+    p.add_argument('--rerun', action='store_true', help='prepare again even when a completed plan exists')
+    p = psub.add_parser('record', help='validate and bind a fresh-context planning output')
+    p.add_argument('run')
+    p.add_argument('--plan-id', required=True)
+    p.add_argument('--output', required=True)
+    p.add_argument('--planner', required=True, help='fresh-context planner identifier')
+    p = psub.add_parser('unavailable', help='mark a pending planning task unavailable')
+    p.add_argument('run')
+    p.add_argument('--plan-id', required=True)
+    p.add_argument('--reason', required=True)
     return parser
 
 
@@ -2657,12 +2660,14 @@ def dispatch(args):
     if args.command == 'report':
         return cmd_report(args)
     if args.command == 'review':
-        handler = {'run': cmd_review_run, 'probe': cmd_review_probe}.get(args.review_command)
+        handler = {'prepare': cmd_review_prepare, 'record': cmd_review_record,
+                   'unavailable': cmd_review_unavailable}.get(args.review_command)
         if handler is None:
             raise SystemExit(2)
         return handler(args)
     if args.command == 'planning':
-        handler = {'run': cmd_planning_run}.get(args.planning_command)
+        handler = {'prepare': cmd_planning_prepare, 'record': cmd_planning_record,
+                   'unavailable': cmd_planning_unavailable}.get(args.planning_command)
         if handler is None:
             raise SystemExit(2)
         return handler(args)
