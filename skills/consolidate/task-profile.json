@@ -17,7 +17,6 @@
   "review_kinds": {
     "reconciliation": {
       "evidence": "git-inventory",
-      "effort": "high",
       "focus": "Completeness and correctness of the consolidation before cleanup. Using the helper-collected Git inventory (authoritative), the context ledger (claims to verify) and the restore-point manifest and bundle-verify output pasted in the ledger: every branch, worktree, clone, stash, uncommitted or untracked change and open PR is either proven in main with cited evidence or on the kept list with its reason; no kept item was integrated, deleted, dropped or closed; no missing, overwritten or silently discarded change; merge/cherry-pick conflict resolutions keep both main's design and the still-needed behavior; the cleanup list contains only items proven in main, superseded with a cited main commit, or the user's own items for remote and PR cleanup; every cleanup-list item is present in the verified restore point; a clone is deleted only when clean, stash-free, without local-only commits and bundled. An item moved out of keep after a consult must be backed by evidence cited in the ledger, never by the consult's opinion alone. Missing evidence for any resource is an Important finding."
     },
     "code": {

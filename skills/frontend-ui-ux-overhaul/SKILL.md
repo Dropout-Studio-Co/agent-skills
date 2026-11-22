@@ -130,19 +130,19 @@ motion that adds noise, delay, distraction, or maintenance cost.
 Read `prototype` only when there are materially different viable solutions whose choice cannot be
 resolved from repository truth. Do not prototype obvious fixes.
 
-### 10a. Architecture and implementation plan (routed, read-only)
+### 10a. Architecture and implementation plan (fresh-context, read-only)
 
 Before modifying files, when there is meaningful work (more than a trivial, local fix), write a
 handoff (accepted requirements, scope, authority order and baseline constraints, repository
 instructions, design system and component inventory, findings from steps 1-10 with file:line,
-verification tooling) and run ONE routed `plan` task (see Routed planning and review). Add one
-`--kind architecture --subject <change>` task only for significant or high-risk changes (shared
-design-system primitive, layout/navigation shell, checkout/auth UI, animation system,
-cross-repository contract). The planner is read-only and advisory: check every decision against the
-authority order and this skill, adopt or reject each with a reason, and implement it yourself. A
-plan never authorizes destructive operations, policy changes or an unrequested redesign. Replan only
-when scope or findings change materially. If planning is `unavailable`, do not edit: report the
-blocker and stop.
+verification tooling) and run ONE fresh-context `plan` task (see Fresh-context planning and
+review). Add one `--kind architecture --subject <change>` task only for significant or high-risk
+changes (shared design-system primitive, layout/navigation shell, checkout/auth UI, animation
+system, cross-repository contract). The planner is read-only and advisory: check every decision
+against the authority order and this skill, adopt or reject each with a reason, and implement it
+yourself. A plan never authorizes destructive operations, policy changes or an unrequested
+redesign. Replan only when scope or findings change materially. If planning is `unavailable`, do
+not edit: report the blocker and stop.
 
 ### 11. Implement validated improvements
 
@@ -190,15 +190,15 @@ gap to report, not a waiver. Record the report path, the median category scores 
 for each page in the rendered-evidence manifest used by step 17. A missing Lighthouse 13 result is an
 Important finding and blocks delivery.
 
-### 17. Independent review (routed, before completion or delivery)
+### 17. Independent review (fresh-context, before completion or delivery)
 
 Review the actual final changes against the run base (the commit recorded by `start` before any
-edit), each category as its own routed task with `--required`, depth by risk:
+edit), each category as its own fresh-context task with `--required`, depth by risk:
 
 - Low (copy, token or local style fix, no interaction change): `code`.
 - Normal: `code` + `ui-ux`.
 - High (broad overhaul, shared design system, navigation/layout shell, forms/checkout/auth UI,
-  motion system): `code` + `ui-ux` + `accessibility`; add `--high` to each High-tier task.
+  motion system): `code` + `ui-ux` + `accessibility`.
 
 Pass `--context` (requirements, accepted decisions, checks run with results) and, for `ui-ux` and
 `accessibility`, `--rendered-evidence <manifest>` listing the real screenshots, viewports, states,
@@ -208,7 +208,7 @@ three sites above when they changed. If rendering was impossible, pass
 findings in this session, rerun the affected checks and rendered verification, then review the new
 candidate (`reused` results for an unchanged candidate are not repeated). Finish only when
 `gate --require code` (plus `--require ui-ux` / `--require accessibility` for the tiers above) exits
-0; if a required review cannot run, report it unverified and do not deliver.
+0; if a required review cannot run, record `unavailable`, report it unverified and do not deliver.
 
 ## Context discipline
 
@@ -224,31 +224,31 @@ Parallelize only when the overhaul is large and ownership is non-overlapping. Va
 include marketing, dashboard/app, mobile/responsive, accessibility, motion, and the shared design
 system. Assign one owner per shared file/component; send cross-cutting findings to the appropriate
 owner. Every delegated prompt must state exact scope, constraints, verification, preservation of
-unrelated work, unchanged provider/model/thinking-effort routing, and the current registered
-delivery policy from `~/AGENTS.md` and the orchestration owner. Use repository-owned
-risk/blast-radius-based validation and the routed independent reviews of step 17; No-Mistakes is
-permanently retired. Parallel implementation workers follow the execution protocol's implementation
-routing (never Codex or GPT) unless the current user explicitly authorizes an exception; planning
-and review tasks always go through the shared router.
+unrelated work, unchanged session model/harness/effort configuration, and the repository's
+delivery policy. Use repository-owned risk/blast-radius-based validation and the independent
+reviews of step 17; No-Mistakes is permanently retired. Parallel workers and fresh-context
+planning/review tasks use the current session's harness, model and effort level without switching,
+selecting or enforcing alternatives; only when `execution-protocol` is explicitly invoked alongside
+this skill do its model-routing and execution rules take precedence for the applicable tasks.
 
-## Routed planning and review
+## Fresh-context planning and review
 
 Shared with `dependency-upgrade` (one implementation).
-`R=~/.agents/skills/dependency-upgrade/scripts/routed_task.py`:
+`T=~/.agents/skills/dependency-upgrade/scripts/review_task.py`:
 
-- Before the first edit: `python3 $R start --skill frontend-ui-ux-overhaul --repo .` → `run_dir`
-  (records HEAD as the review base); then
-  `python3 $R plan <run_dir> --context <handoff> [--kind architecture --subject S]`,
-  `python3 $R review <run_dir> --kind code|ui-ux|accessibility --required ...`, and
-  `python3 $R gate <run_dir>`. Run tasks one at a time as background commands (up to 30 min each)
-  and collect the JSON.
-- Each task runs on exactly one model in a fresh read-only session outside the repo: Claude Opus 5.5
-  only, through Claude Code. Plans run at effort `xhigh`; reviews at `medium`, and at `high` for the
-  High tier or when `--high` is given. There is no fallback: an Opus outage makes the task
-  `unavailable` and blocks delivery. `python3 $R probe` shows availability without model calls.
+- Before the first edit: `python3 $T start --skill frontend-ui-ux-overhaul --repo .` → `run_dir`
+  (records HEAD as the review base); then prepare tasks with
+  `python3 $T plan <run_dir> --context <handoff> [--kind architecture --subject S]` and
+  `python3 $T review <run_dir> --kind code|ui-ux|accessibility --required ...`, run each printed
+  `prompt.md` in a fresh, read-only context using this session's current harness, model and effort
+  (or per `execution-protocol` when explicitly invoked alongside this skill), bind the answer with
+  `python3 $T record <run_dir> --task-id <id> --output <file> --by "<fresh-context-id>"` (or mark
+  unrunnable with `python3 $T unavailable <run_dir> --task-id <id> --reason "<why>"`), and verify
+  before completion with `python3 $T gate <run_dir>`.
+- Run tasks one at a time. Never switch models, harnesses or effort on your own, and never
+  self-review in the authoring context in place of an unavailable required review.
 - Implementation, debugging, fixes and verification stay with this session's model, effort and
-  harness. Report the selected model, effort, verdicts and the gate result. Do not pass session
-  flags; they do not exist, and never self-review in place of an unavailable review.
+  harness. Report the fresh-context runner, verdicts and the gate result.
 
 ## Related repositories
 
@@ -259,7 +259,9 @@ primitives.
 
 ## Git and safety
 
-Preserve unrelated branches, worktrees, uncommitted changes, and user-owned files. Deliver through
-the execution protocol (commit, PR, gates, its merge path) without asking and without waiting. Never
-force-push. Never touch unowned or foreign work. Do not modify provider/model/thinking-effort
-routing. No-Mistakes is permanently retired. Preserve all independent safety boundaries.
+Preserve unrelated branches, worktrees, uncommitted changes, and user-owned files. Deliver per the
+repository's delivery mode and instructions (commit, PR, required checks and merge when green and
+authorized); when `execution-protocol` is explicitly invoked alongside this skill, follow its
+delivery and gate rules. Never force-push. Never touch unowned or foreign work. Do not switch or
+override the session's model, harness or effort level. No-Mistakes is permanently retired. Preserve
+all independent safety boundaries.

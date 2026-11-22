@@ -81,9 +81,9 @@ the safest route. Apply this protocol before mutating any high-risk batch:
 3. **Compare options.** Write a compact decision analysis for the run: upgrade path(s), staying on
    the current version, and any supported intermediate/alternative version. Compare security,
    compatibility, operational risk, reversibility and maintenance cost; state the selected option
-   and why. Get this analysis from a routed `planning run --kind architecture --subject <risk>`
-   ([review-routing.md](review-routing.md#architecture-and-planning)); you remain responsible for
-   accepting or rejecting it.
+   and why. Prepare this analysis with `planning prepare --kind architecture --subject <risk>` and
+   run it in a fresh, read-only context ([fresh-context-tasks.md](fresh-context-tasks.md#architecture-and-planning));
+   you remain responsible for accepting or rejecting it.
 4. **Bound failure.** Define a staged sequence, backups or state-preservation method, a verified
    rollback or forward-recovery path, observability and explicit stop conditions. Prefer reversible
    local changes and additive/expand-contract migrations. Do not claim rollback for irreversible

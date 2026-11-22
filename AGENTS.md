@@ -62,12 +62,12 @@ up as `Only in ~/.agents/skills/<name>` and are expected; any other difference i
 ## Layout
 
 ```text
-skills/consolidate/               SKILL.md, routing.json (plan/review prompt profiles)
+skills/consolidate/               SKILL.md, task-profile.json (plan/review prompt profiles)
 skills/dependency-upgrade/        SKILL.md, README.md, scripts/, references/, tests/, admin/
 skills/execution-protocol/        SKILL.md, reference.md, opus-gate-brief.md, implementer-brief.md, plan-schema.json,
                                   review-schema.json, opencode/, scripts/ (gate.sh, implement.sh,
                                   implement_lib.py, premerge-and-merge.sh), tests/ (smoke.sh, implement-smoke.sh)
-skills/frontend-ui-ux-overhaul/   SKILL.md, routing.json
+skills/frontend-ui-ux-overhaul/   SKILL.md, task-profile.json
 skills/intrinsic-responsive-ui/   SKILL.md
 skills/review-loop/               SKILL.md
 skills/safe-switch/               SKILL.md
@@ -77,21 +77,21 @@ skills/sync-agent-instructions/   SKILL.md, scripts/ (collect_sessions.py, check
 
 ## Invariants
 
-- `skills/dependency-upgrade/scripts/routed_task.py` resolves sibling skills as
-  `<parent>/<skill>/routing.json`. `consolidate` and `frontend-ui-ux-overhaul` depend on that, so
-  the three routing folders (`dependency-upgrade`, `consolidate`, `frontend-ui-ux-overhaul`) stay
-  siblings and keep their names. No other skill takes part in routing.
+- `skills/dependency-upgrade/scripts/review_task.py` resolves sibling skills as
+  `<parent>/<skill>/task-profile.json`. `consolidate` and `frontend-ui-ux-overhaul` depend on that, so
+  the three folders (`dependency-upgrade`, `consolidate`, `frontend-ui-ux-overhaul`) stay
+  siblings and keep their names. No other skill loads `task-profile.json`.
 - `SKILL.md` frontmatter keeps `name` and `description`; `dependency-upgrade` also declares
   `allowed-tools`, `license` and `disable-model-invocation`.
 - Python helpers are stdlib-only and must run on 3.9+.
-- Scripts keep their executable bit (`scripts/depup.py`, `scripts/collect_sessions.py`,
-  `scripts/check_instructions.py`, execution-protocol `scripts/gate.sh`,
-  `scripts/premerge-and-merge.sh`, `scripts/implement.sh`, `tests/smoke.sh` and
+- Scripts keep their executable bit (`scripts/depup.py`, `scripts/review_task.py`,
+  `scripts/collect_sessions.py`, `scripts/check_instructions.py`, execution-protocol
+  `scripts/gate.sh`, `scripts/premerge-and-merge.sh`, `scripts/implement.sh`, `tests/smoke.sh` and
   `tests/implement-smoke.sh`).
 
 ## Always
 
-- Run the test suite after touching `dependency-upgrade` scripts, tests or any `routing.json`.
+- Run the test suite after touching `dependency-upgrade` scripts, tests or any `task-profile.json`.
 - Run the collector and checker tests after touching `sync-agent-instructions` scripts or tests.
 - Run `bash skills/execution-protocol/tests/smoke.sh` after touching `execution-protocol` scripts or
   tests.

@@ -15,7 +15,7 @@ Repo `REVIEW.md` and AGENTS rules win on detail. Composes existing skills; does 
 - Tier from the change: Low, Medium or High (Review standard). Any path listed as sensitive in the
   repo's `REVIEW.md` or CODEOWNERS is High.
 - Read `REVIEW.md` if present; it defines what failure means, what to skip and the report format.
-  Built-in review commands (for example Claude Code's `/code-review`) may not load `REVIEW.md`, so
+  Built-in harness review commands (such as `/code-review`) may not load `REVIEW.md`, so
   always hand `REVIEW.md` to every finder explicitly. If the repo ships a tier script (Horcrux:
   `bun run review:tier`), use its result as the floor.
 
@@ -35,23 +35,27 @@ do not spend reviewer tokens on a candidate that fails its own checks.
 | Medium | One independent reviewer on correctness, regressions and the whole REVIEW.md failure list.           |
 | High   | Independent finder (correctness, architecture vs owning contracts, regressions, whole failure list) + separate independent security pass over the whole failure list, as an attacker would (e.g. `security-review`). |
 
-Model- and harness-agnostic, within the session's routing: use whichever agent and model the session
-already has (Claude Code, OpenCode or another; never Codex CLI, Pi or a GPT model, all retired; a repo may restrict
-this to an approved list). **When the execution protocol applies, its routing wins** (`~/.agents/skills/execution-protocol/SKILL.md`): every gate runs only through its `scripts/gate.sh`, on the reviewer its steps 1 and 7 define; this skill names no gate model. Outside that protocol, any model or
-harness the session already has may review, and no model, provider, harness, plugin, paid subscription
-or external review service is ever a review gate; a different model is welcome, never required.
+Model- and harness-agnostic: run every finder using the current session's harness, model and effort
+level without switching, selecting or enforcing another model, harness or effort (while respecting
+any repository-documented constraints). No specific model, provider, harness, CLI, plugin, paid
+subscription or external review service is required. **Execution protocol exception:** Only when
+`execution-protocol` is explicitly invoked alongside this skill do its model-routing and gate rules
+(`~/.agents/skills/execution-protocol/SKILL.md`, `scripts/gate.sh`, steps 1 and 7) take precedence
+for the applicable tasks. When `execution-protocol` is not explicitly invoked, operate independently
+using the current session's configuration.
 
-**Independent** = a reviewer that did not write the change, in a fresh context: a separate subagent,
-a new session in the same or another harness, or an equivalent isolated process. A forked or
-context-inheriting subagent, a resumed authoring session, or one that reads the author's transcript
-or task notes does not count; continuing the same reviewer across rounds is fine. Each High pass
-runs in its own fresh context.
+**Independent** = a reviewer that did not write the change, in a fresh context: a separate read-only
+subagent, a new isolated session on the current harness, or an equivalent isolated context. A forked
+or context-inheriting subagent, a resumed authoring session, or one that reads the author's
+transcript or task notes does not count; continuing the same reviewer across rounds is fine. Each
+High pass runs in its own fresh context.
 
-If a required independent review cannot run (no subagent or session, reviewer failed, unusable
-output), retry with another agent, model or session under existing accounts, limited to the repo's
-approved agents when it has a list. Starting a separate reviewer this way is not a routing fallback:
-the session's own model and harness never switch, and no new API keys, credits, top-ups or billing
-are added. When the execution protocol applies, a gate that cannot run follows its steps 1 and 7 instead; do not land and record the blocker. Otherwise, if no reviewer works, do not land
+If a required independent review cannot run (no fresh-context mechanism, reviewer failed, unusable
+output), retry in a fresh context within the current session's harness, model and effort — never
+switch models or harnesses on your own, never add credentials or spend, and never substitute a
+self-review in the authoring context for a required independent review. When `execution-protocol` is
+explicitly invoked alongside this skill, a gate that cannot run follows its steps 1 and 7 instead;
+do not land and record the blocker. Otherwise, if no fresh-context reviewer can run, do not land
 and record the blocker.
 
 Brief each finder with the requirement, the diff command, REVIEW.md path, the files it needs, tier,

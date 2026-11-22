@@ -37,7 +37,9 @@ Follow the user's global concurrency limits (they win over this file). Typical s
   (`git worktree remove` without `--force`); otherwise keep and report them.
 
 ## Review
-Review the integrated candidate only, through the review router
-([review-routing.md](review-routing.md)): one model per review task, tasks run one at a time, never
-a parallel committee or a duplicate review of the same candidate. Fix findings on the integration
-branch and re-verify. If the router reports a required review `unavailable`, do not merge.
+Review the integrated candidate only, using the fresh-context task workflow
+([fresh-context-tasks.md](fresh-context-tasks.md)): one fresh read-only context per review task on
+the current session's harness, model and effort (or per `execution-protocol` when explicitly
+invoked alongside this skill), tasks run one at a time, never a parallel committee or a duplicate
+review of the same candidate. Fix findings on the integration branch and re-verify. If a required
+review is `unavailable`, do not merge.

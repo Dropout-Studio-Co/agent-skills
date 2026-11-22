@@ -2,7 +2,7 @@
 
 My AI-agent skills, kept in one place: development, automation, code quality and workflow management.
 
-Eight skills I use across Claude Code and OpenCode. They live here so they survive a
+Eight skills I use across coding harnesses. They live here so they survive a
 reinstall, stay reviewable, and move to another machine in one copy. Each folder is a standard
 Agent Skill: a `SKILL.md` plus the scripts, references and tests it needs. This is a personal
 workflow repository, not a supported product.
@@ -17,19 +17,19 @@ workflow repository, not a supported product.
 | [`frontend-ui-ux-overhaul`](skills/frontend-ui-ux-overhaul/) | Audits and implements repository-wide frontend, responsive, accessibility, motion and design-system improvements.                                                                                    |
 | [`intrinsic-responsive-ui`](skills/intrinsic-responsive-ui/) | Guides fluid, container-aware responsive layouts built on intrinsic sizing rather than breakpoint patches.                                                                                            |
 | [`review-loop`](skills/review-loop/)                         | Runs an independent, evidence-backed review of a finished change before it lands, with risk tiers and a three-round cap.                                                                             |
-| [`safe-switch`](skills/safe-switch/)                         | Hands the current work off losslessly to a fresh background Claude Code session, on explicit request only.                                                                                           |
+| [`safe-switch`](skills/safe-switch/)                         | Captures verified task state and hands the current work off losslessly to a fresh session using the current harness, model and effort, on explicit request only.                                      |
 | [`sync-agent-instructions`](skills/sync-agent-instructions/) | Rewrites a repository's `AGENTS.md` from past sessions, git history and the code through a staged edit that evidence and typed claims must pass; keeps `CLAUDE.md` as an `@AGENTS.md` import.         |
 
 ## Layout
 
 ```text
 skills/
-├── consolidate/               SKILL.md, routing.json
+├── consolidate/               SKILL.md, task-profile.json
 ├── dependency-upgrade/        SKILL.md, README.md, scripts/, references/, tests/, admin/
 ├── execution-protocol/        SKILL.md, reference.md, opus-gate-brief.md, implementer-brief.md, plan-schema.json,
 │                              review-schema.json, opencode/, scripts/ (gate.sh, implement.sh,
 │                              implement_lib.py, premerge-and-merge.sh), tests/ (smoke.sh, implement-smoke.sh)
-├── frontend-ui-ux-overhaul/   SKILL.md, routing.json
+├── frontend-ui-ux-overhaul/   SKILL.md, task-profile.json
 ├── intrinsic-responsive-ui/   SKILL.md
 ├── review-loop/               SKILL.md
 ├── safe-switch/               SKILL.md
@@ -37,12 +37,14 @@ skills/
                                tests/ (collector, checker)
 ```
 
-`consolidate` and `frontend-ui-ux-overhaul` delegate their planning and review tasks to
-`dependency-upgrade/scripts/routed_task.py` and read their prompt profiles from their own
-`routing.json`. The router resolves each profile as `<skills-root>/<skill>/routing.json`, so keep
-those three routing folders (`dependency-upgrade`, `consolidate`, `frontend-ui-ux-overhaul`) as
-siblings under one skills root; splitting or renaming them breaks routing. The other skills do not
-take part in routing.
+All skills except `execution-protocol` are model-agnostic and harness-agnostic: they use the
+current session's harness, model and effort without switching or enforcing alternatives (when
+`execution-protocol` is explicitly invoked alongside another skill, `execution-protocol`'s
+routing and execution rules take precedence for the applicable tasks). `consolidate` and
+`frontend-ui-ux-overhaul` share `dependency-upgrade/scripts/review_task.py` for fresh-context
+task preparation, candidate binding and required-review gating, reading their prompt profiles
+from `<skills-root>/<skill>/task-profile.json`. Keep those three folders (`dependency-upgrade`,
+`consolidate`, `frontend-ui-ux-overhaul`) as siblings under one skills root.
 
 ## Install
 

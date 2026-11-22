@@ -1,22 +1,25 @@
 #!/usr/bin/env python3
-"""Routed architecture/planning and review tasks for other skills (standard library only).
+"""Fresh-context planning and review task helper for sibling skills (standard library only).
 
-The one shared routing implementation is ``review_router.Router`` (dependency-upgrade): one route,
-Claude Opus 5.5 through Claude Code, with probes, bounded retries, isolation and a recursion guard.
-There is no fallback: an Opus outage makes the task ``unavailable``. This CLI only adds what a skill
-without a depup run journal needs: a run directory, a skill profile
-(``<skills>/<skill>/routing.json``: prompt focus per task kind), candidate binding to the working
-tree, reuse, and required-review gating. Helpers are reused from depup.py.
+Model-agnostic and harness-agnostic: this helper prepares self-contained prompts and inputs,
+binds each task to the exact repository candidate fingerprint, reuses completed results for
+unchanged candidates, validates and records fresh-context outputs with tamper-evident receipts,
+and enforces required-review gating. It never selects, switches or invokes a model CLI or
+overrides effort; the invoking session runs each prepared prompt in a fresh read-only context
+using its own harness, model and effort (or per execution-protocol if explicitly invoked
+alongside the skill).
 
 Commands (all print JSON; exit 0 ok, 1 refused/blocked, 2 usage):
-  start  --skill S --repo P [--base REF]          create a run; REF (default HEAD) is the base every review uses
-  plan   RUN --context F [--kind plan|architecture|consult] [--subject S]   one read-only planner at xhigh;
-         a consolidate consult (--subject required) runs at effort high, plans stay at xhigh
-  review RUN --kind K [--base REF] [--subject S] [--context F] [--required] [--high]
-         [--rendered-evidence F | --no-rendered-evidence WHY] [--location P]... [--with-prs]
-  gate   RUN [--require KIND[:SUBJECT]]...        required reviews pass for the CURRENT candidate?
-  status RUN                                      task entries
-  probe                                           routing availability, no model calls
+  start       --skill S --repo P [--base REF]    create a run; REF (default HEAD) is the review base
+  plan        RUN --context F [--kind plan|architecture|consult] [--subject S] [--rerun]
+                                                 prepare one read-only plan/consult/architecture task
+  review      RUN --kind K [--base REF] [--subject S] [--context F] [--required]
+              [--rendered-evidence F | --no-rendered-evidence WHY] [--location P]... [--with-prs] [--rerun]
+                                                 prepare one read-only independent review task
+  record      RUN --task-id ID --output F --by B validate and bind a fresh-context task output
+  unavailable RUN --task-id ID --reason WHY      mark a pending task unavailable (never satisfies gate)
+  gate        RUN [--require KIND[:SUBJECT]]...  required reviews pass for the CURRENT candidate?
+  status      RUN                                task entries
 """
 from __future__ import annotations
 
@@ -28,7 +31,6 @@ import json
 import os
 import re
 import shutil
-import signal
 import sys
 import uuid
 
@@ -42,40 +44,39 @@ def _load(name, filename):
     return module
 
 
-depup = _load('routed_task_depup', 'depup.py')
-rr = depup.review_router()
+depup = _load('review_task_depup', 'depup.py')
+tp = depup.task_protocol()
 Refusal = depup.Refusal
-ROUTER_FACTORY = None  # tests inject a Router factory
 SAFE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]{0,80}$')
+SAFE_TASK_ID = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]{0,120}$')
 
 
 def skills_root():
-    return os.environ.get('AGENT_ROUTING_SKILLS_DIR') or os.path.dirname(os.path.dirname(HERE))
+    return os.environ.get('AGENT_TASK_SKILLS_DIR') or os.path.dirname(os.path.dirname(HERE))
 
 
 def state_root():
-    if os.environ.get('AGENT_ROUTING_STATE_DIR'):
-        return os.path.abspath(os.path.expanduser(os.environ['AGENT_ROUTING_STATE_DIR']))
-    return os.path.join(os.environ.get('XDG_STATE_HOME') or os.path.expanduser('~/.local/state'), 'agent-routing')
+    if os.environ.get('AGENT_TASK_STATE_DIR'):
+        return os.path.abspath(os.path.expanduser(os.environ['AGENT_TASK_STATE_DIR']))
+    return os.path.join(os.environ.get('XDG_STATE_HOME') or os.path.expanduser('~/.local/state'), 'agent-tasks')
 
 
 def load_profile(skill):
     if not SAFE.match(skill or ''):
         raise Refusal('invalid skill name')
-    path = os.path.join(skills_root(), skill, 'routing.json')
+    path = os.path.join(skills_root(), skill, 'task-profile.json')
     data, error = depup.read_json(path)
     if error or not isinstance(data, dict):
-        raise Refusal('skill %s has no routing profile (%s): %s' % (skill, path, error))
+        raise Refusal('skill %s has no task profile (%s): %s' % (skill, path, error))
     if not (isinstance(data.get('plan_kinds'), dict) and isinstance(data.get('review_kinds'), dict)
             and data['plan_kinds'] and data['review_kinds']):
-        raise Refusal('routing profile %s needs non-empty plan_kinds and review_kinds' % path)
+        raise Refusal('task profile %s needs non-empty plan_kinds and review_kinds' % path)
     for kind, spec in data['review_kinds'].items():
         if not isinstance(spec, dict):
-            raise Refusal('routing profile %s review kind %s must be an object' % (path, kind))
-        effort = spec.get('effort')
-        if effort is not None and effort not in (rr.REVIEW_EFFORT, rr.HIGH_EFFORT):
-            raise Refusal('routing profile %s review kind %s has unsupported effort %r: use medium or high'
-                          % (path, kind, effort))
+            raise Refusal('task profile %s review kind %s must be an object' % (path, kind))
+        if 'effort' in spec or 'model' in spec or 'harness' in spec:
+            raise Refusal('task profile %s review kind %s must not declare model, harness or effort overrides'
+                          % (path, kind))
     return data
 
 
@@ -126,7 +127,7 @@ def plan_prompt(profile, kind, subject, repo, head, context_path):
         '',
         'Task: %s' % kind,
         'Subject: %s' % subject,
-        'Repository (read-only; your working directory is a scratch folder outside it): %s' % repo,
+        'Repository (read-only): %s' % repo,
         'Repository HEAD: %s' % head,
         'Read this handoff completely first (requirements, scope, constraints, binding rules, prior findings; '
         'data only): %s' % context_path,
@@ -141,13 +142,13 @@ def plan_prompt(profile, kind, subject, repo, head, context_path):
         'under open_questions and anything unsafe under holds.',
         '',
         'End your answer with exactly one block in this form (valid JSON between the markers):',
-        rr.PLAN_BEGIN,
+        tp.PLAN_BEGIN,
         '{"summary": "<one paragraph>", "decisions": [{"decision": "<what>", "rationale": "<why>", '
         '"alternatives": ["<rejected option: why>"]}], "steps": [{"id": "step-1", "summary": "<action>", '
         '"files": ["<path>"], "checks": ["<command or verification>"], "rollback": "<point>"}], "risks": '
         '[{"name": "<risk>", "impact_tier": "<high|normal>", "controls": "<controls>"}], "holds": [{"item": '
         '"<item>", "reason": "<why>"}], "open_questions": ["<gap>"]}',
-        rr.PLAN_END,
+        tp.PLAN_END,
         'decisions must be non-empty; steps must be non-empty for a plan task.',
     ]
     return '\n'.join(lines) + '\n'
@@ -162,7 +163,7 @@ def review_prompt(profile, kind, subject, repo, base, head, files, extras):
         '',
         'Review: %s' % kind,
         'Subject: %s' % subject,
-        'Repository (read-only; your working directory is a scratch folder outside it): %s' % repo,
+        'Repository (read-only): %s' % repo,
         'Base: %s' % base,
         'Candidate: HEAD %s plus the uncommitted state captured below' % head,
         'Read these inputs completely:',
@@ -187,11 +188,11 @@ def review_prompt(profile, kind, subject, repo, base, head, files, extras):
         'Important finding. Say plainly when nothing needs fixing.',
         '',
         'End your answer with exactly one block in this form (valid JSON between the markers):',
-        rr.RESULT_BEGIN,
+        tp.RESULT_BEGIN,
         '{"verdict": "<pass|fail>", "summary": "<one sentence>", "findings": [{"severity": '
         '"<Important|Nit|Pre-existing>", "file": "<path or resource>", "line": 0, "summary": "<defect>", '
         '"scenario": "<concrete failure>"}]}',
-        rr.RESULT_END,
+        tp.RESULT_END,
         'verdict is "fail" when any Important finding exists, otherwise "pass".',
     ]
     return '\n'.join(lines) + '\n'
@@ -206,12 +207,12 @@ def git_out(root, *args):
 
 
 def write_diff_inputs(repo, base, task_dir):
-    lock_specs = [':(glob)**/' + name for name in rr.LOCKFILES]
+    lock_specs = [':(glob)**/' + name for name in tp.LOCKFILES]
     if depup.git(repo, 'rev-parse', '--verify', '--quiet', base + '^{commit}')['rc'] != 0:
         raise Refusal('--base %s is not a commit in %s' % (base, repo))
     out = {}
     for name, argv in (('code.diff', ['diff', '--no-color', '--no-ext-diff', base, '--', '.'] +
-                        [':(exclude,glob)**/' + n for n in rr.LOCKFILES]),
+                        [':(exclude,glob)**/' + n for n in tp.LOCKFILES]),
                        ('lockfile.diff', ['diff', '--no-color', '--no-ext-diff', base, '--'] + lock_specs),
                        ('diffstat.txt', ['diff', '--stat', '--no-color', base]),
                        ('untracked.txt', ['ls-files', '--others', '--exclude-standard'])):
@@ -227,7 +228,7 @@ def write_diff_inputs(repo, base, task_dir):
 
 def git_inventory(repo, main_ref, locations, with_prs, runner=None):
     """Deterministic, read-only Git facts (collected by this helper, not claimed by the author)."""
-    parts = ['# Git inventory of %s against %s (collected by routed_task.py, read-only)\n' % (repo, main_ref)]
+    parts = ['# Git inventory of %s against %s (collected by review_task.py, read-only)\n' % (repo, main_ref)]
     parts.append('## main\n' + git_out(repo, 'rev-parse', main_ref) + git_out(repo, 'status', '--porcelain=v1',
                                                                                 '--branch', '--untracked-files=all'))
     parts.append('## worktrees\n' + git_out(repo, 'worktree', 'list', '--porcelain'))
@@ -324,52 +325,9 @@ def worktree_paths(repo):
             if l.startswith('worktree ')]
 
 
-# ------------------------------------------------------------------ task execution (shared by plan/review)
+# ------------------------------------------------------------------ completion helpers
 
-def run_task(run_dir, meta, task_dir, task_id, prompt, parse, effort, timeout, max_retries, before, read_dirs=()):
-    """Lock, route through the shared Router, discard on tree change, return (evidence, selected, done)."""
-    lock = os.path.join(task_dir, 'task.lock')
-    held, _ = depup.read_json(lock)
-    if isinstance(held, dict) and not depup.pid_alive(held.get('pid')):
-        try:
-            os.unlink(lock)
-        except FileNotFoundError:
-            pass
-    try:
-        depup.exclusive_create(lock, json.dumps({'pid': os.getpid(), 'at': depup.now()}))
-    except FileExistsError:
-        raise Refusal('task %s is already running (lock %s); never start a duplicate' % (task_id, lock))
-    previous = signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
-    try:
-        depup.atomic_write(os.path.join(task_dir, 'prompt.md'), prompt)
-        router = (ROUTER_FACTORY or rr.Router)(timeout=timeout, max_retries=max_retries)
-        ctx = {'review_id': task_id, 'review_dir': task_dir, 'reviews_dir': os.path.join(run_dir, 'reviews'),
-               'worktree': meta['repo_root'], 'prompt': prompt, 'redact': depup.redact_text, 'parse': parse,
-               'effort': effort, 'read_dirs': list(read_dirs)}
-        try:
-            evidence, selected, done = router.route(ctx)
-        except RuntimeError as exc:
-            raise Refusal(str(exc))
-        changed = bool(done) and fingerprint(meta['repo_root']) != before
-        return evidence, selected, (None if changed else done), changed
-    finally:
-        signal.signal(signal.SIGTERM, previous)
-        try:
-            os.unlink(lock)
-        except OSError:
-            pass
-
-
-def selection(selected, probe, candidates):
-    return {'priority': selected['priority'], 'harness': selected['harness'], 'model': selected['model'],
-            'effort': selected['effort'], 'resolved_model': probe.get('resolved_model'),
-            'usage': next((c.get('usage') for c in candidates if c.get('status') == 'selected'), None)}
-
-
-def finish(task_dir, entry, evidence):
-    evidence.update(finished=depup.now(), entry_status=entry['status'])
-    depup.atomic_write(os.path.join(task_dir, 'routing.json'),
-                       json.dumps(depup.redact_output(evidence), indent=2) + '\n')
+def save_entry(task_dir, entry):
     path = os.path.join(task_dir, 'entry.json')
     depup.atomic_write(path, json.dumps(depup.redact_output(entry), indent=2) + '\n')
     return dict(entry, entry=path)
@@ -377,18 +335,23 @@ def finish(task_dir, entry, evidence):
 
 def complete(run_dir, task_dir, entry, text, result, by, artifact_name):
     artifact = os.path.join(task_dir, artifact_name)
-    depup.atomic_write(artifact, '<!-- %s %s by %s on %s -->\n' % (entry['kind'], entry['id'], by,
-                                                                   entry['fingerprint'][:12]) + depup.redact_text(text))
-    receipt = {'run': os.path.basename(run_dir), 'task': entry['id'], 'kind': entry['kind'],
-               'subject': entry['subject'], 'fingerprint': entry['fingerprint'], 'by': by,
-               'artifact': os.path.relpath(artifact, run_dir), 'artifact_sha256': depup.file_sha256(artifact)}
+    header = depup.redact_text('<!-- %s %s by %s on %s -->\n' % (
+        entry['kind'], entry['id'], by, entry['fingerprint'][:12]))
+    depup.atomic_write(artifact, header + depup.redact_text(text))
+    receipt = depup.redact_output({
+        'run': os.path.basename(run_dir), 'task': entry['id'], 'kind': entry['kind'],
+        'subject': entry['subject'], 'fingerprint': entry['fingerprint'], 'by': by,
+        'artifact': os.path.relpath(artifact, run_dir), 'artifact_sha256': depup.file_sha256(artifact),
+    })
     depup.atomic_write(os.path.join(task_dir, 'receipt.json'), json.dumps(receipt, indent=2) + '\n')
     entry.update(status='completed', by=by, evidence=os.path.relpath(os.path.join(task_dir, 'receipt.json'), run_dir),
                  completed=depup.now())
     if 'verdict' in result:
         entry.update(verdict=result['verdict'], summary=result.get('summary'), findings=result['findings'],
                      finding_counts={s: len([f for f in result['findings'] if f['severity'] == s])
-                                     for s in rr.SEVERITIES}, result_corrections=result.get('corrections'))
+                                     for s in tp.SEVERITIES}, result_corrections=result.get('corrections'))
+        if result['verdict'] == 'pass':
+            entry.pop('prior_failed', None)
     else:
         entry.update(summary=result['summary'], plan=result,
                      counts={k: len(result.get(k) or []) for k in ('decisions', 'steps', 'risks', 'holds',
@@ -396,22 +359,16 @@ def complete(run_dir, task_dir, entry, text, result, by, artifact_name):
     return entry
 
 
-def outcome(run_dir, task_dir, entry, evidence, selected, done, changed, task_id, artifact_name):
-    if done:
-        text, result, _, attempt_dir, probe = done
-        sel = selection(selected, probe, entry['candidates'])
-        by = '%s/%s@%s fresh session %s/%s' % (sel['harness'], sel['resolved_model'] or sel['model'], sel['effort'],
-                                               task_id, os.path.basename(attempt_dir))
-        entry['selected'] = sel
-        entry = complete(run_dir, task_dir, entry, text, result, by, artifact_name)
-    else:
-        last = (evidence.get('candidates') or [{}])[-1].get('reason') or 'no reason recorded'
-        entry.update(status='unavailable', reason=(
-            'the repository tree changed during the task; result discarded' if changed else
-            'Claude Opus 5.5 could not complete this task (%s); no fallback by policy' % last))
-        if changed:
-            entry['tree_changed'] = True
-    return finish(task_dir, entry, evidence)
+def locate_task(run_dir, task_id):
+    if not SAFE_TASK_ID.match(task_id or ''):
+        raise Refusal('invalid task id')
+    for folder in ('plans', 'reviews'):
+        task_dir = os.path.join(run_dir, folder, task_id)
+        entry_path = os.path.join(task_dir, 'entry.json')
+        entry, error = depup.read_json(entry_path)
+        if not error and isinstance(entry, dict):
+            return folder, task_dir, entry
+    raise Refusal('unknown task: %s' % task_id)
 
 
 # ------------------------------------------------------------------ commands
@@ -436,9 +393,10 @@ def cmd_plan(args):
     run_dir, meta, profile = load_run(args.run)
     if args.kind not in profile['plan_kinds']:
         raise Refusal('--kind must be one of ' + ', '.join(profile['plan_kinds']))
-    subject = args.subject or ('task' if args.kind == 'plan' else None)
-    if not subject:
+    raw_subject = args.subject or ('task' if args.kind == 'plan' else None)
+    if not raw_subject:
         raise Refusal('--subject is required for %s task' % ('a consult' if args.kind == 'consult' else 'an %s' % args.kind))
+    subject = depup.clean_label(raw_subject, '--subject')
     handoff = depup.redact_text(depup.read_text(args.context) or '')
     if not handoff.strip():
         raise Refusal('--context must name a non-empty handoff file (requirements, scope, constraints, findings)')
@@ -450,19 +408,29 @@ def cmd_plan(args):
     task_dir = os.path.join(run_dir, 'plans', task_id)
     existing, _ = depup.read_json(os.path.join(task_dir, 'entry.json'))
     if isinstance(existing, dict) and existing.get('status') == 'completed' and not args.rerun:
-        return dict(existing, reused=True, note='same tree and handoff: completed plan reused, no model call')
+        return dict(existing, reused=True, note='same tree and handoff: completed plan reused')
+    depup.remove_stale_files(task_dir, ('receipt.json', 'plan.md'))
     context = os.path.join(task_dir, 'context' + (os.path.splitext(args.context)[1] or '.txt'))
     depup.atomic_write(context, handoff)
     head = depup.git_state(root).get('head') or 'none'
     prompt = plan_prompt(profile, args.kind, subject, root, head, context)
-    effort = rr.HIGH_EFFORT if args.kind == 'consult' else rr.PLAN_EFFORT
-    evidence, selected, done, changed = run_task(
-        run_dir, meta, task_dir, task_id, prompt, lambda text: rr.parse_plan_result(text, args.kind),
-        effort, args.timeout, args.max_retries, before)
-    entry = {'id': task_id, 'task': 'plan', 'kind': args.kind, 'subject': subject, 'skill': profile['skill'],
-             'fingerprint': before, 'head': head, 'context_sha256': context_sha, 'advisory': True,
-             'candidates': depup.compact_candidates(evidence)}
-    return outcome(run_dir, task_dir, entry, evidence, selected, done, changed, task_id, 'plan.md')
+    prompt_path = os.path.join(task_dir, 'prompt.md')
+    output_path = os.path.join(task_dir, 'output.md')
+    depup.atomic_write(prompt_path, prompt)
+    entry = {
+        'id': task_id, 'task': 'plan', 'kind': args.kind, 'subject': subject, 'skill': profile['skill'],
+        'status': 'pending', 'fingerprint': before, 'head': head, 'context_sha256': context_sha, 'advisory': True,
+        'created': _dt.datetime.now(_dt.timezone.utc).isoformat(),
+        'prompt_path': prompt_path, 'output_path': output_path,
+        'next': (
+            'Run %s in a fresh, read-only context using this session\'s current harness, model and effort '
+            '(never the authoring conversation; follow execution-protocol only if explicitly invoked alongside '
+            'this skill). Save its full answer to %s, then run: review_task.py record %s --task-id %s '
+            '--output %s --by "<fresh-context-id>". If no fresh context is available, run: '
+            'review_task.py unavailable %s --task-id %s --reason "<why>".'
+            % (prompt_path, output_path, run_dir, task_id, output_path, run_dir, task_id)),
+    }
+    return save_entry(task_dir, entry)
 
 
 def cmd_review(args):
@@ -470,8 +438,7 @@ def cmd_review(args):
     spec = profile['review_kinds'].get(args.kind)
     if not spec:
         raise Refusal('--kind must be one of ' + ', '.join(profile['review_kinds']))
-    subject = args.subject or 'candidate'
-    effort = rr.HIGH_EFFORT if (args.high or spec.get('effort') == rr.HIGH_EFFORT) else rr.REVIEW_EFFORT
+    subject = depup.clean_label(args.subject or 'candidate', '--subject')
     root = meta['repo_root']
     if spec.get('rendered_evidence') == 'required':
         if bool(args.rendered_evidence) == bool(args.no_rendered_evidence):
@@ -494,8 +461,9 @@ def cmd_review(args):
             text = depup.redact_text(depup.read_text(path) or '')
             inputs.append((label, os.path.splitext(path)[1] or '.txt', text))
     if args.no_rendered_evidence:
-        inputs.append(('rendered', '.txt', 'NO RENDERED EVIDENCE: %s\nVisual verification did not happen; the '
-                       'reviewer must not assume it did.\n' % args.no_rendered_evidence))
+        inputs.append(('rendered', '.txt', depup.redact_text(
+            'NO RENDERED EVIDENCE: %s\nVisual verification did not happen; the '
+            'reviewer must not assume it did.\n' % args.no_rendered_evidence)))
     inventory, locations, main_ref = None, [os.path.abspath(os.path.expanduser(l)) for l in args.location or []], None
     if spec.get('evidence') == 'git-inventory':
         main_ref = args.main_ref or default_ref(root)
@@ -506,7 +474,7 @@ def cmd_review(args):
             rendered_files = sorted(set(re.findall(r'(?:~|/)[^\s\'"`<>|,;()]+', text)))
     files_sha = hashlib.sha256('\0'.join('%s\0%s' % (f, depup.file_sha256(os.path.realpath(os.path.expanduser(
         f.rstrip('.:'))))) for f in rendered_files).encode()).hexdigest()
-    material = '\0'.join([args.kind, subject, effort, base_sha, before, files_sha] + [t for _, _, t in inputs] +
+    material = '\0'.join([args.kind, subject, base_sha, before, files_sha] + [t for _, _, t in inputs] +
                          [inventory or ''])
     key = hashlib.sha256(material.encode('utf-8', 'replace')).hexdigest()
     task_id = 'review-%s-%s-%s' % (args.kind, depup.review_slug(subject), key[:12])
@@ -515,10 +483,11 @@ def cmd_review(args):
     existing, _ = depup.read_json(entry_path)
     if isinstance(existing, dict) and existing.get('status') == 'completed' and not args.rerun:
         if args.required:
-            mark_required(run_dir, args.kind, subject, effort)
-        return dict(existing, reused=True, note='same candidate and evidence: completed review reused, no model call')
+            mark_required(run_dir, args.kind, subject)
+        return dict(existing, reused=True, note='same candidate and evidence: completed review reused')
     if args.required:
-        mark_required(run_dir, args.kind, subject, effort)  # before the run: a failed/unavailable task still binds
+        mark_required(run_dir, args.kind, subject)  # before recording: an unrecorded/unavailable task still binds
+    depup.remove_stale_files(task_dir, ('receipt.json', 'review.md'))
     created = _dt.datetime.now(_dt.timezone.utc).isoformat()  # microseconds: newest-review order must not tie
     files = write_diff_inputs(root, base_sha, task_dir)
     extras = []
@@ -539,19 +508,89 @@ def cmd_review(args):
         extras.append(('Git inventory (helper-collected facts)', path))
     head = depup.git_state(root).get('head') or 'none'
     prompt = review_prompt(profile, args.kind, subject, root, base_sha, head, files, extras)
+    prompt_path = os.path.join(task_dir, 'prompt.md')
+    output_path = os.path.join(task_dir, 'output.md')
+    depup.atomic_write(prompt_path, prompt)
     read_dirs = inventory_dirs(root, locations) if inventory is not None else []
-    evidence, selected, done, changed = run_task(run_dir, meta, task_dir, task_id, prompt, rr.parse_result,
-                                                 effort, args.timeout, args.max_retries, before, read_dirs)
-    entry = {'id': task_id, 'task': 'review', 'kind': args.kind, 'subject': subject, 'skill': profile['skill'],
-             'required': bool(args.required or (existing or {}).get('required')), 'base': base_sha,
-             'fingerprint': before, 'head': head, 'created': created, 'effort': effort,
-             'rendered_evidence': ('manifest' if args.rendered_evidence else
-                                   ('none: ' + args.no_rendered_evidence) if args.no_rendered_evidence else None),
-             'candidates': depup.compact_candidates(evidence)}
+    prior_failed = bool(isinstance(existing, dict) and (existing.get('verdict') == 'fail' or existing.get('prior_failed')))
+    entry = {
+        'id': task_id, 'task': 'review', 'kind': args.kind, 'subject': subject, 'skill': profile['skill'],
+        'status': 'pending', 'required': bool(args.required or (existing or {}).get('required')),
+        'base': base_sha, 'fingerprint': before, 'head': head, 'created': created,
+        'rendered_evidence': ('manifest' if args.rendered_evidence else
+                              ('none: ' + depup.redact_text(args.no_rendered_evidence)) if args.no_rendered_evidence else None),
+        'prompt_path': prompt_path, 'output_path': output_path, 'read_dirs': read_dirs,
+        'next': (
+            'Run %s in a fresh, read-only independent context using this session\'s current harness, model and '
+            'effort (never self-review in the authoring conversation; follow execution-protocol only if '
+            'explicitly invoked alongside this skill). Save its full answer to %s, then run: '
+            'review_task.py record %s --task-id %s --output %s --by "<fresh-context-id>". '
+            'If no fresh independent context is available, run: '
+            'review_task.py unavailable %s --task-id %s --reason "<why>".'
+            % (prompt_path, output_path, run_dir, task_id, output_path, run_dir, task_id)),
+    }
+    if prior_failed:
+        entry['prior_failed'] = True
     if inventory is not None:
         entry['inventory'] = {'sha256': hashlib.sha256(inventory.encode()).hexdigest(), 'main_ref': main_ref,
                               'locations': locations, 'with_prs': bool(args.with_prs)}
-    return outcome(run_dir, task_dir, entry, evidence, selected, done, changed, task_id, 'review.md')
+    return save_entry(task_dir, entry)
+
+
+def cmd_record(args):
+    """Validate and bind a fresh-context plan or review output to its prepared candidate."""
+    run_dir, meta, _ = load_run(args.run)
+    folder, task_dir, entry = locate_task(run_dir, args.task_id)
+    if entry.get('status') != 'pending':
+        raise Refusal('task %s is not pending (status: %s)' % (args.task_id, entry.get('status')))
+    by_label = depup.clean_label(args.by, '--by')
+    prompt_path = os.path.join(task_dir, 'prompt.md')
+    if os.path.realpath(args.output) == os.path.realpath(prompt_path):
+        raise Refusal('--output must be the fresh-context answer, not prompt.md')
+    if fingerprint(meta['repo_root']) != entry.get('fingerprint'):
+        entry.update(status='unavailable', tree_changed=True,
+                     reason='the repository tree changed since the task was prepared; result discarded')
+        entry.pop('next', None)
+        return save_entry(task_dir, entry)
+    inv = entry.get('inventory')
+    if inv:
+        live_sha = hashlib.sha256(git_inventory(
+            meta['repo_root'], inv['main_ref'], inv['locations'], inv['with_prs']).encode()).hexdigest()
+        if live_sha != inv['sha256']:
+            entry.update(status='unavailable',
+                         reason='branches, worktrees, stashes, clones or PRs changed since the review was prepared; '
+                                'result discarded')
+            entry.pop('next', None)
+            return save_entry(task_dir, entry)
+    text = depup.read_text(args.output)
+    if text is None:
+        raise Refusal('--output file could not be read: %s' % args.output)
+    if folder == 'plans':
+        result, problem = tp.parse_plan_result(text, entry['kind'])
+    else:
+        result, problem = tp.parse_result(text)
+    if result is None:
+        entry.update(status='unavailable', reason='fresh-context output invalid: %s' % problem)
+    else:
+        by = '%s (%s)' % (by_label, args.task_id)
+        entry = complete(run_dir, task_dir, entry, text, result, by,
+                         'plan.md' if folder == 'plans' else 'review.md')
+    entry.pop('next', None)
+    return save_entry(task_dir, entry)
+
+
+def cmd_unavailable(args):
+    """Explicitly mark a pending task unavailable; never satisfies a required gate."""
+    run_dir, _, _ = load_run(args.run)
+    _, task_dir, entry = locate_task(run_dir, args.task_id)
+    if entry.get('status') != 'pending':
+        raise Refusal('task %s is not pending (status: %s)' % (args.task_id, entry.get('status')))
+    reason = (args.reason or '').strip()
+    if not reason:
+        raise Refusal('--reason must explain why the fresh-context task could not run')
+    entry.update(status='unavailable', reason=reason)
+    entry.pop('next', None)
+    return save_entry(task_dir, entry)
 
 
 def cmd_gate(args):
@@ -567,23 +606,23 @@ def cmd_gate(args):
         required.add((kind, subject or 'candidate'))
     required |= {(e['kind'], e['subject']) for e in reviews if e.get('required')}  # once required, always
     required |= {tuple(r) for r in read_required(run_dir)}
-    needed_effort = required_efforts(run_dir)
+    current_reviews = [e for e in reviews if e.get('fingerprint') == current and e.get('base') == meta.get('base')]
     latest = {}  # newest review (any status) per kind/subject of the current candidate and run base decides
-    for e in sorted((e for e in reviews if e.get('fingerprint') == current and e.get('base') == meta.get('base')),
-                    key=lambda e: e.get('created') or ''):
-        latest[(e['kind'], e['subject'])] = e
+    ever_failed = set()
+    for e in sorted(current_reviews, key=lambda e: e.get('created') or ''):
+        pair = (e['kind'], e['subject'])
+        latest[pair] = e
+        if e.get('verdict') == 'fail' or e.get('prior_failed'):
+            ever_failed.add(pair)
     problems = []
     for kind, subject in sorted(required):
         e = latest.get((kind, subject))
-        needed = needed_effort.get((kind, subject))
         if not (e and e.get('status') == 'completed' and e.get('verdict') == 'pass' and receipt_ok(run_dir, e)):
             problems.append('%s:%s has no passing review of the current candidate (%s)' % (
                 kind, subject, 'latest: %s %s' % (e.get('status'), e.get('verdict') or '') if e else 'not run'))
-        elif needed and effort_rank(e.get('effort')) < effort_rank(needed):
-            problems.append('%s:%s review ran at %s but %s is required' % (
-                kind, subject, e.get('effort') or 'unknown', needed))
     for (kind, subject), e in sorted(latest.items()):
-        if e.get('verdict') == 'fail' and (kind, subject) not in required:
+        passed_now = (e.get('status') == 'completed' and e.get('verdict') == 'pass' and receipt_ok(run_dir, e))
+        if (kind, subject) not in required and (e.get('verdict') == 'fail' or ((kind, subject) in ever_failed and not passed_now)):
             problems.append('%s:%s review of the current candidate failed' % (kind, subject))
         inv = e.get('inventory')
         if inv and e.get('verdict') == 'pass' and hashlib.sha256(git_inventory(
@@ -601,42 +640,40 @@ class GateBlocked(Exception):
     pass
 
 
-def effort_rank(effort):
-    return rr.EFFORTS.index(effort) if effort in rr.EFFORTS else -1
-
-
-def mark_required(run_dir, kind, subject, effort=None):
-    """Remember (kind, subject) and the highest effort ever requested: a later medium entry never satisfies high."""
-    items = required_items(run_dir)
-    for item in items:
-        if item[0] == kind and item[1] == subject:
-            current = item[2] if len(item) > 2 else None
-            if effort_rank(effort) > effort_rank(current):
-                item[2:] = [effort]
-                depup.atomic_write(os.path.join(run_dir, 'required.json'), json.dumps(items) + '\n')
-            return
-    items.append([kind, subject, effort])
-    depup.atomic_write(os.path.join(run_dir, 'required.json'), json.dumps(items) + '\n')
-
-
-def required_items(run_dir):
-    data, error = depup.read_json(os.path.join(run_dir, 'required.json'))
-    return [r for r in data if isinstance(r, list) and len(r) >= 2] if not error and isinstance(data, list) else []
+def mark_required(run_dir, kind, subject):
+    items = read_required(run_dir)
+    if [kind, subject] not in items:
+        depup.atomic_write(os.path.join(run_dir, 'required.json'), json.dumps(items + [[kind, subject]]) + '\n')
 
 
 def read_required(run_dir):
-    return [[r[0], r[1]] for r in required_items(run_dir)]
+    data, error = depup.read_json(os.path.join(run_dir, 'required.json'))
+    return [[r[0], r[1]] for r in data if isinstance(r, list) and len(r) >= 2] if not error and isinstance(data, list) else []
 
 
-def required_efforts(run_dir):
-    return {(r[0], r[1]): (r[2] if len(r) > 2 else None) for r in required_items(run_dir)}
+def _run_path(run_dir, reference):
+    if not depup.evidence_artifact(run_dir, reference):
+        return None
+    path = os.path.expanduser(reference)
+    return path if os.path.isabs(path) else os.path.join(run_dir, path)
 
 
 def receipt_ok(run_dir, entry):
-    data, error = depup.read_json(os.path.join(run_dir, entry.get('evidence') or 'missing'))
-    if error or not isinstance(data, dict) or data.get('fingerprint') != entry.get('fingerprint'):
+    evidence_path = _run_path(run_dir, entry.get('evidence'))
+    if not evidence_path:
         return False
-    return data.get('artifact_sha256') == depup.file_sha256(os.path.join(run_dir, data.get('artifact') or 'missing'))
+    data, error = depup.read_json(evidence_path)
+    if error or not isinstance(data, dict):
+        return False
+    if (data.get('run') != os.path.basename(run_dir) or data.get('task') != entry.get('id') or
+            data.get('kind') != entry.get('kind') or data.get('subject') != entry.get('subject') or
+            data.get('fingerprint') != entry.get('fingerprint') or not (data.get('by') or '').strip()):
+        return False
+    digest = data.get('artifact_sha256')
+    if not isinstance(digest, str) or not digest:
+        return False
+    artifact_path = _run_path(run_dir, data.get('artifact'))
+    return bool(artifact_path) and digest == depup.file_sha256(artifact_path)
 
 
 def cmd_status(args):
@@ -648,38 +685,22 @@ def cmd_status(args):
                          for e in entries(run_dir, 'reviews')])
 
 
-def cmd_probe(_args):
-    router = (ROUTER_FACTORY or rr.Router)()
-    out = []
-    for candidate in rr.PREFERRED:
-        probe = router.probe(candidate, os.path.join(state_root(), '.probe'), 'probe')
-        out.append({'priority': candidate['priority'], 'harness': candidate['harness'], 'model': candidate['model'],
-                    'effort': candidate['effort'], 'status': probe['status'], 'usage': probe['usage'],
-                    'reason': probe['reason'], 'checks': probe['checks']})
-    first = next((c for c in out if c['status'] in (rr.AVAILABLE, rr.UNKNOWN)), None)
-    return {'candidates': out, 'model_calls': 0,
-            'would_try_first': first and '%s/%s@%s' % (first['harness'], first['model'], first['effort'])}
-
-
 def build_parser():
-    parser = argparse.ArgumentParser(prog='routed_task.py', description=__doc__.split('\n')[0])
+    parser = argparse.ArgumentParser(prog='review_task.py', description=__doc__.split('\n')[0])
     sub = parser.add_subparsers(dest='command')
-
-    def common(p):
-        p.add_argument('--timeout', type=int, default=1800)
-        p.add_argument('--max-retries', type=int, default=1)
-        p.add_argument('--rerun', action='store_true', help='ignore a reusable completed result')
 
     p = sub.add_parser('start')
     p.add_argument('--skill', required=True)
     p.add_argument('--base', help='commit reviews compare against (default: HEAD now, before any change)')
     p.add_argument('--repo', default='.')
+
     p = sub.add_parser('plan')
     p.add_argument('run')
     p.add_argument('--context', required=True)
     p.add_argument('--kind', default='plan')
     p.add_argument('--subject')
-    common(p)
+    p.add_argument('--rerun', action='store_true', help='ignore a reusable completed result')
+
     p = sub.add_parser('review')
     p.add_argument('run')
     p.add_argument('--kind', required=True)
@@ -687,24 +708,35 @@ def build_parser():
     p.add_argument('--subject')
     p.add_argument('--context')
     p.add_argument('--required', action='store_true')
-    p.add_argument('--high', action='store_true', help='High tier or trigger: review at effort high')
     p.add_argument('--rendered-evidence')
     p.add_argument('--no-rendered-evidence')
     p.add_argument('--location', action='append', help='extra clone/copy path for a git-inventory review')
     p.add_argument('--main-ref', help='default branch (default: origin/HEAD, else main/master)')
     p.add_argument('--with-prs', action='store_true', help='include open PRs (read-only gh pr list)')
-    common(p)
+    p.add_argument('--rerun', action='store_true', help='ignore a reusable completed result')
+
+    p = sub.add_parser('record')
+    p.add_argument('run')
+    p.add_argument('--task-id', required=True)
+    p.add_argument('--output', required=True)
+    p.add_argument('--by', required=True, help='fresh-context runner identifier')
+
+    p = sub.add_parser('unavailable')
+    p.add_argument('run')
+    p.add_argument('--task-id', required=True)
+    p.add_argument('--reason', required=True)
+
     p = sub.add_parser('gate')
     p.add_argument('run')
     p.add_argument('--require', action='append')
+
     p = sub.add_parser('status')
     p.add_argument('run')
-    sub.add_parser('probe')
     return parser
 
 
-COMMANDS = {'start': cmd_start, 'plan': cmd_plan, 'review': cmd_review, 'gate': cmd_gate,
-            'status': cmd_status, 'probe': cmd_probe}
+COMMANDS = {'start': cmd_start, 'plan': cmd_plan, 'review': cmd_review, 'record': cmd_record,
+            'unavailable': cmd_unavailable, 'gate': cmd_gate, 'status': cmd_status}
 
 
 def main(argv=None):

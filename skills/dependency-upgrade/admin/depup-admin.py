@@ -6,9 +6,9 @@
   depup-admin.py update    [--home H] [--no-reconcile]   (= install + doctor; idempotent)
   depup-admin.py uninstall [--home H] [--no-reconcile] [--remove-canonical]
 
-The canonical skill lives in <home>/.agents/skills/dependency-upgrade. OpenCode discovers that root
-natively. Claude Code reads only <home>/.claude/skills, so install adds one relative per-skill
-symlink there (the machine's existing convention).
+The canonical skill lives in <home>/.agents/skills/dependency-upgrade. Harnesses that read
+<home>/.agents/skills discover it natively; for harnesses that read <home>/.claude/skills,
+install adds one relative per-skill symlink there (the machine's existing convention).
 Only links recorded in the ownership manifest are ever removed. Standard library only.
 
 Exit codes: 0 ok, 1 doctor failure, 2 usage, 3 refused (collision / foreign state).
@@ -303,11 +303,11 @@ def doctor(paths, run_tests=False):
     try:
         with open(os.path.join(paths.canonical, 'SKILL.md'), encoding='utf-8') as handle:
             meta, _ = parse_frontmatter(handle.read())
-        add('claude explicit-only flag', meta.get('disable-model-invocation') is True, 'disable-model-invocation')
+        add('explicit-only flag', meta.get('disable-model-invocation') is True, 'disable-model-invocation')
     except (OSError, ValueError) as exc:
-        add('claude explicit-only flag', False, str(exc))
+        add('explicit-only flag', False, str(exc))
     compiled = []
-    scripts = ('scripts/depup.py', 'scripts/review_router.py', 'admin/depup-admin.py')
+    scripts = ('scripts/depup.py', 'scripts/task_protocol.py', 'scripts/review_task.py', 'admin/depup-admin.py')
     for rel in scripts:
         try:
             py_compile.compile(os.path.join(paths.canonical, rel), doraise=True,
@@ -327,7 +327,9 @@ def doctor(paths, run_tests=False):
         level='WARN')
     add('python >= 3.9', sys.version_info >= (3, 9), sys.version.split()[0])
     add('git available', bool(shutil.which('git')), shutil.which('git') or 'missing')
-    add('claude per-skill link', link_points_to(paths.claude_link, paths.canonical), paths.claude_link)
+    claude_installed = bool(shutil.which('claude'))
+    add('claude per-skill link', link_points_to(paths.claude_link, paths.canonical), paths.claude_link,
+        level='FAIL' if claude_installed or os.path.lexists(paths.claude_link) else 'WARN')
     canonical_real = os.path.realpath(paths.canonical)
     for harness, roots in sorted(harness_roots(paths).items()):
         visible, foreign = [], []

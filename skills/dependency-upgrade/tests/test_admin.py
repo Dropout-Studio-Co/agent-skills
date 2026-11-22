@@ -119,7 +119,17 @@ class AdminTests(TempCase):
         self.run_admin('install')
         code, out = self.run_admin('doctor')
         self.assertEqual(code, 1)
-        self.assertIn('FAIL claude explicit-only flag', out)
+        self.assertIn('FAIL explicit-only flag', out)
+
+    def test_doctor_passes_without_claude_when_claude_not_installed(self):
+        old_which = admin.shutil.which
+        admin.shutil.which = lambda name: None if name == 'claude' else old_which(name)
+        try:
+            code, out = self.run_admin('doctor')
+            self.assertEqual(code, 0, out)
+            self.assertIn('WARN claude per-skill link', out)
+        finally:
+            admin.shutil.which = old_which
 
     def test_doctor_reads_integrations_manifest_roots(self):
         write(os.path.join(self.home, '.agents', 'integrations.json'),

@@ -40,7 +40,7 @@ OS/arch targets as relevant; simulators/devices only if present.
 - `PASS` needs: at least one recorded check, every check `pass`, no open journal steps, the
   `baseline`, `verify` and `review` steps done,
   a complete high-risk dossier and both required reviews for each high-risk item, every
-  `required` routed review completed and passed for the current candidate, no blocked
+  `required` review completed and passed for the current candidate, no blocked
   risk disposition, no `skipped_checks` entry with `required: true`, and no upgrade with
   status `held`, `blocked` or `failed`. High-risk work never waits for user approval. The
   `report` command enforces these evidence requirements and downgrades unsupported `PASS` to
