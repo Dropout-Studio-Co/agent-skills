@@ -115,7 +115,7 @@ def _path_escapes_root(root, rel, include_leaf=False):
         try:
             if current.is_symlink():
                 return True
-        except OSError:
+        except (OSError, ValueError):
             return True
     target = Path(root) / rel
     try:
@@ -657,8 +657,6 @@ class References:
     def classify(self, ref, file_rel):
         raw_cmd = ref.strip()
         if raw_cmd and not raw_cmd.startswith("-") and probable_command(raw_cmd):
-            if PLACEHOLDER.search(raw_cmd):
-                return "scoped"
             return self._command(raw_cmd)
         ref = strip_reference(ref)
         if not ref or ref.startswith("-"):
@@ -692,11 +690,13 @@ class References:
 
     def _command(self, ref):
         try:
-            tokens = shlex.split(ref)
+            tokens = shlex.split(ref, comments=True)
         except ValueError:
             return "unverified"
         if not tokens:
             return None
+        if any(PLACEHOLDER.search(tok) for tok in tokens):
+            return "scoped"
         command = tokens[0]
         if command == "make":
             return self._make_target(tokens[1] if len(tokens) > 1 else "")
@@ -725,13 +725,17 @@ class References:
                 "bash": ("-o", "+o"), "sh": ("-o", "+o"), "zsh": ("-o", "+o"),
                 "node": ("-r", "--require", "--import", "--env-file"),
             }
+            runner_inline = inline_flags.get(command, ())
             skip_next = False
             for token in rest:
                 if skip_next:
                     skip_next = False
                     continue
-                if token in inline_flags.get(command, ()):
+                if token in runner_inline:
                     return "external"
+                if token.startswith("-") and not token.startswith("--") and len(token) > 2:
+                    if any("-" + ch in runner_inline for ch in token[1:]):
+                        return "external"
                 if token in value_flags.get(command, ()):
                     skip_next = True
                     continue

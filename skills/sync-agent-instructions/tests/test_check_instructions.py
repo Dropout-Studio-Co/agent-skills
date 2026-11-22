@@ -2151,13 +2151,20 @@ class GateR2RegressionTests(unittest.TestCase):
                 'python3 -c "import foo.bar"',
                 'node -e "console.log(1)"',
                 'bash -c "echo hi"',
+                'bash -lc "cd /tmp && echo hi"',
+                'sh -ec "export FOO=a/b"',
                 'ruby -e "puts 1"',
                 'php -r "echo 1;"',
+                "git status # check what's changed",
+                "pytest # repo's tests",
             ):
                 self.assertEqual(refs.classify(cmd, 'AGENTS.md'), 'external', cmd)
             self.assertEqual(refs.classify('python3 scripts/run.py', 'AGENTS.md'), 'ok')
+            self.assertEqual(refs.classify("python3 scripts/run.py # won't write", 'AGENTS.md'), 'ok')
             self.assertEqual(refs.classify('python3 -W default scripts/run.py', 'AGENTS.md'), 'ok')
             self.assertEqual(refs.classify('python3 scripts/missing.py', 'AGENTS.md'), 'stale')
+            self.assertEqual(refs.classify('python3 scripts/missing.py # <todo>', 'AGENTS.md'), 'stale')
+            self.assertEqual(refs.classify('gh pr checks <n> --watch', 'AGENTS.md'), 'scoped')
 
     def test_move_target_traversal_rejected_before_stage_read(self):
         module = load_module('checker_r2_move', SCRIPT)
