@@ -93,7 +93,7 @@ out of quota; without it the gates use the account `claude` is signed in with.
 | `intrinsic-responsive-ui` | `Use intrinsic-responsive-ui.`                                                  |
 | `review-loop`             | `Review this change with review-loop.`                                          |
 | `safe-switch`             | `Safe Switch`                                                                   |
-| `sync-agent-instructions` | `sync AGENTS.md`                                                                |
+| `sync-agent-instructions` | `/sync-agent-instructions`                                                      |
 
 `dependency-upgrade` runs only when named explicitly; a casual "update my dependencies" gets a
 read-only plan instead. Details and harness notes are in its

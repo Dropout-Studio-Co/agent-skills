@@ -26,11 +26,13 @@ Read the skill you are touching. `SKILL.md` is the workflow, and for `dependency
 ```sh
 python3 -m unittest discover -s skills/dependency-upgrade/tests -t skills/dependency-upgrade
 python3 -m unittest discover -s skills/sync-agent-instructions/tests -t skills/sync-agent-instructions
+bash skills/execution-protocol/tests/smoke.sh
 ```
 
 Run the dependency-upgrade suite after any change to `dependency-upgrade` scripts, tests or any
 `task-profile.json` (this also validates the `consolidate` and `frontend-ui-ux-overhaul` profiles). Run
-the collector and checker suite after changes to `sync-agent-instructions` scripts or tests.
+the collector and checker suite after changes to `sync-agent-instructions` scripts or tests, and run
+`bash skills/execution-protocol/tests/smoke.sh` after changes to `execution-protocol` scripts or tests.
 
 `sync-agent-instructions` ships two stdlib-only helpers. `scripts/collect_sessions.py` collects
 and redacts session evidence; `scripts/check_instructions.py` surveys a repository (`check`),
