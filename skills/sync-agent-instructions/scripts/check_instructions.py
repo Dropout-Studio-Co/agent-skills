@@ -157,10 +157,24 @@ def is_surface_path(rel, root):
 def surface_paths(root):
     root = Path(root)
     found = set()
+    pruned_dirs = (".git", "node_modules", "__pycache__", ".venv", "graft",
+                   ".mypy_cache", ".pytest_cache")
     for dirpath, dirnames, filenames in os.walk(str(root)):
-        dirnames[:] = sorted(d for d in dirnames
-                             if d not in (".git", "node_modules", "__pycache__", ".venv",
-                                          "graft", ".mypy_cache", ".pytest_cache"))
+        here = Path(dirpath)
+        kept = []
+        for name in sorted(dirnames):
+            if name in pruned_dirs or name in (".backpass", ".worktrees"):
+                continue
+            if name == "worktrees" and here.name == ".claude":
+                continue
+            child = here / name
+            try:
+                if (child / ".git").exists() or (child / ".git").is_symlink():
+                    continue
+            except OSError:
+                continue
+            kept.append(name)
+        dirnames[:] = kept
         for name in ("AGENTS.md", "CLAUDE.md"):
             if name in filenames:
                 found.add(os.path.relpath(os.path.join(dirpath, name), str(root)))
@@ -509,7 +523,7 @@ def check_imports(repo, links=None, fallback_root=None):
 
 BACKTICK = re.compile(r"`([^`\n]+)`")
 LINK = re.compile(r"\]\(([^)\s]+)\)")
-SHELL_FENCE = re.compile(r"```[A-Za-z0-9_+-]*\n(.*?)```", re.S)
+SHELL_FENCE = re.compile(r"```(?:sh|bash|zsh|shell|console)\n(.*?)```", re.S | re.I)
 PLACEHOLDER = re.compile(r"[<>{}\[\]*?]")
 URL = re.compile(r"^[a-z][a-z0-9+.-]*://", re.I)
 TRACKED_SUFFIX = re.compile(r"\.[A-Za-z0-9]{1,8}$")
@@ -1313,10 +1327,20 @@ def validate_gate(stage_path, evidence_path, claims_path):
     if any(rel.endswith("AGENTS.md") or rel.endswith("CLAUDE.md") for rel in changed_files):
         links = {entry["path"]: entry.get("link") for entry in manifest["files"]
                  if entry.get("link")}
+        base_tree = type("BaseTree", (), {"root": Path(stage) / "base"})()
         proposed_tree = type("ProposedTree", (), {"root": Path(stage) / "proposed"})()
-        for error in check_imports(proposed_tree, links=links, fallback_root=repo_root)["errors"]:
-            findings.append(_finding(None, error.get("file", ""), "import_check",
-                                     error.get("error", "import check failed")))
+        base_errors = {(error.get("file", ""), error.get("error", ""))
+                       for error in check_imports(base_tree, links=links,
+                                                  fallback_root=repo_root)["errors"]}
+        touched_dirs = {os.path.dirname(rel) for rel in changed_files
+                        if rel.endswith("AGENTS.md") or rel.endswith("CLAUDE.md")}
+        for error in check_imports(proposed_tree, links=links,
+                                   fallback_root=repo_root)["errors"]:
+            rel = error.get("file", "")
+            key = (rel, error.get("error", ""))
+            if os.path.dirname(rel) in touched_dirs or key not in base_errors:
+                findings.append(_finding(None, rel, "import_check",
+                                         error.get("error", "import check failed")))
 
     for rel in sorted(set(expected_removed) | set(expected_added)):
         if rel and rel not in files and rel not in proposed:
@@ -1477,8 +1501,10 @@ def _check_existing_stale(rel, base_text, claims, refs, findings, reported):
             fixed.update(claim.get("removed") or [])
     explained_refs = set()
     for item in claims["explained_stale"]:
-        explained_refs.add((str(item.get("file")).replace(os.sep, "/"),
-                            strip_reference(str(item.get("ref")))))
+        rel = str(item.get("file")).replace(os.sep, "/")
+        ref = str(item.get("ref"))
+        explained_refs.add((rel, strip_reference(ref)))
+        explained_refs.add((rel, strip_reference(redact(ref))))
     lines = base_text.splitlines()
     for item in references_in(base_text, rel, refs):
         if item["class"] != "stale":
@@ -1489,6 +1515,8 @@ def _check_existing_stale(rel, base_text, claims, refs, findings, reported):
         if line in fixed:
             continue
         if (rel, strip_reference(item["ref"])) in explained_refs:
+            continue
+        if (rel, strip_reference(redact(item["ref"]))) in explained_refs:
             continue
         findings.append(_finding(None, rel, "existing_stale",
                                  "existing stale reference is neither fixed nor explained"))

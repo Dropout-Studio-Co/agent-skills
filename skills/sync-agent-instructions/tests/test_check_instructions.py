@@ -399,6 +399,53 @@ class ReferenceClassificationTests(CheckerCase):
         self.assertTrue(payload['reported'])
 
 
+class RedactedExplainTests(CheckerCase):
+    """V2 replay: an explained stale reference may be named in redacted form."""
+
+    def test_explained_stale_accepts_the_redacted_ref(self):
+        address = 'alice' + '@' + 'example.test'
+        self.write('AGENTS.md', DEFAULT_AGENTS + '\n- Contact `' + address + '` for access.\n')
+        self.commit('stale contact')
+        _code, payload = self.check()
+        refs = {item['ref'] for item in payload['references']}
+        self.assertIn('[REDACTED]', refs)
+        self.stage()
+        code, payload = self.gate([], explained=[{'file': 'AGENTS.md', 'ref': '[REDACTED]',
+                                                  'reason': 'the contact has moved'}])
+        self.assertEqual(code, 0, payload)
+        self.assertEqual(payload['status'], 'no_change')
+
+
+class ShellFenceTests(CheckerCase):
+    """V2 replay: only shell fences are parsed as commands."""
+
+    def references(self):
+        _code, payload = self.check()
+        return payload['references']
+
+    def test_plain_fence_with_a_tree_is_not_a_command(self):
+        tree = ['```', 'repo', '├── routes/', '└── src/', '```']
+        self.write('AGENTS.md', DEFAULT_AGENTS + '\n' + '\n'.join(tree) + '\n')
+        self.commit('tree')
+        refs = [item['ref'] for item in self.references()]
+        self.assertNotIn('├── routes/', refs)
+        self.assertNotIn('└── src/', refs)
+
+    def test_text_fence_is_not_a_command(self):
+        tree = ['```text', '├── routes/', '└── src/', '```']
+        self.write('AGENTS.md', DEFAULT_AGENTS + '\n' + '\n'.join(tree) + '\n')
+        self.commit('tree')
+        refs = [item['ref'] for item in self.references()]
+        self.assertNotIn('├── routes/', refs)
+
+    def test_sh_fence_still_classifies_commands(self):
+        block = ['```sh', 'mysterytool --fast', '```']
+        self.write('AGENTS.md', DEFAULT_AGENTS + '\n' + '\n'.join(block) + '\n')
+        self.commit('command')
+        classes = {item['ref']: item['class'] for item in self.references()}
+        self.assertEqual(classes['mysterytool --fast'], 'unverified')
+
+
 class ImportCheckTests(CheckerCase):
     """A10: import pass and fail matrix, including nested memory files."""
 
@@ -511,6 +558,81 @@ class ImportCheckTests(CheckerCase):
         report = self.import_report()
         self.assertFalse(report['ok'])
         self.assertTrue(any(error['file'] == 'sub/CLAUDE.md' for error in report['errors']))
+
+
+class SurfaceExclusionTests(CheckerCase):
+    """V2 replay: scratch and nested worktree copies never join the surface."""
+
+    def surface(self):
+        module = load_module('checker_for_surface', SCRIPT)
+        return module.surface_paths(self.repo)
+
+    def test_scratch_and_nested_worktree_copies_are_not_surface_files(self):
+        self.write('.backpass/synthesis/AGENTS.md', '# Scratch\n')
+        self.write('.claude/worktrees/foo/AGENTS.md', '# Worktree\n')
+        self.write('.claude/worktrees/foo/.git', 'gitdir: elsewhere\n')
+        self.write('.worktrees/bar/AGENTS.md', '# Worktree\n')
+        self.write('.worktrees/bar/.git', 'gitdir: elsewhere\n')
+        self.write('vendored/repo/AGENTS.md', '# Vendored\n')
+        os.makedirs(os.path.join(self.repo, 'vendored', 'repo', '.git'))
+        paths = self.surface()
+        self.assertNotIn('.backpass/synthesis/AGENTS.md', paths)
+        self.assertNotIn('.claude/worktrees/foo/AGENTS.md', paths)
+        self.assertNotIn('.worktrees/bar/AGENTS.md', paths)
+        self.assertNotIn('vendored/repo/AGENTS.md', paths)
+        _code, payload = self.check()
+        self.assertTrue(payload['import']['ok'], payload['import'])
+
+    def test_root_surface_still_includes_nested_memory_files(self):
+        self.write('sub/AGENTS.md', '# Sub\n\n- Keep this subtree tidy.\n')
+        self.write('sub/CLAUDE.md', '@AGENTS.md\n')
+        paths = self.surface()
+        self.assertIn('sub/AGENTS.md', paths)
+        self.assertIn('sub/CLAUDE.md', paths)
+
+
+class ImportScopeTests(CheckerCase):
+    """V2 replay: only imports in touched or newly broken directories block."""
+
+    def broken_template(self):
+        self.write('starters/demo/AGENTS.md', '# Demo\n\n- Demo line.\n')
+        self.write('starters/demo/CLAUDE.md', '# Claude only\n')
+        self.write('package.json', json.dumps({'name': 'x', 'marker': 'needle'}))
+        self.commit('broken template')
+
+    def test_unrelated_valid_edit_ignores_a_preexisting_template_error(self):
+        self.broken_template()
+        self.stage()
+        line = '- The needle marker is documented in `AGENTS.md`.'
+        self.proposed('AGENTS.md', self.base_read('AGENTS.md') + line + '\n')
+        claim = {'id': 'a1', 'type': 'Add', 'file': 'AGENTS.md', 'removed': [],
+                 'added': [line], 'basis': 'repo_proof',
+                 'proof': {'file': 'package.json', 'contains': 'needle'}}
+        code, payload = self.gate([claim])
+        self.assertEqual(code, 0, payload)
+        self.assertNotIn('import_check', self.codes(payload))
+
+    def test_breaking_a_touched_import_still_blocks(self):
+        self.stage()
+        self.proposed('CLAUDE.md', '`@AGENTS.md`\n')
+        claim = {'id': 'f1', 'type': 'Fix', 'file': 'CLAUDE.md',
+                 'removed': ['@AGENTS.md'], 'added': ['`@AGENTS.md`'], 'basis': 'import'}
+        code, payload = self.gate([claim])
+        self.assertEqual(code, 1)
+        self.assertIn('import_check', self.codes(payload))
+
+    def test_new_nested_agents_without_a_bridge_blocks(self):
+        self.write('package.json', json.dumps({'name': 'x', 'marker': 'needle'}))
+        self.commit('proof')
+        self.stage()
+        line = '- Keep `AGENTS.md` and the needle marker in sync.'
+        self.proposed('sub/AGENTS.md', line + '\n')
+        claim = {'id': 'a1', 'type': 'Add', 'file': 'sub/AGENTS.md', 'removed': [],
+                 'added': [line], 'basis': 'repo_proof',
+                 'proof': {'file': 'package.json', 'contains': 'needle'}}
+        code, payload = self.gate([claim])
+        self.assertEqual(code, 1)
+        self.assertIn('import_check', self.codes(payload))
 
 
 class BudgetTests(CheckerCase):
