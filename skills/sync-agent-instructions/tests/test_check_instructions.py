@@ -2112,10 +2112,10 @@ class DocsTests(unittest.TestCase):
                        'premerge-and-merge'):
             self.assertNotIn(banned, text)
 
-    def test_skill_frontmatter_version_three(self):
+    def test_skill_frontmatter_version_four(self):
         with open(os.path.join(SKILL_DIR, 'SKILL.md'), encoding='utf-8') as handle:
             text = handle.read()
-        self.assertIn('version: "3.0"', text)
+        self.assertIn('version: "4.0"', text)
         for key in ('name:', 'description:', 'license:'):
             self.assertIn(key, text)
 
@@ -2207,6 +2207,115 @@ class GateR2RegressionTests(unittest.TestCase):
             self.assertEqual(payload['status'], 'invalid')
             self.assertEqual(module.read_stage_file(str(stage), 'proposed', str(secret)), '')
             self.assertFalse(module.valid_branch('main\n'))
+
+
+class AuditTests(CheckerCase):
+    def run_audit(self, *extra):
+        proc = subprocess.run(
+            [sys.executable, SCRIPT, 'audit', '--repo', self.repo, '--json'] + list(extra),
+            capture_output=True, text=True,
+        )
+        return proc.returncode, json.loads(proc.stdout)
+
+    def test_discovers_cross_agent_surfaces_and_docs(self):
+        self.write('GEMINI.md', '@AGENTS.md\n')
+        self.write('CLAUDE.local.md', 'Local personal notes.\n')
+        self.write('.github/copilot-instructions.md', 'Read `AGENTS.md` first.\n')
+        self.write('.github/instructions/ts.instructions.md', '---\napplyTo: "**/*.ts"\n---\nUse strict TS.\n')
+        self.write('.claude/rules/api.md', 'Always validate API inputs.\n')
+        self.write('.claude/rules/scoped.md', '---\npaths:\n  - "src/**"\n---\nScoped rule.\n')
+        self.write('.claude/commands/release.md', 'Run release checklist.\n')
+        self.write('.claude/agents/reviewer.md', 'Review diffs carefully.\n')
+        self.write('.cursor/rules/style.mdc', '---\nalwaysApply: true\n---\nUse tabs.\n')
+        self.write('.cursor/rules/ui.mdc', '---\nglobs: "*.tsx"\nalwaysApply: false\n---\nUI rule.\n')
+        self.write('.agents/skills/demo/SKILL.md', '---\nname: demo\ndescription: Demo skill.\n---\nBody.\n')
+        self.write('.trail/learnings/2026-11-22-note.md', '---\nstatus: active\n---\nNote.\n')
+        self.write('README.md', '# Repo\n\n```sh\npython3 -m unittest\n```\n')
+        self.write('docs/architecture.md', '# Architecture\n')
+        self.write('package.json', '{"name":"demo","scripts":{"test":"echo ok"}}\n')
+        self.commit('add cross-agent files')
+
+        code, data = self.run_audit()
+        self.assertEqual(code, 0)
+        self.assertEqual(data['command'], 'audit')
+        self.assertEqual(data['status'], 'ok')
+        by_path = {item['path']: item for item in data['inventory']}
+        self.assertEqual(by_path['AGENTS.md']['category'], 'memory')
+        self.assertTrue(by_path['AGENTS.md']['always_loaded'])
+        self.assertEqual(by_path['GEMINI.md']['agent'], 'gemini')
+        self.assertEqual(by_path['CLAUDE.local.md']['agent'], 'claude')
+        self.assertEqual(by_path['.github/copilot-instructions.md']['agent'], 'copilot')
+        self.assertEqual(by_path['.github/instructions/ts.instructions.md']['category'], 'rules')
+        self.assertTrue(by_path['.claude/rules/api.md']['always_loaded'])
+        self.assertFalse(by_path['.claude/rules/scoped.md']['always_loaded'])
+        self.assertTrue(by_path['.cursor/rules/style.mdc']['always_loaded'])
+        self.assertFalse(by_path['.cursor/rules/ui.mdc']['always_loaded'])
+        self.assertEqual(by_path['.claude/commands/release.md']['category'], 'commands')
+        self.assertEqual(by_path['.claude/agents/reviewer.md']['category'], 'subagents')
+        self.assertEqual(by_path['.agents/skills/demo/SKILL.md']['category'], 'skills')
+        self.assertEqual(by_path['.trail/learnings/2026-11-22-note.md']['category'], 'learnings')
+        self.assertEqual(by_path['README.md']['category'], 'docs')
+        self.assertEqual(by_path['docs/architecture.md']['category'], 'docs')
+        self.assertIn('package.json', data['docs_coverage']['manifests'])
+        self.assertTrue(data['docs_coverage']['has_command_examples'])
+        self.assertEqual(data['docs_coverage']['missing_recommended_docs'], [])
+
+    def test_scope_filtering_and_containment(self):
+        self.write('.claude/rules/a.md', 'Check `missing/file.py`.\n')
+        self.write('docs/guide.md', 'See `AGENTS.md`.\n')
+        self.commit('add scoped files')
+
+        code, data = self.run_audit('--scope', '.claude/rules')
+        self.assertEqual(code, 0)
+        self.assertEqual(data['scope'], '.claude/rules')
+        self.assertEqual([item['path'] for item in data['inventory']], ['.claude/rules/a.md'])
+        self.assertEqual(len(data['references']['stale']), 1)
+
+        code_file, data_file = self.run_audit('--scope', 'docs/guide.md')
+        self.assertEqual(code_file, 0)
+        self.assertEqual([item['path'] for item in data_file['inventory']], ['docs/guide.md'])
+
+        code_missing, data_missing = self.run_audit('--scope', 'does/not/exist')
+        self.assertEqual(code_missing, 2)
+        self.assertEqual(data_missing['status'], 'invalid')
+
+        code_escape, data_escape = self.run_audit('--scope', '../outside')
+        self.assertEqual(code_escape, 2)
+        self.assertEqual(data_escape['status'], 'invalid')
+
+    def test_detects_structural_issues_and_oversized_files(self):
+        dup_line = 'Always run the full integration suite before pushing any release branch.'
+        self.write('AGENTS.md', DEFAULT_AGENTS + '\n' + dup_line + '\n@docs/missing.md\n')
+        self.write('GEMINI.md', '# Gemini\n' + dup_line + '\n')
+        self.write('.cursorrules', 'Legacy cursor rules.\n')
+        self.write('.cursor/rules/modern.mdc', '---\nalwaysApply: false\n---\nModern rule.\n')
+        self.write('.agents/skills/bad-skill/SKILL.md', '---\nname: wrong-name\n---\nBody.\n')
+        self.write('.claude/rules/huge.md', '\n'.join(f'- Rule line number {i} for testing.' for i in range(320)) + '\n')
+        self.commit('add structural issues')
+
+        code, data = self.run_audit()
+        self.assertEqual(code, 0)
+        structure = data['structure']
+        self.assertEqual(len(structure['dangling_imports']), 1)
+        self.assertEqual(structure['dangling_imports'][0]['import'], '@docs/missing.md')
+        fm_errors = [item['error'] for item in structure['skill_frontmatter']]
+        self.assertTrue(any('does not match folder' in err for err in fm_errors))
+        self.assertTrue(any('missing frontmatter description' in err for err in fm_errors))
+        self.assertEqual(len(structure['duplicates']), 1)
+        self.assertEqual(len(structure['duplicates'][0]['locations']), 2)
+        self.assertEqual(len(structure['legacy_overlaps']), 1)
+        self.assertEqual(structure['legacy_overlaps'][0]['legacy'], '.cursorrules')
+        oversized_paths = [item['path'] for item in data['context_load']['oversized']]
+        self.assertIn('.claude/rules/huge.md', oversized_paths)
+
+    def test_audit_is_read_only_and_docs_exist(self):
+        before = subprocess.check_output(['git', 'status', '--porcelain'], cwd=self.repo, text=True)
+        code, _ = self.run_audit()
+        self.assertEqual(code, 0)
+        after = subprocess.check_output(['git', 'status', '--porcelain'], cwd=self.repo, text=True)
+        self.assertEqual(before, after)
+        self.assertTrue(os.path.isfile(os.path.join(SKILL_DIR, 'references', 'audit-rubric.md')))
+        self.assertTrue(os.path.isfile(os.path.join(SKILL_DIR, 'references', 'agent-surfaces.md')))
 
 
 if __name__ == '__main__':

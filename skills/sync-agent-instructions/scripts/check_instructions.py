@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""Check, stage, gate and apply memory-file edits for one repository.
+"""Check, audit, stage, gate and apply instruction-file edits for one repository.
 
 Commands (all accept --json and print one JSON object):
 
   check --repo R                    read-only survey: delivery state, budget, imports,
                                     references, Backpass leads
+  audit --repo R [--scope P]        read-only cross-agent prompt-audit: inventory, context
+                                    load, imports, references, structure, docs coverage
   stage --repo R --out S            copy the memory surface into an editable stage
   gate  --stage S --evidence E --claims C
                                     validate claims and evidence, write S/gate.json
@@ -2148,6 +2150,393 @@ def _write_in_place(stage, manifest, root, changed):
                      "files": list(changed)}
 
 
+AUDIT_PRUNED_DIRS = (
+    ".git", "node_modules", "__pycache__", ".venv", "graft", ".mypy_cache",
+    ".pytest_cache", ".backpass", ".worktrees", "dist", "build", ".next",
+    ".svelte-kit", "target", "vendor",
+)
+AUDIT_OVERSIZED_LINES = 300
+AUDIT_OVERSIZED_TOKENS = 3000
+AUDIT_ROOT_DOCS = ("README.md", "CONTRIBUTING.md", "ARCHITECTURE.md", "DEVELOPMENT.md")
+AUDIT_MANIFESTS = (
+    "package.json", "pyproject.toml", "Cargo.toml", "go.mod", "Makefile",
+    "Gemfile", "composer.json", "pom.xml", "build.gradle", "Dockerfile",
+    "docker-compose.yml", "docker-compose.yaml",
+)
+AUDIT_INSTRUCTION_CATEGORIES = ("memory", "rules", "ide_rules", "skills", "commands", "subagents")
+AT_IMPORT_LINE = re.compile(r"^\s*@([^\s`\"'<>]+)\s*$")
+AT_IMPORT_TARGET = re.compile(r"(?:^|/)(?:AGENTS|CLAUDE|GEMINI)\.md$|[/.][A-Za-z0-9._-]+$")
+
+
+def _frontmatter_meta(text):
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != "---":
+        return {"has_frontmatter": False, "name": "", "description": "",
+                "always_apply": None, "has_scope": False}
+    body = []
+    closed = False
+    for line in lines[1:]:
+        if line.strip() == "---":
+            closed = True
+            break
+        body.append(line)
+    if not closed:
+        return {"has_frontmatter": False, "name": "", "description": "",
+                "always_apply": None, "has_scope": False}
+    name = ""
+    always_apply = None
+    has_scope = False
+    for line in body:
+        m_name = re.match(r"name:\s*(.*)$", line)
+        if m_name:
+            name = m_name.group(1).strip().strip('"\'')
+        m_always = re.match(r"alwaysApply:\s*(true|false)\s*$", line, re.I)
+        if m_always:
+            always_apply = m_always.group(1).lower() == "true"
+        if re.match(r"(?:paths|globs|applyTo):\s*", line):
+            has_scope = True
+    return {
+        "has_frontmatter": True,
+        "name": name,
+        "description": frontmatter_description(text),
+        "always_apply": always_apply,
+        "has_scope": has_scope,
+    }
+
+
+def _classify_audit_file(rel, skills_rel):
+    rel = rel.replace(os.sep, "/")
+    parts = Path(rel).parts
+    name = parts[-1] if parts else ""
+    if name in ("AGENTS.md", "AGENTS.override.md"):
+        return "memory", "cross-agent", len(parts) == 1
+    if name in ("CLAUDE.md", "CLAUDE.local.md"):
+        return "memory", "claude", len(parts) == 1
+    if name == "GEMINI.md":
+        return "memory", "gemini", len(parts) == 1
+    if rel == ".github/copilot-instructions.md":
+        return "memory", "copilot", True
+    if rel.startswith(".github/instructions/") and rel.endswith(".instructions.md"):
+        return "rules", "copilot", False
+    if rel.startswith(".claude/rules/") and rel.endswith(".md"):
+        return "rules", "claude", True
+    if rel.startswith(".agents/rules/") and rel.endswith(".md"):
+        return "rules", "cross-agent", True
+    if rel == ".cursorrules":
+        return "ide_rules", "cursor", True
+    if rel.startswith(".cursor/rules/") and (rel.endswith(".mdc") or rel.endswith(".md")):
+        return "ide_rules", "cursor", False
+    if rel == ".windsurfrules":
+        return "ide_rules", "windsurf", True
+    if rel.startswith(".windsurf/rules/") and rel.endswith(".md"):
+        return "ide_rules", "windsurf", False
+    if rel == ".clinerules" or (rel.startswith(".clinerules/") and rel.endswith(".md")):
+        return "ide_rules", "cline", True
+    skill_roots = [
+        (skills_rel.rstrip("/") + "/", "cross-agent"),
+        (".agents/skills/", "cross-agent"),
+        (".claude/skills/", "claude"),
+        (".codex/skills/", "codex"),
+        (".gemini/skills/", "gemini"),
+    ]
+    for prefix, agent in skill_roots:
+        if rel.startswith(prefix) and name == "SKILL.md":
+            rest = rel[len(prefix):]
+            if rest.count("/") == 1:
+                return "skills", agent, False
+    if rel.startswith(".claude/commands/") and rel.endswith(".md"):
+        return "commands", "claude", False
+    if rel.startswith(".agents/commands/") and rel.endswith(".md"):
+        return "commands", "cross-agent", False
+    if rel.startswith(".claude/agents/") and rel.endswith(".md"):
+        return "subagents", "claude", False
+    if rel.startswith(".agents/agents/") and rel.endswith(".md"):
+        return "subagents", "cross-agent", False
+    if rel.startswith(".claude/output-styles/") and rel.endswith(".md"):
+        return "output_styles", "claude", False
+    if rel.startswith(".trail/learnings/") and rel.endswith(".md") and len(parts) == 3:
+        return "learnings", "cross-agent", False
+    if rel in AUDIT_ROOT_DOCS or (rel.startswith("docs/") and rel.endswith(".md")):
+        return "docs", "shared", False
+    return None
+
+
+def audit_surface(root, scope=None):
+    root = Path(root)
+    scope_rel = None
+    if scope is not None:
+        raw = str(scope).strip()
+        if not raw or raw in (".", "./"):
+            scope_rel = None
+        else:
+            scope_rel = normalize_rel(raw)
+            if _path_escapes_root(root, scope_rel, include_leaf=True):
+                raise ValueError("scope escapes repository root")
+            if not (root / scope_rel).exists():
+                raise ValueError("scope path does not exist")
+    skills_rel = skills_dir(root)
+    found = []
+    for dirpath, dirnames, filenames in os.walk(str(root)):
+        here = Path(dirpath)
+        kept = []
+        for dirname in sorted(dirnames):
+            if dirname in AUDIT_PRUNED_DIRS:
+                continue
+            if dirname == "worktrees" and here.name == ".claude":
+                continue
+            child = here / dirname
+            try:
+                if child.is_symlink():
+                    continue
+                if (child / ".git").exists() or (child / ".git").is_symlink():
+                    continue
+            except OSError:
+                continue
+            kept.append(dirname)
+        dirnames[:] = kept
+        for filename in sorted(filenames):
+            rel = os.path.relpath(os.path.join(dirpath, filename), str(root)).replace(os.sep, "/")
+            if scope_rel is not None and rel != scope_rel and not rel.startswith(scope_rel + "/"):
+                continue
+            classified = _classify_audit_file(rel, skills_rel)
+            if classified is None:
+                continue
+            path = root / rel
+            category, agent, always_loaded = classified
+            item = {"path": rel, "category": category, "agent": agent,
+                    "always_loaded": always_loaded}
+            if path.is_symlink():
+                item["link"] = os.readlink(str(path))
+                item["bytes"] = 0
+                item["lines"] = 0
+                item["tokens"] = 0
+            else:
+                try:
+                    raw_bytes = path.read_bytes()
+                except OSError:
+                    continue
+                text = raw_bytes.decode("utf-8", "replace")
+                meta = _frontmatter_meta(text)
+                if category == "rules" and meta["has_scope"]:
+                    item["always_loaded"] = False
+                elif category == "ide_rules" and meta["always_apply"] is not None:
+                    item["always_loaded"] = meta["always_apply"]
+                item["bytes"] = len(raw_bytes)
+                item["lines"] = len(text.splitlines())
+                item["tokens"] = int(math.ceil(len(raw_bytes) / 4.0))
+                if category == "skills":
+                    item["description_tokens"] = int(
+                        math.ceil(len(meta["description"].encode("utf-8")) / 4.0))
+            found.append(item)
+    found.sort(key=lambda entry: entry["path"])
+    return scope_rel, found
+
+
+def _dangling_at_imports(root, items):
+    dangling = []
+    for item in items:
+        if item.get("link") or item["category"] not in AUDIT_INSTRUCTION_CATEGORIES:
+            continue
+        rel = item["path"]
+        try:
+            text = (root / rel).read_text("utf-8", "replace")
+        except OSError:
+            continue
+        in_fence = False
+        parent = (root / rel).parent
+        for number, line in enumerate(text.splitlines(), 1):
+            stripped = line.strip()
+            if stripped.startswith(("```", "~~~")):
+                in_fence = not in_fence
+                continue
+            if in_fence:
+                continue
+            match = AT_IMPORT_LINE.match(line)
+            if not match:
+                continue
+            target = match.group(1).strip()
+            if not AT_IMPORT_TARGET.search(target) or URL.match(target):
+                continue
+            if target.startswith(("~/", "/")):
+                continue
+            rel_candidate = parent / target
+            root_candidate = root / target
+            exists = False
+            for candidate in (rel_candidate, root_candidate):
+                try:
+                    if candidate.exists() and _inside(candidate, root):
+                        exists = True
+                        break
+                except OSError:
+                    continue
+            if not exists:
+                dangling.append({"file": rel, "line": number, "import": "@" + target})
+    return dangling
+
+
+def _check_skill_frontmatter(root, items):
+    issues = []
+    for item in items:
+        if item.get("link") or item["category"] != "skills":
+            continue
+        rel = item["path"]
+        try:
+            text = (root / rel).read_text("utf-8", "replace")
+        except OSError:
+            continue
+        meta = _frontmatter_meta(text)
+        folder = Path(rel).parent.name
+        if not meta["has_frontmatter"]:
+            issues.append({"file": rel, "error": "missing YAML frontmatter"})
+            continue
+        if not meta["name"]:
+            issues.append({"file": rel, "error": "missing frontmatter name"})
+        elif meta["name"] != folder:
+            issues.append({"file": rel,
+                           "error": "frontmatter name does not match folder (%s != %s)"
+                           % (meta["name"], folder)})
+        if not meta["description"]:
+            issues.append({"file": rel, "error": "missing frontmatter description"})
+    return issues
+
+
+def _check_cross_file_duplicates(root, items):
+    seen_inodes = set()
+    line_locations = {}
+    for item in items:
+        if item.get("link") or item["category"] not in ("memory", "rules", "ide_rules"):
+            continue
+        rel = item["path"]
+        path = root / rel
+        try:
+            info = os.stat(str(path))
+            key = (info.st_dev, info.st_ino)
+            if key in seen_inodes:
+                continue
+            seen_inodes.add(key)
+            text = path.read_text("utf-8", "replace")
+        except OSError:
+            continue
+        in_fence = False
+        seen_in_file = set()
+        for number, line in enumerate(text.splitlines(), 1):
+            stripped = line.strip()
+            if stripped.startswith(("```", "~~~")):
+                in_fence = not in_fence
+                continue
+            if in_fence or len(stripped) < 40:
+                continue
+            if stripped.startswith(("#", "<!--", "@", "|", "---")):
+                continue
+            norm = " ".join(stripped.split())
+            if norm in seen_in_file:
+                continue
+            seen_in_file.add(norm)
+            line_locations.setdefault(norm, []).append({"file": rel, "line": number})
+    duplicates = []
+    for norm, locations in sorted(line_locations.items()):
+        if len(locations) >= 2:
+            duplicates.append({"text": redact(norm[:140]), "locations": locations})
+            if len(duplicates) >= 50:
+                break
+    return duplicates
+
+
+def _check_legacy_overlaps(items):
+    paths = {item["path"] for item in items}
+    overlaps = []
+    if ".cursorrules" in paths and any(p.startswith(".cursor/rules/") for p in paths):
+        overlaps.append({"legacy": ".cursorrules", "modern": ".cursor/rules/",
+                         "note": "legacy .cursorrules present alongside .cursor/rules/"})
+    if ".windsurfrules" in paths and any(p.startswith(".windsurf/rules/") for p in paths):
+        overlaps.append({"legacy": ".windsurfrules", "modern": ".windsurf/rules/",
+                         "note": "legacy .windsurfrules present alongside .windsurf/rules/"})
+    return overlaps
+
+
+def _docs_coverage(root, items):
+    manifests = [name for name in AUDIT_MANIFESTS if (root / name).is_file()]
+    present_docs = [name for name in ("AGENTS.md",) + AUDIT_ROOT_DOCS if (root / name).is_file()]
+    missing_docs = [name for name in ("AGENTS.md", "README.md") if name not in present_docs]
+    has_commands = False
+    for name in ("AGENTS.md", "README.md"):
+        path = root / name
+        if path.is_file():
+            try:
+                if shell_fence_lines(path.read_text("utf-8", "replace")):
+                    has_commands = True
+                    break
+            except OSError:
+                pass
+    return {
+        "manifests": manifests,
+        "present_docs": present_docs,
+        "missing_recommended_docs": missing_docs,
+        "has_command_examples": has_commands,
+        "docs_file_count": sum(1 for item in items if item["category"] == "docs"),
+    }
+
+
+def audit_command(repo_path, scope=None):
+    try:
+        repo = Repo(repo_path)
+    except (OSError, ValueError):
+        return EXIT_INVALID, {"version": 1, "command": "audit", "status": "invalid",
+                              "error": "repository is not usable"}
+    try:
+        scope_rel, items = audit_surface(repo.root, scope=scope)
+    except ValueError as exc:
+        return EXIT_INVALID, {"version": 1, "command": "audit", "status": "invalid",
+                              "error": str(exc)}
+    ref_items = [{**item, "ref": redact(item["ref"])}
+                 for item in collect_references(repo, items)]
+    ref_counts = Counter(item["class"] for item in ref_items)
+    always_tokens = sum(item["tokens"] for item in items if item.get("always_loaded"))
+    skill_desc_tokens = sum(item.get("description_tokens", 0) for item in items
+                            if item["category"] == "skills")
+    oversized = [
+        {"path": item["path"], "lines": item["lines"], "tokens": item["tokens"]}
+        for item in items
+        if item.get("always_loaded") and (
+            item["lines"] > AUDIT_OVERSIZED_LINES or item["tokens"] > AUDIT_OVERSIZED_TOKENS)
+    ]
+    budget = budget_report(repo.root)
+    report = {
+        "version": 1,
+        "command": "audit",
+        "status": "ok",
+        "repo": {"id": repo.id, "kind": "git" if repo.is_git else "dir",
+                 "head": repo.head, "default_branch": repo.default_branch},
+        "scope": scope_rel,
+        "inventory": items,
+        "context_load": {
+            "always_loaded_tokens": always_tokens + skill_desc_tokens,
+            "always_loaded_file_tokens": always_tokens,
+            "skill_description_tokens": skill_desc_tokens,
+            "budget_cap": budget["cap"],
+            "over_budget": (always_tokens + skill_desc_tokens) > budget["cap"],
+            "oversized": oversized,
+        },
+        "budget": budget,
+        "import": check_imports(repo),
+        "references": {
+            "total": len(ref_items),
+            "counts": dict(sorted(ref_counts.items())),
+            "stale": [item for item in ref_items if item["class"] == "stale"],
+            "unverified": [item for item in ref_items if item["class"] == "unverified"],
+            "items": ref_items,
+        },
+        "structure": {
+            "dangling_imports": _dangling_at_imports(repo.root, items),
+            "skill_frontmatter": _check_skill_frontmatter(repo.root, items),
+            "duplicates": _check_cross_file_duplicates(repo.root, items),
+            "legacy_overlaps": _check_legacy_overlaps(items),
+        },
+        "docs_coverage": _docs_coverage(repo.root, items),
+    }
+    return EXIT_OK, report
+
+
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     parser = argparse.ArgumentParser(prog="check_instructions.py")
@@ -2155,6 +2544,10 @@ def main(argv=None):
     check = sub.add_parser("check")
     check.add_argument("--repo", required=True)
     check.add_argument("--json", action="store_true")
+    audit = sub.add_parser("audit")
+    audit.add_argument("--repo", required=True)
+    audit.add_argument("--scope")
+    audit.add_argument("--json", action="store_true")
     stage = sub.add_parser("stage")
     stage.add_argument("--repo", required=True)
     stage.add_argument("--out", required=True)
@@ -2171,6 +2564,8 @@ def main(argv=None):
 
     if args.command == "check":
         code, payload = check_command(args.repo)
+    elif args.command == "audit":
+        code, payload = audit_command(args.repo, scope=args.scope)
     elif args.command == "stage":
         code, payload = stage_command(args.repo, args.out)
     elif args.command == "gate":
