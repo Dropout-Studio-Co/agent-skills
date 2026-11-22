@@ -72,6 +72,9 @@ class TaskProtocolUnitTests(TempCase):
 
     def test_plan_parser_is_strict(self):
         self.assertIsNone(tp.parse_plan_result('no block')[0])
+        prompt_template = tp.build_plan_prompt('plan', 'upgrade', '/repo', 'abc', '/ctx', '')
+        self.assertIsNone(tp.parse_plan_result(prompt_template, 'plan')[0],
+                          'the unfilled prompt template never counts as a completed plan')
         empty = dict(PLAN, steps=[])
         text = '%s\n%s\n%s' % (tp.PLAN_BEGIN, json.dumps(empty), tp.PLAN_END)
         self.assertIsNone(tp.parse_plan_result(text, 'plan')[0], 'a plan needs steps')
@@ -83,8 +86,8 @@ class TaskProtocolUnitTests(TempCase):
 
 class DepupTaskCase(TempCase):
 
-    def upgrade_run(self):
-        root = os.path.join(self.tmp, 'repo')
+    def upgrade_run(self, name='repo'):
+        root = os.path.join(self.tmp, name)
         write(os.path.join(root, 'package.json'), {'name': 'r', 'dependencies': {'a': '^1.0.0'}})
         write(os.path.join(root, 'package-lock.json'), {'lockfileVersion': 3, 'packages': {'a': '1.0.0'}})
         git_init(root)
@@ -225,17 +228,21 @@ class ReviewIntegrationTests(DepupTaskCase):
         start, wt = self.upgrade_run()
         ref, run_dir = start['run_ref'], start['run_dir']
         recorded = {}
-        for kind, subject in (('independent', 'db'), ('security', 'db'), ('critical', None)):
+        specs = (
+            ('independent', 'db', 'fresh-independent-1', 'Independent assessment.\n' + GOOD),
+            ('security', 'db', 'fresh-security-2', 'Security assessment.\n' + GOOD),
+            ('critical', None, 'fresh-critical-3', GOOD),
+        )
+        for kind, subject, who, body in specs:
             args = ['review', 'prepare', ref, '--kind', kind, '--required']
             if subject:
                 args += ['--subject', subject]
             _, prep = self.cli(*args)
-            out_file = self.write_out(prep['output_path'], GOOD)
+            out_file = self.write_out(prep['output_path'], body)
             _, rec = self.cli('review', 'record', ref, '--review-id', prep['id'],
-                              '--output', out_file, '--reviewer', 'session-fresh-context')
+                              '--output', out_file, '--reviewer', who)
             recorded[kind] = rec
-        self.assertNotEqual(recorded['independent']['reviewer'], recorded['security']['reviewer'],
-                            'same session model still gets distinct fresh-context reviewer identities')
+        self.assertNotEqual(recorded['independent']['reviewer_id'], recorded['security']['reviewer_id'])
         with open(start['journal'], encoding='utf-8') as handle:
             run_id = json.load(handle)['run_id']
         candidate = depup.git_state(wt)['head']
@@ -267,6 +274,111 @@ class ReviewIntegrationTests(DepupTaskCase):
         write(path, payload)
         _, rep = self.cli('report', ref, '--input', path)
         self.assertEqual(rep['status'], 'PASS', rep['corrections'])
+
+    def test_duplicate_reviewer_or_body_cannot_satisfy_high_risk_dossier(self):
+        for case_name, reviewers, bodies in (
+            ('same-reviewer', ('same-agent', 'same-agent'), ('Ind.\n' + GOOD, 'Sec.\n' + GOOD)),
+            ('same-body', ('ind-agent', 'sec-agent'), (GOOD, GOOD)),
+        ):
+            with self.subTest(case_name):
+                start, wt = self.upgrade_run('repo-' + case_name)
+                ref, run_dir = start['run_ref'], start['run_dir']
+                recs = {}
+                for (kind, who, body) in (('independent', reviewers[0], bodies[0]),
+                                          ('security', reviewers[1], bodies[1])):
+                    _, prep = self.cli('review', 'prepare', ref, '--kind', kind, '--subject', 'db', '--required')
+                    out_file = self.write_out(prep['output_path'], body)
+                    _, recs[kind] = self.cli('review', 'record', ref, '--review-id', prep['id'],
+                                             '--output', out_file, '--reviewer', who)
+                with open(start['journal'], encoding='utf-8') as handle:
+                    run_id = json.load(handle)['run_id']
+                candidate = depup.git_state(wt)['head']
+                write(os.path.join(run_dir, 'logs', 'tests.log'), 'pass\n')
+                write(os.path.join(run_dir, 'logs', 'tests.json'), {
+                    'run_id': run_id, 'candidate_head': candidate, 'kind': 'verification', 'subject': 'npm test',
+                    'result': 'pass', 'reviewer': 'runner', 'artifact': 'logs/tests.log',
+                    'artifact_sha256': hashlib.sha256(b'pass\n').hexdigest()})
+                for step in ('baseline', 'verify', 'review'):
+                    self.cli('run', 'step', ref, '--id', step, '--status', 'done')
+                payload = {
+                    'status': 'PASS',
+                    'reviews': [recs['independent'], recs['security']],
+                    'verification': [{'check': 'tests', 'command': 'npm test', 'result': 'pass',
+                                      'log': 'logs/tests.log', 'evidence': 'logs/tests.json'}],
+                    'upgrades': [{'name': 'db', 'impact_tier': 'high', 'status': 'done'}],
+                    'risks': [{
+                        'name': 'db', 'summary': 'db', 'severity': 'high', 'disposition': 'proceed',
+                        'analysis': 'mapped', 'recovery': 'revert on owned branch',
+                        'sources': [{'name': 'guide', 'url': 'https://example.test', 'retrieved': '2026-11-03'}],
+                        'alternatives': ['stay'], 'controls': ['staged'],
+                        'reviews': [
+                            {'type': 'independent', 'status': 'pass', 'evidence': recs['independent']['evidence']},
+                            {'type': 'security', 'status': 'pass', 'evidence': recs['security']['evidence']},
+                        ],
+                    }],
+                }
+                path = os.path.join(self.tmp, 'in-%s.json' % case_name)
+                write(path, payload)
+                _, rep = self.cli('report', ref, '--input', path)
+                self.assertEqual(rep['status'], 'PARTIAL', 'duplicate %s must not pass' % case_name)
+
+    def test_rerun_cannot_erase_failed_review_or_leave_stale_receipt(self):
+        start, wt = self.upgrade_run()
+        ref, run_dir = start['run_ref'], start['run_dir']
+        _, prep = self.cli('review', 'prepare', ref, '--kind', 'critical')  # non-required
+        out_file = self.write_out(prep['output_path'], FAIL_REVIEW)
+        _, failed = self.cli('review', 'record', ref, '--review-id', prep['id'],
+                             '--output', out_file, '--reviewer', 'rev-1')
+        self.assertEqual(failed['verdict'], 'fail')
+        # Rerun and leave pending: failure must still block PASS and stale receipt must be removed.
+        _, rerun = self.cli('review', 'prepare', ref, '--kind', 'critical', '--rerun')
+        self.assertTrue(rerun.get('prior_failed'))
+        self.assertFalse(os.path.exists(os.path.join(os.path.dirname(rerun['entry']), 'receipt.json')))
+        with open(start['journal'], encoding='utf-8') as handle:
+            run_id = json.load(handle)['run_id']
+        candidate = depup.git_state(wt)['head']
+        write(os.path.join(run_dir, 'logs', 'tests.log'), 'pass\n')
+        write(os.path.join(run_dir, 'logs', 'tests.json'), {
+            'run_id': run_id, 'candidate_head': candidate, 'kind': 'verification', 'subject': 'npm test',
+            'result': 'pass', 'reviewer': 'runner', 'artifact': 'logs/tests.log',
+            'artifact_sha256': hashlib.sha256(b'pass\n').hexdigest()})
+        for step in ('baseline', 'verify', 'review'):
+            self.cli('run', 'step', ref, '--id', step, '--status', 'done')
+        payload = {'status': 'PASS', 'verification': [{'check': 'tests', 'command': 'npm test', 'result': 'pass',
+                                                       'log': 'logs/tests.log', 'evidence': 'logs/tests.json'}]}
+        path = os.path.join(self.tmp, 'in-rerun.json')
+        write(path, payload)
+        _, rep = self.cli('report', ref, '--input', path)
+        self.assertEqual(rep['status'], 'PARTIAL', 'rerunning a failed review to pending must not clear failure')
+
+    def test_prompt_file_refused_as_output_and_required_persists_across_commits(self):
+        start, wt = self.upgrade_run()
+        ref, run_dir = start['run_ref'], start['run_dir']
+        _, prep = self.cli('review', 'prepare', ref, '--kind', 'critical', '--required')
+        code, refused = self.cli('review', 'record', ref, '--review-id', prep['id'],
+                                 '--output', prep['prompt_path'], '--reviewer', 'rev-1')
+        self.assertEqual(code, 1)
+        self.assertIn('prompt.md', refused['error'])
+        # Commit C2 without re-running required critical review: report must still block PASS.
+        write(os.path.join(wt, 'extra.txt'), 'c2\n')
+        sh(['git', 'add', '-A'], wt)
+        sh(['git', 'commit', '-q', '-m', 'second commit'], wt)
+        with open(start['journal'], encoding='utf-8') as handle:
+            run_id = json.load(handle)['run_id']
+        c2 = depup.git_state(wt)['head']
+        write(os.path.join(run_dir, 'logs', 'tests.log'), 'pass\n')
+        write(os.path.join(run_dir, 'logs', 'tests.json'), {
+            'run_id': run_id, 'candidate_head': c2, 'kind': 'verification', 'subject': 'npm test',
+            'result': 'pass', 'reviewer': 'runner', 'artifact': 'logs/tests.log',
+            'artifact_sha256': hashlib.sha256(b'pass\n').hexdigest()})
+        for step in ('baseline', 'verify', 'review'):
+            self.cli('run', 'step', ref, '--id', step, '--status', 'done')
+        payload = {'status': 'PASS', 'verification': [{'check': 'tests', 'command': 'npm test', 'result': 'pass',
+                                                       'log': 'logs/tests.log', 'evidence': 'logs/tests.json'}]}
+        path = os.path.join(self.tmp, 'in-c2.json')
+        write(path, payload)
+        _, rep = self.cli('report', ref, '--input', path)
+        self.assertEqual(rep['status'], 'PARTIAL', 'required review on C1 must not vanish on C2')
 
 
 class PlanningIntegrationTests(DepupTaskCase):

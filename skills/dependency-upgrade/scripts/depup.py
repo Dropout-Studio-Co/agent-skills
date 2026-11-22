@@ -1982,11 +1982,20 @@ def build_report(run_dir, journal, supplied):
                             receipt, _ = read_json(receipt_path)
                             review_receipts[review_type] = receipt
                 review_types = set(review_receipts)
+                ind_r = review_receipts.get('independent', {})
+                sec_r = review_receipts.get('security', {})
+                distinct_ids = (
+                    ind_r.get('reviewer_id', '').strip().lower() != sec_r.get('reviewer_id', '').strip().lower()
+                    if ind_r.get('reviewer_id') and sec_r.get('reviewer_id') else True
+                )
+                distinct_bodies = (
+                    ind_r.get('body_sha256') != sec_r.get('body_sha256')
+                    if ind_r.get('body_sha256') and sec_r.get('body_sha256') else True
+                )
                 distinct_reviews = (
-                    review_receipts.get('independent', {}).get('reviewer') !=
-                    review_receipts.get('security', {}).get('reviewer') and
-                    review_receipts.get('independent', {}).get('artifact_sha256') !=
-                    review_receipts.get('security', {}).get('artifact_sha256')
+                    ind_r.get('reviewer') != sec_r.get('reviewer') and
+                    ind_r.get('artifact_sha256') != sec_r.get('artifact_sha256') and
+                    distinct_ids and distinct_bodies
                 )
                 has_source = isinstance(sources, list) and any(
                     isinstance(source, dict) and nonempty_text(source.get('name')) and
@@ -2014,15 +2023,30 @@ def build_report(run_dir, journal, supplied):
                         bound_evidence(run_dir, entry.get('evidence'), journal['run_id'], candidate,
                                        '%s-review' % entry.get('kind'), entry.get('subject'), 'pass'))
 
-            # Routed review entries on disk are authoritative: leaving one out of the report input, or
-            # flipping its required flag, cannot hide an unavailable or failed review of this candidate.
+            # Review entries on disk are authoritative: leaving one out of the report input,
+            # committing a new candidate, or rerunning without passing cannot hide a required or failed review.
             all_reviews = {r.get('id') or id(r): r for r in items('reviews')}
-            for entry in run_review_entries(run_dir):
+            disk_reviews = run_review_entries(run_dir)
+            for entry in disk_reviews:
                 if entry.get('candidate_head') == candidate:
                     all_reviews[entry.get('id')] = entry
-            unmet_reviews = [r for r in all_reviews.values() if r.get('required') and not review_passed(r)]
-            failed_reviews = [r for r in all_reviews.values() if r.get('candidate_head') == candidate and
-                              r.get('verdict') == 'fail']
+            required_pairs = {
+                (r.get('kind'), r.get('subject'))
+                for r in list(all_reviews.values()) + disk_reviews
+                if r.get('required') and r.get('kind') and r.get('subject')
+            }
+            passed_pairs = {
+                (r.get('kind'), r.get('subject'))
+                for r in all_reviews.values()
+                if review_passed(r)
+            }
+            unmet_reviews = [pair for pair in sorted(required_pairs) if pair not in passed_pairs]
+            failed_reviews = [
+                r for r in all_reviews.values()
+                if r.get('candidate_head') == candidate and (
+                    r.get('verdict') == 'fail' or (r.get('prior_failed') and not review_passed(r))
+                )
+            ]
             for found, label in ((unmet_reviews, 'required review(s) not completed and passed for this candidate'),
                                  (failed_reviews, 'review(s) of this candidate with unresolved Important findings'),
                                  (blocked_risks, 'blocked high-risk item(s)'),
@@ -2177,33 +2201,58 @@ def write_review_inputs(tp, worktree, base, candidate, review_dir):
             'stat': os.path.join(review_dir, 'diffstat.txt')}
 
 
+def clean_label(value, flag):
+    text = (value or '').strip()
+    if not text:
+        raise Refusal('%s must be non-empty' % flag)
+    if '\n' in text or '\r' in text:
+        raise Refusal('%s must be a single line without newlines' % flag)
+    return redact_text(text)
+
+
+def remove_stale_files(directory, names):
+    for name in names:
+        path = os.path.join(directory, name)
+        try:
+            os.unlink(path)
+        except FileNotFoundError:
+            pass
+
+
 def review_target(args, journal, tp):
     if args.kind not in tp.KINDS:
         raise Refusal('--kind must be one of ' + ', '.join(tp.KINDS))
-    subject = args.subject or ('full-diff' if args.kind == 'critical' else None)
-    if not subject:
+    raw_subject = args.subject or ('full-diff' if args.kind == 'critical' else None)
+    if not raw_subject:
         raise Refusal('--subject <risk name> is required for independent and security reviews')
+    subject = clean_label(raw_subject, '--subject')
     candidate = candidate_head(journal)
     if not candidate:
         raise Refusal('a review needs the owned worktree clean at a committed candidate')
     return subject, candidate, '%s-%s-%s' % (args.kind, review_slug(subject), candidate[:12])
 
 
-def complete_review(run_dir, journal, review_dir, meta, text, result, reviewer):
+def complete_review(run_dir, journal, review_dir, meta, text, result, reviewer, reviewer_id):
     review_md = os.path.join(review_dir, 'review.md')
-    header = '<!-- depup review %s (%s %s) by %s on %s -->\n' % (meta['id'], meta['kind'], meta['subject'], reviewer,
-                                                              meta['candidate_head'])
-    atomic_write(review_md, header + redact_text(text))  # each review task's artifact is distinct
-    receipt = {'run_id': journal['run_id'], 'candidate_head': meta['candidate_head'],
-               'kind': meta['kind'] + '-review', 'subject': meta['subject'], 'result': result['verdict'],
-               'reviewer': reviewer, 'artifact': os.path.relpath(review_md, run_dir),
-               'artifact_sha256': file_sha256(review_md)}
+    body = redact_text(text)
+    header = redact_text('<!-- depup review %s (%s %s) by %s on %s -->\n' % (
+        meta['id'], meta['kind'], meta['subject'], reviewer, meta['candidate_head']))
+    atomic_write(review_md, header + body)  # each review task's artifact is distinct
+    receipt = redact_output({
+        'run_id': journal['run_id'], 'candidate_head': meta['candidate_head'],
+        'kind': meta['kind'] + '-review', 'subject': meta['subject'], 'result': result['verdict'],
+        'reviewer': reviewer, 'reviewer_id': reviewer_id,
+        'body_sha256': hashlib.sha256(body.encode('utf-8')).hexdigest(),
+        'artifact': os.path.relpath(review_md, run_dir), 'artifact_sha256': file_sha256(review_md),
+    })
     atomic_write(os.path.join(review_dir, 'receipt.json'), json.dumps(receipt, indent=2) + '\n')
     counts = {s: len([f for f in result['findings'] if f['severity'] == s]) for s in ('Important', 'Nit', 'Pre-existing')}
     meta.update(status='completed', verdict=result['verdict'], summary=result.get('summary'),
                 finding_counts=counts, findings=result['findings'], result_corrections=result.get('corrections'),
-                reviewer=reviewer,
+                reviewer=reviewer, reviewer_id=reviewer_id,
                 evidence=os.path.relpath(os.path.join(review_dir, 'receipt.json'), run_dir), completed=now())
+    if result['verdict'] == 'pass':
+        meta.pop('prior_failed', None)
     return meta
 
 
@@ -2221,6 +2270,7 @@ def cmd_review_prepare(args):
             existing['required'] = True
             atomic_write(entry_path, json.dumps(redact_output(existing), indent=2) + '\n')
         return dict(existing, reused=True, note='completed review for this exact candidate reused')
+    remove_stale_files(review_dir, ('receipt.json', 'review.md'))
     files = write_review_inputs(tp, journal['worktree'], journal.get('worktree_base') or journal['base_commit'],
                                 candidate, review_dir)
     context = None
@@ -2232,6 +2282,7 @@ def cmd_review_prepare(args):
     prompt_path = os.path.join(review_dir, 'prompt.md')
     output_path = os.path.join(review_dir, 'output.md')
     atomic_write(prompt_path, prompt)
+    prior_failed = bool(isinstance(existing, dict) and (existing.get('verdict') == 'fail' or existing.get('prior_failed')))
     meta = {
         'id': review_id, 'kind': args.kind, 'subject': subject,
         'required': bool(args.required or (isinstance(existing, dict) and existing.get('required'))),
@@ -2246,6 +2297,8 @@ def cmd_review_prepare(args):
             'depup.py review unavailable %s --review-id %s --reason "<why>".'
             % (prompt_path, output_path, args.run, review_id, output_path, args.run, review_id)),
     }
+    if prior_failed:
+        meta['prior_failed'] = True
     atomic_write(entry_path, json.dumps(redact_output(meta), indent=2) + '\n')
     return dict(meta, entry=entry_path)
 
@@ -2262,8 +2315,10 @@ def cmd_review_record(args):
     meta, error = read_json(entry_path)
     if error or not isinstance(meta, dict) or meta.get('status') != 'pending':
         raise Refusal('review %s is not pending' % args.review_id)
-    if not (args.reviewer or '').strip():
-        raise Refusal('--reviewer must identify the fresh-context reviewer')
+    reviewer_id = clean_label(args.reviewer, '--reviewer')
+    prompt_path = os.path.join(review_dir, 'prompt.md')
+    if os.path.realpath(args.output) == os.path.realpath(prompt_path):
+        raise Refusal('--output must be the fresh-context answer, not prompt.md')
     if candidate_head(journal) != meta.get('candidate_head'):
         meta.update(status='unavailable', tree_changed=True,
                     reason='the owned worktree changed since the review was prepared; result discarded')
@@ -2277,8 +2332,8 @@ def cmd_review_record(args):
     if result is None:
         meta.update(status='unavailable', reason='fresh-context review output invalid: %s' % problem)
     else:
-        reviewer = '%s (%s)' % (args.reviewer.strip(), args.review_id)
-        meta = complete_review(run_dir, journal, review_dir, meta, text, result, reviewer)
+        reviewer = '%s (%s)' % (reviewer_id, args.review_id)
+        meta = complete_review(run_dir, journal, review_dir, meta, text, result, reviewer, reviewer_id)
     meta.pop('next', None)
     atomic_write(entry_path, json.dumps(redact_output(meta), indent=2) + '\n')
     return dict(meta, entry=entry_path)
@@ -2337,13 +2392,14 @@ def planning_entries(run_dir):
 
 def complete_plan(run_dir, journal, plan_dir, meta, text, result, planner):
     plan_md = os.path.join(plan_dir, 'plan.md')
-    atomic_write(plan_md, '<!-- depup %s %s (%s) by %s on %s -->\n' % (
-        meta['kind'], meta['id'], meta['subject'], planner, meta['head']) + redact_text(text))
+    header = redact_text('<!-- depup %s %s (%s) by %s on %s -->\n' % (
+        meta['kind'], meta['id'], meta['subject'], planner, meta['head']))
+    atomic_write(plan_md, header + redact_text(text))
     result_path = os.path.join(plan_dir, 'plan.json')
     atomic_write(result_path, json.dumps(redact_output(result), indent=2) + '\n')
-    receipt = {'run_id': journal['run_id'], 'head': meta['head'], 'kind': meta['kind'] + '-plan',
-               'subject': meta['subject'], 'context_sha256': meta['context_sha256'], 'planner': planner,
-               'artifact': os.path.relpath(plan_md, run_dir), 'artifact_sha256': file_sha256(plan_md)}
+    receipt = redact_output({'run_id': journal['run_id'], 'head': meta['head'], 'kind': meta['kind'] + '-plan',
+                             'subject': meta['subject'], 'context_sha256': meta['context_sha256'], 'planner': planner,
+                             'artifact': os.path.relpath(plan_md, run_dir), 'artifact_sha256': file_sha256(plan_md)})
     atomic_write(os.path.join(plan_dir, 'receipt.json'), json.dumps(receipt, indent=2) + '\n')
     meta.update(status='completed', summary=result['summary'], planner=planner,
                 counts={k: len(result.get(k) or []) for k in ('decisions', 'steps', 'risks', 'holds', 'open_questions')},
@@ -2358,9 +2414,10 @@ def cmd_planning_prepare(args):
     journal = load_journal(run_dir)
     if args.kind not in tp.PLAN_KINDS:
         raise Refusal('--kind must be one of ' + ', '.join(tp.PLAN_KINDS))
-    subject = args.subject or ('upgrade' if args.kind == 'plan' else None)
-    if not subject:
+    raw_subject = args.subject or ('upgrade' if args.kind == 'plan' else None)
+    if not raw_subject:
         raise Refusal('--subject <risk name> is required for an architecture task')
+    subject = clean_label(raw_subject, '--subject')
     handoff = read_text(args.context)
     if not (handoff or '').strip():
         raise Refusal('--context must name a non-empty handoff file (requirements, scope, constraints, findings)')
@@ -2377,6 +2434,7 @@ def cmd_planning_prepare(args):
     existing, _ = read_json(entry_path)
     if isinstance(existing, dict) and existing.get('status') == 'completed' and not args.rerun:
         return dict(existing, reused=True, note='completed plan for this exact head and handoff reused')
+    remove_stale_files(plan_dir, ('receipt.json', 'plan.md', 'plan.json'))
     context = os.path.join(plan_dir, 'context' + (os.path.splitext(args.context)[1] or '.txt'))
     atomic_write(context, handoff)
     note = '' if target == journal.get('worktree') else (
@@ -2392,7 +2450,7 @@ def cmd_planning_prepare(args):
         'prompt_path': prompt_path, 'output_path': output_path,
         'next': (
             'Run %s in a fresh, read-only context using this session\'s current harness, model and effort '
-            '(never the authoring conversation, unless execution-protocol was explicitly invoked alongside '
+            '(never the authoring conversation; follow execution-protocol only if explicitly invoked alongside '
             'this skill). Save its full answer to %s, then run: '
             'depup.py planning record %s --plan-id %s --output %s --planner "<fresh-context-id>". '
             'If no fresh context is available, run: '
@@ -2415,8 +2473,10 @@ def cmd_planning_record(args):
     meta, error = read_json(entry_path)
     if error or not isinstance(meta, dict) or meta.get('status') != 'pending':
         raise Refusal('plan %s is not pending' % args.plan_id)
-    if not (args.planner or '').strip():
-        raise Refusal('--planner must identify the fresh-context planner')
+    planner_id = clean_label(args.planner, '--planner')
+    prompt_path = os.path.join(plan_dir, 'prompt.md')
+    if os.path.realpath(args.output) == os.path.realpath(prompt_path):
+        raise Refusal('--output must be the fresh-context answer, not prompt.md')
     target = meta.get('target') or planning_target(journal)
     if tree_fingerprint(target) != meta.get('fingerprint'):
         meta.update(status='unavailable', tree_changed=True,
@@ -2432,7 +2492,7 @@ def cmd_planning_record(args):
     if result is None:
         meta.update(status='unavailable', reason='fresh-context plan output invalid: %s' % problem)
     else:
-        planner = '%s (%s)' % (args.planner.strip(), args.plan_id)
+        planner = '%s (%s)' % (planner_id, args.plan_id)
         meta = complete_plan(run_dir, journal, plan_dir, meta, text, result, planner)
     meta.pop('next', None)
     atomic_write(entry_path, json.dumps(redact_output(meta), indent=2) + '\n')

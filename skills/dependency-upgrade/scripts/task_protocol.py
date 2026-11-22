@@ -61,9 +61,16 @@ def parse_result(text):
     return data, None
 
 
+PLACEHOLDER_RE = re.compile(r'^<[^>]+>$')
+
+
+def _real_text(value):
+    return isinstance(value, str) and bool(value.strip()) and not PLACEHOLDER_RE.match(value.strip())
+
+
 def _texts(items, key):
     return isinstance(items, list) and all(
-        isinstance(i, dict) and isinstance(i.get(key), str) and i[key].strip()
+        isinstance(i, dict) and _real_text(i.get(key))
         for i in items
     )
 
@@ -81,7 +88,7 @@ def parse_plan_result(text, kind='plan'):
         data = json.loads(body)
     except ValueError as exc:
         return None, 'plan block is not JSON: %s' % exc
-    if not isinstance(data, dict) or not (isinstance(data.get('summary'), str) and data['summary'].strip()):
+    if not isinstance(data, dict) or not _real_text(data.get('summary')):
         return None, 'plan block has no summary'
     for key in ('risks', 'holds', 'open_questions'):
         data.setdefault(key, [])

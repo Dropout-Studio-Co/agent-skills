@@ -145,12 +145,19 @@ class ProfileAndAgnosticComplianceTests(TaskCase):
                     match = forbidden_re.search(text)
                     self.assertIsNone(match, '%s matched forbidden coupling %r' % (rel, match and match.group(0)))
 
-        # Skills that mention execution-protocol must scope its precedence to explicit invocation.
-        for skill in ('consolidate', 'dependency-upgrade', 'frontend-ui-ux-overhaul', 'review-loop', 'safe-switch'):
+        # Required sibling skills always exist; check optional siblings when present in this root.
+        for skill in ('consolidate', 'dependency-upgrade', 'frontend-ui-ux-overhaul'):
             with open(os.path.join(SKILLS, skill, 'SKILL.md'), encoding='utf-8') as handle:
                 text = handle.read()
             self.assertIn('execution-protocol', text, skill)
             self.assertIn('explicitly invoked', text, skill)
+        for skill in ('review-loop', 'safe-switch'):
+            skill_md = os.path.join(SKILLS, skill, 'SKILL.md')
+            if os.path.isfile(skill_md):
+                with open(skill_md, encoding='utf-8') as handle:
+                    text = handle.read()
+                self.assertIn('execution-protocol', text, skill)
+                self.assertIn('explicitly invoked', text, skill)
 
 
 class PlanningAndConsultTests(TaskCase):
@@ -290,6 +297,43 @@ class ReviewGateTests(TaskCase):
         with open(os.path.join(os.path.dirname(passed['entry']), 'review.md'), 'a', encoding='utf-8') as handle:
             handle.write('edited by the author\n')
         self.assertEqual(self.rt('gate', run)[0], 1)
+
+    def test_rerun_cannot_clear_failed_non_required_review_or_accept_missing_artifact(self):
+        run = self.start('consolidate')
+        _, rec_prep = self.rt('review', run, '--kind', 'reconciliation', '--required')
+        _, rec_done = self.complete_task(run, rec_prep, GOOD)
+        self.assertEqual(self.rt('gate', run)[0], 0)
+        # Missing review.md + stripped receipt must fail receipt_ok.
+        rec_dir = os.path.dirname(rec_done['entry'])
+        os.unlink(os.path.join(rec_dir, 'review.md'))
+        write(os.path.join(rec_dir, 'receipt.json'), {'fingerprint': rec_done['fingerprint']})
+        self.assertEqual(self.rt('gate', run)[0], 1)
+        # Re-pass reconciliation, then fail non-required code review and reset via rerun/new context.
+        _, rec_prep2 = self.rt('review', run, '--kind', 'reconciliation', '--required', '--rerun')
+        self.complete_task(run, rec_prep2, GOOD)
+        self.assertEqual(self.rt('gate', run)[0], 0)
+        _, code_prep = self.rt('review', run, '--kind', 'code')
+        self.complete_task(run, code_prep, FAIL)
+        self.assertEqual(self.rt('gate', run)[0], 1)
+        _, code_rerun = self.rt('review', run, '--kind', 'code', '--rerun')
+        self.assertTrue(code_rerun.get('prior_failed'))
+        self.assertEqual(self.rt('gate', run)[0], 1, 'pending rerun of failed review must stay blocked')
+        self.rt('unavailable', run, '--task-id', code_rerun['id'], '--reason', 'stopped')
+        self.assertEqual(self.rt('gate', run)[0], 1, 'unavailable rerun of failed review must stay blocked')
+        # Passing the rerun clears the failure.
+        _, code_pass_prep = self.rt('review', run, '--kind', 'code', '--rerun')
+        self.complete_task(run, code_pass_prep, GOOD)
+        self.assertEqual(self.rt('gate', run)[0], 0)
+
+    def test_prompt_file_refused_as_output_and_newlines_rejected(self):
+        run = self.start('consolidate')
+        _, prep = self.rt('plan', run, '--context', self.handoff())
+        code, refused = self.rt('record', run, '--task-id', prep['id'], '--output', prep['prompt_path'], '--by', 'p1')
+        self.assertEqual(code, 1)
+        self.assertIn('prompt.md', refused['error'])
+        code, bad_by = self.rt('record', run, '--task-id', prep['id'], '--output', prep['output_path'], '--by', 'a\nb')
+        self.assertEqual(code, 1)
+        self.assertIn('newlines', bad_by['error'])
 
     def test_tree_change_during_review_discards_result_and_blocks(self):
         run = self.start('frontend-ui-ux-overhaul')

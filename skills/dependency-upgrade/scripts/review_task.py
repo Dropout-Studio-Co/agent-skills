@@ -335,11 +335,14 @@ def save_entry(task_dir, entry):
 
 def complete(run_dir, task_dir, entry, text, result, by, artifact_name):
     artifact = os.path.join(task_dir, artifact_name)
-    depup.atomic_write(artifact, '<!-- %s %s by %s on %s -->\n' % (entry['kind'], entry['id'], by,
-                                                                   entry['fingerprint'][:12]) + depup.redact_text(text))
-    receipt = {'run': os.path.basename(run_dir), 'task': entry['id'], 'kind': entry['kind'],
-               'subject': entry['subject'], 'fingerprint': entry['fingerprint'], 'by': by,
-               'artifact': os.path.relpath(artifact, run_dir), 'artifact_sha256': depup.file_sha256(artifact)}
+    header = depup.redact_text('<!-- %s %s by %s on %s -->\n' % (
+        entry['kind'], entry['id'], by, entry['fingerprint'][:12]))
+    depup.atomic_write(artifact, header + depup.redact_text(text))
+    receipt = depup.redact_output({
+        'run': os.path.basename(run_dir), 'task': entry['id'], 'kind': entry['kind'],
+        'subject': entry['subject'], 'fingerprint': entry['fingerprint'], 'by': by,
+        'artifact': os.path.relpath(artifact, run_dir), 'artifact_sha256': depup.file_sha256(artifact),
+    })
     depup.atomic_write(os.path.join(task_dir, 'receipt.json'), json.dumps(receipt, indent=2) + '\n')
     entry.update(status='completed', by=by, evidence=os.path.relpath(os.path.join(task_dir, 'receipt.json'), run_dir),
                  completed=depup.now())
@@ -347,6 +350,8 @@ def complete(run_dir, task_dir, entry, text, result, by, artifact_name):
         entry.update(verdict=result['verdict'], summary=result.get('summary'), findings=result['findings'],
                      finding_counts={s: len([f for f in result['findings'] if f['severity'] == s])
                                      for s in tp.SEVERITIES}, result_corrections=result.get('corrections'))
+        if result['verdict'] == 'pass':
+            entry.pop('prior_failed', None)
     else:
         entry.update(summary=result['summary'], plan=result,
                      counts={k: len(result.get(k) or []) for k in ('decisions', 'steps', 'risks', 'holds',
@@ -388,9 +393,10 @@ def cmd_plan(args):
     run_dir, meta, profile = load_run(args.run)
     if args.kind not in profile['plan_kinds']:
         raise Refusal('--kind must be one of ' + ', '.join(profile['plan_kinds']))
-    subject = args.subject or ('task' if args.kind == 'plan' else None)
-    if not subject:
+    raw_subject = args.subject or ('task' if args.kind == 'plan' else None)
+    if not raw_subject:
         raise Refusal('--subject is required for %s task' % ('a consult' if args.kind == 'consult' else 'an %s' % args.kind))
+    subject = depup.clean_label(raw_subject, '--subject')
     handoff = depup.redact_text(depup.read_text(args.context) or '')
     if not handoff.strip():
         raise Refusal('--context must name a non-empty handoff file (requirements, scope, constraints, findings)')
@@ -403,6 +409,7 @@ def cmd_plan(args):
     existing, _ = depup.read_json(os.path.join(task_dir, 'entry.json'))
     if isinstance(existing, dict) and existing.get('status') == 'completed' and not args.rerun:
         return dict(existing, reused=True, note='same tree and handoff: completed plan reused')
+    depup.remove_stale_files(task_dir, ('receipt.json', 'plan.md'))
     context = os.path.join(task_dir, 'context' + (os.path.splitext(args.context)[1] or '.txt'))
     depup.atomic_write(context, handoff)
     head = depup.git_state(root).get('head') or 'none'
@@ -417,7 +424,7 @@ def cmd_plan(args):
         'prompt_path': prompt_path, 'output_path': output_path,
         'next': (
             'Run %s in a fresh, read-only context using this session\'s current harness, model and effort '
-            '(never the authoring conversation, unless execution-protocol was explicitly invoked alongside '
+            '(never the authoring conversation; follow execution-protocol only if explicitly invoked alongside '
             'this skill). Save its full answer to %s, then run: review_task.py record %s --task-id %s '
             '--output %s --by "<fresh-context-id>". If no fresh context is available, run: '
             'review_task.py unavailable %s --task-id %s --reason "<why>".'
@@ -431,7 +438,7 @@ def cmd_review(args):
     spec = profile['review_kinds'].get(args.kind)
     if not spec:
         raise Refusal('--kind must be one of ' + ', '.join(profile['review_kinds']))
-    subject = args.subject or 'candidate'
+    subject = depup.clean_label(args.subject or 'candidate', '--subject')
     root = meta['repo_root']
     if spec.get('rendered_evidence') == 'required':
         if bool(args.rendered_evidence) == bool(args.no_rendered_evidence):
@@ -454,8 +461,9 @@ def cmd_review(args):
             text = depup.redact_text(depup.read_text(path) or '')
             inputs.append((label, os.path.splitext(path)[1] or '.txt', text))
     if args.no_rendered_evidence:
-        inputs.append(('rendered', '.txt', 'NO RENDERED EVIDENCE: %s\nVisual verification did not happen; the '
-                       'reviewer must not assume it did.\n' % args.no_rendered_evidence))
+        inputs.append(('rendered', '.txt', depup.redact_text(
+            'NO RENDERED EVIDENCE: %s\nVisual verification did not happen; the '
+            'reviewer must not assume it did.\n' % args.no_rendered_evidence)))
     inventory, locations, main_ref = None, [os.path.abspath(os.path.expanduser(l)) for l in args.location or []], None
     if spec.get('evidence') == 'git-inventory':
         main_ref = args.main_ref or default_ref(root)
@@ -479,6 +487,7 @@ def cmd_review(args):
         return dict(existing, reused=True, note='same candidate and evidence: completed review reused')
     if args.required:
         mark_required(run_dir, args.kind, subject)  # before recording: an unrecorded/unavailable task still binds
+    depup.remove_stale_files(task_dir, ('receipt.json', 'review.md'))
     created = _dt.datetime.now(_dt.timezone.utc).isoformat()  # microseconds: newest-review order must not tie
     files = write_diff_inputs(root, base_sha, task_dir)
     extras = []
@@ -503,12 +512,13 @@ def cmd_review(args):
     output_path = os.path.join(task_dir, 'output.md')
     depup.atomic_write(prompt_path, prompt)
     read_dirs = inventory_dirs(root, locations) if inventory is not None else []
+    prior_failed = bool(isinstance(existing, dict) and (existing.get('verdict') == 'fail' or existing.get('prior_failed')))
     entry = {
         'id': task_id, 'task': 'review', 'kind': args.kind, 'subject': subject, 'skill': profile['skill'],
         'status': 'pending', 'required': bool(args.required or (existing or {}).get('required')),
         'base': base_sha, 'fingerprint': before, 'head': head, 'created': created,
         'rendered_evidence': ('manifest' if args.rendered_evidence else
-                              ('none: ' + args.no_rendered_evidence) if args.no_rendered_evidence else None),
+                              ('none: ' + depup.redact_text(args.no_rendered_evidence)) if args.no_rendered_evidence else None),
         'prompt_path': prompt_path, 'output_path': output_path, 'read_dirs': read_dirs,
         'next': (
             'Run %s in a fresh, read-only independent context using this session\'s current harness, model and '
@@ -519,6 +529,8 @@ def cmd_review(args):
             'review_task.py unavailable %s --task-id %s --reason "<why>".'
             % (prompt_path, output_path, run_dir, task_id, output_path, run_dir, task_id)),
     }
+    if prior_failed:
+        entry['prior_failed'] = True
     if inventory is not None:
         entry['inventory'] = {'sha256': hashlib.sha256(inventory.encode()).hexdigest(), 'main_ref': main_ref,
                               'locations': locations, 'with_prs': bool(args.with_prs)}
@@ -531,8 +543,10 @@ def cmd_record(args):
     folder, task_dir, entry = locate_task(run_dir, args.task_id)
     if entry.get('status') != 'pending':
         raise Refusal('task %s is not pending (status: %s)' % (args.task_id, entry.get('status')))
-    if not (args.by or '').strip():
-        raise Refusal('--by must identify the fresh-context runner')
+    by_label = depup.clean_label(args.by, '--by')
+    prompt_path = os.path.join(task_dir, 'prompt.md')
+    if os.path.realpath(args.output) == os.path.realpath(prompt_path):
+        raise Refusal('--output must be the fresh-context answer, not prompt.md')
     if fingerprint(meta['repo_root']) != entry.get('fingerprint'):
         entry.update(status='unavailable', tree_changed=True,
                      reason='the repository tree changed since the task was prepared; result discarded')
@@ -558,7 +572,7 @@ def cmd_record(args):
     if result is None:
         entry.update(status='unavailable', reason='fresh-context output invalid: %s' % problem)
     else:
-        by = '%s (%s)' % (args.by.strip(), args.task_id)
+        by = '%s (%s)' % (by_label, args.task_id)
         entry = complete(run_dir, task_dir, entry, text, result, by,
                          'plan.md' if folder == 'plans' else 'review.md')
     entry.pop('next', None)
@@ -592,10 +606,14 @@ def cmd_gate(args):
         required.add((kind, subject or 'candidate'))
     required |= {(e['kind'], e['subject']) for e in reviews if e.get('required')}  # once required, always
     required |= {tuple(r) for r in read_required(run_dir)}
+    current_reviews = [e for e in reviews if e.get('fingerprint') == current and e.get('base') == meta.get('base')]
     latest = {}  # newest review (any status) per kind/subject of the current candidate and run base decides
-    for e in sorted((e for e in reviews if e.get('fingerprint') == current and e.get('base') == meta.get('base')),
-                    key=lambda e: e.get('created') or ''):
-        latest[(e['kind'], e['subject'])] = e
+    ever_failed = set()
+    for e in sorted(current_reviews, key=lambda e: e.get('created') or ''):
+        pair = (e['kind'], e['subject'])
+        latest[pair] = e
+        if e.get('verdict') == 'fail' or e.get('prior_failed'):
+            ever_failed.add(pair)
     problems = []
     for kind, subject in sorted(required):
         e = latest.get((kind, subject))
@@ -603,7 +621,8 @@ def cmd_gate(args):
             problems.append('%s:%s has no passing review of the current candidate (%s)' % (
                 kind, subject, 'latest: %s %s' % (e.get('status'), e.get('verdict') or '') if e else 'not run'))
     for (kind, subject), e in sorted(latest.items()):
-        if e.get('verdict') == 'fail' and (kind, subject) not in required:
+        passed_now = (e.get('status') == 'completed' and e.get('verdict') == 'pass' and receipt_ok(run_dir, e))
+        if (kind, subject) not in required and (e.get('verdict') == 'fail' or ((kind, subject) in ever_failed and not passed_now)):
             problems.append('%s:%s review of the current candidate failed' % (kind, subject))
         inv = e.get('inventory')
         if inv and e.get('verdict') == 'pass' and hashlib.sha256(git_inventory(
@@ -632,11 +651,29 @@ def read_required(run_dir):
     return [[r[0], r[1]] for r in data if isinstance(r, list) and len(r) >= 2] if not error and isinstance(data, list) else []
 
 
+def _run_path(run_dir, reference):
+    if not depup.evidence_artifact(run_dir, reference):
+        return None
+    path = os.path.expanduser(reference)
+    return path if os.path.isabs(path) else os.path.join(run_dir, path)
+
+
 def receipt_ok(run_dir, entry):
-    data, error = depup.read_json(os.path.join(run_dir, entry.get('evidence') or 'missing'))
-    if error or not isinstance(data, dict) or data.get('fingerprint') != entry.get('fingerprint'):
+    evidence_path = _run_path(run_dir, entry.get('evidence'))
+    if not evidence_path:
         return False
-    return data.get('artifact_sha256') == depup.file_sha256(os.path.join(run_dir, data.get('artifact') or 'missing'))
+    data, error = depup.read_json(evidence_path)
+    if error or not isinstance(data, dict):
+        return False
+    if (data.get('run') != os.path.basename(run_dir) or data.get('task') != entry.get('id') or
+            data.get('kind') != entry.get('kind') or data.get('subject') != entry.get('subject') or
+            data.get('fingerprint') != entry.get('fingerprint') or not (data.get('by') or '').strip()):
+        return False
+    digest = data.get('artifact_sha256')
+    if not isinstance(digest, str) or not digest:
+        return False
+    artifact_path = _run_path(run_dir, data.get('artifact'))
+    return bool(artifact_path) and digest == depup.file_sha256(artifact_path)
 
 
 def cmd_status(args):
