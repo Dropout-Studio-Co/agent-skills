@@ -18,7 +18,7 @@ workflow repository, not a supported product.
 | [`intrinsic-responsive-ui`](skills/intrinsic-responsive-ui/) | Guides fluid, container-aware responsive layouts built on intrinsic sizing rather than breakpoint patches.                                                                                            |
 | [`review-loop`](skills/review-loop/)                         | Runs an independent, evidence-backed review of a finished change before it lands, with risk tiers and a three-round cap.                                                                             |
 | [`safe-switch`](skills/safe-switch/)                         | Captures verified task state and hands the current work off losslessly to a fresh session using the current harness, model and effort, on explicit request only.                                      |
-| [`sync-agent-instructions`](skills/sync-agent-instructions/) | Rewrites a repository's `AGENTS.md` from past sessions, git history and the code through a staged edit that evidence and typed claims must pass; keeps `CLAUDE.md` as an `@AGENTS.md` import.         |
+| [`sync-agent-instructions`](skills/sync-agent-instructions/) | Audits a repository's cross-agent instructions, rules, skills, subagents and core docs (agent-agnostic prompt-audit) and updates `AGENTS.md`/`CLAUDE.md` from past sessions, git history and repo truth through a gated staged edit. |
 
 ## Layout
 
@@ -33,7 +33,8 @@ skills/
 ├── intrinsic-responsive-ui/   SKILL.md
 ├── review-loop/               SKILL.md
 ├── safe-switch/               SKILL.md
-└── sync-agent-instructions/   SKILL.md, scripts/ (collect_sessions.py, check_instructions.py),
+└── sync-agent-instructions/   SKILL.md, references/ (audit-rubric.md, agent-surfaces.md),
+                               scripts/ (collect_sessions.py, check_instructions.py),
                                tests/ (collector, checker)
 ```
 

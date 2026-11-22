@@ -15,10 +15,11 @@ rsync -a --exclude '__pycache__/' --exclude 'graft/.cache/' skills/<name>/ ~/.ag
 ~/.agents/bin/agent-skills-sync --dry-run  # sync: show what the next run would do, change nothing
 ```
 
-`skills/sync-agent-instructions/scripts/check_instructions.py` surveys a repository, stages a
-memory-file edit, gates it against session evidence and typed claims, and applies only a gated
-stage; it never commits or pushes. Its tests live beside the collector's. Both helpers are
-stdlib-only and run on Python 3.9+.
+`skills/sync-agent-instructions/scripts/check_instructions.py` surveys a repository, runs a
+read-only cross-agent prompt-audit (`audit --repo R [--scope P]`), stages a memory-file edit,
+gates it against session evidence and typed claims, and applies only a gated stage; it never
+commits or pushes. Its tests live beside the collector's. Both helpers are stdlib-only and run
+on Python 3.9+.
 
 Run the drift check from an up-to-date `main` before starting a change to a skill: it must print
 nothing (any difference is local drift; bring it into the repository first). After the change is
@@ -71,7 +72,8 @@ skills/frontend-ui-ux-overhaul/   SKILL.md, task-profile.json
 skills/intrinsic-responsive-ui/   SKILL.md
 skills/review-loop/               SKILL.md
 skills/safe-switch/               SKILL.md
-skills/sync-agent-instructions/   SKILL.md, scripts/ (collect_sessions.py, check_instructions.py),
+skills/sync-agent-instructions/   SKILL.md, references/ (audit-rubric.md, agent-surfaces.md),
+                                  scripts/ (collect_sessions.py, check_instructions.py),
                                   tests/ (collector, checker)
 ```
 
