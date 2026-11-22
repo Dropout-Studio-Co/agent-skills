@@ -8,12 +8,17 @@ Skill; this repository is the source of truth, and `~/.agents/skills/<name>` is 
 
 ```sh
 python3 -m unittest discover -s skills/dependency-upgrade/tests -t skills/dependency-upgrade  # dependency-upgrade tests
-python3 -m unittest discover -s skills/sync-agent-instructions/tests -t skills/sync-agent-instructions  # collector tests
+python3 -m unittest discover -s skills/sync-agent-instructions/tests -t skills/sync-agent-instructions  # collector + checker tests
 bash skills/execution-protocol/tests/smoke.sh  # execution-protocol smoke tests (fake CLIs)
 diff -rq -x __pycache__ -x graft skills/<name> ~/.agents/skills/<name>  # drift check: must print nothing
 rsync -a --exclude '__pycache__/' --exclude 'graft/.cache/' skills/<name>/ ~/.agents/skills/<name>/  # sync one skill
 ~/.agents/bin/agent-skills-sync --dry-run  # sync: show what the next run would do, change nothing
 ```
+
+`skills/sync-agent-instructions/scripts/check_instructions.py` surveys a repository, stages a
+memory-file edit, gates it against session evidence and typed claims, and applies only a gated
+stage; it never commits or pushes. Its tests live beside the collector's. Both helpers are
+stdlib-only and run on Python 3.9+.
 
 Run the drift check from an up-to-date `main` before starting a change to a skill: it must print
 nothing (any difference is local drift; bring it into the repository first). After the change is
@@ -66,7 +71,8 @@ skills/frontend-ui-ux-overhaul/   SKILL.md, routing.json
 skills/intrinsic-responsive-ui/   SKILL.md
 skills/review-loop/               SKILL.md
 skills/safe-switch/               SKILL.md
-skills/sync-agent-instructions/   SKILL.md, scripts/collect_sessions.py, tests/
+skills/sync-agent-instructions/   SKILL.md, scripts/ (collect_sessions.py, check_instructions.py),
+                                  tests/ (collector, checker)
 ```
 
 ## Invariants
@@ -79,13 +85,14 @@ skills/sync-agent-instructions/   SKILL.md, scripts/collect_sessions.py, tests/
   `allowed-tools`, `license` and `disable-model-invocation`.
 - Python helpers are stdlib-only and must run on 3.9+.
 - Scripts keep their executable bit (`scripts/depup.py`, `scripts/collect_sessions.py`,
-  execution-protocol `scripts/gate.sh`, `scripts/premerge-and-merge.sh`, `scripts/implement.sh`,
-  `tests/smoke.sh` and `tests/implement-smoke.sh`).
+  `scripts/check_instructions.py`, execution-protocol `scripts/gate.sh`,
+  `scripts/premerge-and-merge.sh`, `scripts/implement.sh`, `tests/smoke.sh` and
+  `tests/implement-smoke.sh`).
 
 ## Always
 
 - Run the test suite after touching `dependency-upgrade` scripts, tests or any `routing.json`.
-- Run the collector tests after touching `sync-agent-instructions` scripts or tests.
+- Run the collector and checker tests after touching `sync-agent-instructions` scripts or tests.
 - Run `bash skills/execution-protocol/tests/smoke.sh` after touching `execution-protocol` scripts or
   tests.
 - Keep documentation accurate to the code: file names, commands and flags.

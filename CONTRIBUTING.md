@@ -30,7 +30,14 @@ python3 -m unittest discover -s skills/sync-agent-instructions/tests -t skills/s
 
 Run the dependency-upgrade suite after any change to `dependency-upgrade` scripts, tests or any
 `routing.json` (this also validates the `consolidate` and `frontend-ui-ux-overhaul` profiles). Run
-the collector suite after changes to `sync-agent-instructions` scripts or tests. Also re-read the
+the collector and checker suite after changes to `sync-agent-instructions` scripts or tests.
+
+`sync-agent-instructions` ships two stdlib-only helpers. `scripts/collect_sessions.py` collects
+and redacts session evidence; `scripts/check_instructions.py` surveys a repository, stages a
+memory-file edit, gates it against that evidence and typed claims, and applies only a gated
+stage. The checker never commits, pushes, opens a pull request or merges, and only `apply`
+writes to a repository. Both scripts keep their executable bit, require Python 3.9+, and their
+tests use scratch repositories with no network, credentials or outside paths. Also re-read the
 file you edited: commands, paths and script names must match the repository.
 
 ## Installing a change locally

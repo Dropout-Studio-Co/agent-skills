@@ -1,16 +1,20 @@
 """collect_sessions.py: OpenCode is read read-only from SQLite; Claude Code still works; no Gemini."""
 import hashlib
+import importlib.util
 import json
 import os
 import re
 import shutil
 import sqlite3
+import stat
 import subprocess
 import sys
 import tempfile
 import time
 import unittest
 from pathlib import Path
+
+from tests import transcript_fixtures
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCRIPT = os.path.join(HERE, 'scripts', 'collect_sessions.py')
@@ -42,13 +46,13 @@ class CollectorTests(unittest.TestCase):
         conn.execute('CREATE TABLE project (id text PRIMARY KEY)')
         conn.execute("INSERT INTO project VALUES ('project-1')")
         conn.execute("CREATE TABLE session_v2 (id text PRIMARY KEY, project_id text, slug text, directory text, "
-                     "time_created integer, time_updated integer)")
+                     "parent_id text, time_created integer, time_updated integer)")
         conn.execute("CREATE TABLE session_message (id text PRIMARY KEY, session_id text, type text, seq integer, "
                      "time_created integer, time_updated integer, data text)")
         for session_id, directory, age_days, messages in sessions:
             now = int((time.time() - age_days * 86400) * 1000)
-            conn.execute('INSERT INTO session_v2 VALUES (?, ?, ?, ?, ?, ?)',
-                         (session_id, 'project-1', session_id, directory, now, now))
+            conn.execute('INSERT INTO session_v2 VALUES (?, ?, ?, ?, ?, ?, ?)',
+                         (session_id, 'project-1', session_id, directory, None, now, now))
             for seq, (kind, data) in enumerate(messages, 1):
                 conn.execute('INSERT INTO session_message VALUES (?, ?, ?, ?, ?, ?, ?)',
                              ('%s-%d' % (session_id, seq), session_id, kind, seq, now, now,
@@ -142,8 +146,8 @@ class CollectorTests(unittest.TestCase):
         self.addCleanup(writer.close)
         writer.execute('PRAGMA journal_mode=WAL').fetchall()
         now = int(time.time() * 1000)
-        writer.execute('INSERT INTO session_v2 VALUES (?, ?, ?, ?, ?, ?)',
-                       ('live-session', 'project-1', 'live-session', self.root, now, now))
+        writer.execute('INSERT INTO session_v2 VALUES (?, ?, ?, ?, ?, ?, ?)',
+                       ('live-session', 'project-1', 'live-session', self.root, None, now, now))
         writer.execute('INSERT INTO session_message VALUES (?, ?, ?, ?, ?, ?, ?)',
                        ('live-session-1', 'live-session', 'user', 1, now, now,
                         json.dumps({'text': "don't lose the live wal session"})))
@@ -216,6 +220,605 @@ class CollectorTests(unittest.TestCase):
         with open(SCRIPT, encoding='utf-8') as handle:
             source = handle.read()
         self.assertFalse(re.search('gemini', source, re.I))
+
+
+def load_collector():
+    spec = importlib.util.spec_from_file_location('collect_sessions_under_test', SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class CollectorCase(unittest.TestCase):
+    """Shared fixture: an isolated HOME, data dir, Claude config dir and repo root."""
+
+    def setUp(self):
+        self.tmp = os.path.realpath(tempfile.mkdtemp(prefix='collect-case-'))
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.home = os.path.join(self.tmp, 'home')
+        self.data = os.path.join(self.tmp, 'data')
+        self.claude = os.path.join(self.tmp, 'claude')
+        self.root = os.path.join(self.tmp, 'repo')
+        os.makedirs(self.root, exist_ok=True)
+        self.env = dict(os.environ)
+        self.env.update({'HOME': self.home, 'XDG_DATA_HOME': self.data,
+                         'CLAUDE_CONFIG_DIR': self.claude})
+
+    def run_collector(self, *extra, cwd=None, umask=None):
+        kwargs = {}
+        if umask is not None:
+            kwargs['preexec_fn'] = lambda: os.umask(umask)
+        return subprocess.run([sys.executable, SCRIPT, '--repo', self.root, '--days', '60']
+                              + list(extra), capture_output=True, text=True, env=self.env,
+                              cwd=cwd, **kwargs)
+
+    def project_dir(self, cwd, name=None):
+        encoded = name or transcript_fixtures.encode(cwd)
+        directory = os.path.join(self.claude, 'projects', encoded)
+        os.makedirs(directory, exist_ok=True)
+        return directory
+
+    def write_session(self, cwd, name, records, mtime=None, project_dir=None, stamp_cwd=True):
+        directory = self.project_dir(cwd, project_dir)
+        path = os.path.join(directory, name)
+        if stamp_cwd:
+            records = [dict({'cwd': cwd}, **item) for item in records]
+        transcript_fixtures.write_jsonl(path, records)
+        if mtime is not None:
+            os.utime(path, (mtime, mtime))
+        return path
+
+    def write_raw_session(self, cwd, name, lines, mtime=None, project_dir=None):
+        directory = self.project_dir(cwd, project_dir)
+        path = os.path.join(directory, name)
+        with open(path, 'w', encoding='utf-8') as handle:
+            handle.write('\n'.join(lines) + '\n')
+        if mtime is not None:
+            os.utime(path, (mtime, mtime))
+        return path
+
+    def db_path(self):
+        return Path(self.data) / 'opencode' / 'opencode.db'
+
+    def make_db(self, sessions, parent_column=True, missing=()):
+        path = self.db_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(str(path))
+        conn.execute('CREATE TABLE project (id text PRIMARY KEY)')
+        conn.execute("INSERT INTO project VALUES ('project-1')")
+        if 'session_v2' not in missing:
+            columns = ('id text PRIMARY KEY, project_id text, slug text, directory text, '
+                       'fork_session_id text, ')
+            if parent_column:
+                columns += 'parent_id text, '
+            columns += 'time_created integer, time_updated integer'
+            conn.execute('CREATE TABLE session_v2 (%s)' % columns)
+        if 'session_message' not in missing:
+            conn.execute('CREATE TABLE session_message (id text PRIMARY KEY, session_id text, '
+                         'type text, seq integer, time_created integer, time_updated integer, '
+                         'data text)')
+        for session_id, directory, age_days, messages in sessions:
+            now = int((time.time() - age_days * 86400) * 1000)
+            values = [session_id, 'project-1', session_id, directory, None]
+            if parent_column:
+                values.append(None)
+            values.extend([now, now])
+            conn.execute('INSERT INTO session_v2 VALUES (%s)'
+                         % ','.join('?' * len(values)), tuple(values))
+            if 'session_message' not in missing:
+                for seq, (kind, data) in enumerate(messages, 1):
+                    conn.execute('INSERT INTO session_message VALUES (?, ?, ?, ?, ?, ?, ?)',
+                                 ('%s-%d' % (session_id, seq), session_id, kind, seq, now, now,
+                                  json.dumps(data)))
+        conn.commit()
+        conn.close()
+        return path
+
+
+class GitRepoCase(CollectorCase):
+    """A real git repository fixture; every git call runs in a scratch directory."""
+
+    def git(self, cwd, *args):
+        env = {k: v for k, v in os.environ.items()
+               if k not in ('GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_COMMON_DIR')}
+        env.update({'GIT_AUTHOR_NAME': 'fixture', 'GIT_AUTHOR_EMAIL': 'fixture@example.test',
+                    'GIT_COMMITTER_NAME': 'fixture',
+                    'GIT_COMMITTER_EMAIL': 'fixture@example.test',
+                    'GIT_CONFIG_GLOBAL': os.devnull, 'GIT_CONFIG_SYSTEM': os.devnull})
+        return subprocess.run(['git'] + list(args), cwd=cwd, capture_output=True, text=True,
+                              env=env, check=True)
+
+    def init_repo(self, path, branch='main'):
+        os.makedirs(path, exist_ok=True)
+        self.git(path, 'init', '-q', '-b', branch)
+        with open(os.path.join(path, 'README.md'), 'w', encoding='utf-8') as handle:
+            handle.write('fixture\n')
+        self.git(path, 'add', '.')
+        self.git(path, 'commit', '-qm', 'init')
+
+
+class CollectorIdentityTests(GitRepoCase):
+    """A1: sessions belong to the repo only through live worktrees sharing its common dir."""
+
+    def setUp(self):
+        super().setUp()
+        self.init_repo(self.root)
+        self.worktree = os.path.join(self.tmp, 'linked')
+        self.git(self.root, 'worktree', 'add', '-q', '-b', 'fixture-branch', self.worktree)
+        self.sub_main = os.path.join(self.root, 'docs')
+        os.makedirs(self.sub_main, exist_ok=True)
+        self.sub_worktree = os.path.join(self.worktree, 'src')
+        os.makedirs(self.sub_worktree, exist_ok=True)
+        self.nested = os.path.join(self.root, 'nested')
+        self.git(self.tmp, 'clone', '-q', self.root, self.nested)
+        self.deleted = os.path.join(self.tmp, 'deleted-worktree')
+        self.git(self.root, 'worktree', 'add', '-q', '-b', 'gone', self.deleted)
+        self.git(self.root, 'worktree', 'remove', '--force', self.deleted)
+        self.sibling = os.path.join(self.tmp, 'repo-2')
+        os.makedirs(self.sibling, exist_ok=True)
+
+    def test_live_worktrees_and_subdirectories_are_included(self):
+        self.write_session(self.root, 'main.jsonl',
+                           [dict(transcript_fixtures.record('message from the main checkout'),
+                                 cwd=self.root)])
+        self.write_session(self.sub_main, 'main-sub.jsonl',
+                           [dict(transcript_fixtures.record('message from a main subdirectory'),
+                                 cwd=self.sub_main)])
+        self.write_session(self.worktree, 'worktree.jsonl',
+                           [dict(transcript_fixtures.record('message from a linked worktree'),
+                                 cwd=self.worktree)])
+        self.write_session(self.sub_worktree, 'worktree-sub.jsonl',
+                           [dict(transcript_fixtures.record('message from a worktree subdirectory'),
+                                 cwd=self.sub_worktree)])
+        proc = self.run_collector()
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        for text in ('message from the main checkout', 'message from a main subdirectory',
+                     'message from a linked worktree', 'message from a worktree subdirectory'):
+            self.assertIn(text, proc.stdout)
+
+    def test_prefix_sibling_nested_clone_deleted_worktree_and_missing_cwd_are_excluded(self):
+        self.write_session(self.sibling, 'sibling.jsonl',
+                           [dict(transcript_fixtures.record('prefix sibling message'),
+                                 cwd=self.sibling)],
+                           project_dir=transcript_fixtures.encode(self.root) + '-2')
+        self.write_session(self.nested, 'nested.jsonl',
+                           [dict(transcript_fixtures.record('nested clone message'),
+                                 cwd=self.nested)],
+                           project_dir=transcript_fixtures.encode(self.nested))
+        self.write_session(self.deleted, 'deleted.jsonl',
+                           [dict(transcript_fixtures.record('deleted worktree message'),
+                                 cwd=self.deleted)],
+                           project_dir=transcript_fixtures.encode(self.root) + '-deleted')
+        self.write_session(self.root, 'no-cwd.jsonl',
+                           [transcript_fixtures.record('no cwd message')], stamp_cwd=False)
+        self.write_session(self.root, 'main.jsonl',
+                           [dict(transcript_fixtures.record('main checkout message'),
+                                 cwd=self.root)])
+        proc = self.run_collector()
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn('main checkout message', proc.stdout)
+        for text in ('prefix sibling message', 'nested clone message',
+                     'deleted worktree message', 'no cwd message'):
+            self.assertNotIn(text, proc.stdout)
+
+    def test_claude_sessions_has_no_matched_initialiser(self):
+        with open(SCRIPT, encoding='utf-8') as handle:
+            source = handle.read()
+        self.assertNotIn('matched = True', source)
+
+
+class CollectorNonGitTests(CollectorCase):
+    def test_non_git_root_keeps_path_inside_matching(self):
+        inside = os.path.join(self.root, 'sub')
+        os.makedirs(inside, exist_ok=True)
+        elsewhere = os.path.join(self.tmp, 'repo-other')
+        os.makedirs(elsewhere, exist_ok=True)
+        self.write_session(inside, 'inside.jsonl',
+                           [dict(transcript_fixtures.record('inside non git message'),
+                                 cwd=inside)])
+        self.write_session(elsewhere, 'outside.jsonl',
+                           [dict(transcript_fixtures.record('outside non git message'),
+                                 cwd=elsewhere)],
+                           project_dir=transcript_fixtures.encode(self.root) + '-other')
+        proc = self.run_collector()
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn('inside non git message', proc.stdout)
+        self.assertNotIn('outside non git message', proc.stdout)
+
+
+class CollectorHumanEvidenceTests(CollectorCase):
+    """A2: machine-authored records never count as human text."""
+
+    def check_one_excluded(self, name, records):
+        self.write_session(self.root, name, records)
+        proc = self.run_collector()
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertNotIn('machine text', proc.stdout, name)
+        self.assertIn('typed message survives', proc.stdout, name)
+
+    def test_record_level_exclusions(self):
+        cases = [
+            ('isMeta', {'isMeta': True}),
+            ('isSidechain', {'isSidechain': True}),
+            ('origin', {'origin': {'kind': 'hook'}}),
+            ('entrypoint', {'entrypoint': 'sdk-cli'}),
+            ('promptSource', {'promptSource': 'suggestion'}),
+            ('turnOrigin', {'turnOrigin': {'kind': 'agent'}}),
+            ('sessionKind', {'sessionKind': 'bg'}),
+            ('isCompactSummary', {'isCompactSummary': True}),
+        ]
+        for name, fields in cases:
+            with self.subTest(name):
+                self.check_one_excluded(
+                    name + '.jsonl',
+                    [transcript_fixtures.record('machine text via ' + name, **fields),
+                     transcript_fixtures.record('typed message survives')])
+
+    def test_content_level_exclusions(self):
+        beside_tool_result = {'type': 'user', 'message': {
+            'role': 'user', 'content': [
+                {'type': 'text', 'text': 'machine text beside a tool result'},
+                {'type': 'tool_result', 'content': 'ok'}]}}
+        self.check_one_excluded('tool-result.jsonl', [
+            beside_tool_result, transcript_fixtures.record('typed message survives')])
+        for name, text in [
+                ('hook', 'Stop hook feedback: machine text from a hook'),
+                ('continuation', 'This session is being continued from a previous machine text'),
+                ('skill', 'Base directory for this skill: machine text'),
+                ('handoff', '# Handoff: machine text from a handoff')]:
+            with self.subTest(name):
+                self.check_one_excluded(name + '.jsonl', [
+                    transcript_fixtures.record(text),
+                    transcript_fixtures.record('typed message survives')])
+
+
+class CollectorExclusionTests(CollectorCase):
+    """A2b: whole-session markers, OpenCode children and pasted spans."""
+
+    def test_self_session_marker_excludes_the_whole_session(self):
+        self.write_session(self.root, 'self.jsonl', [
+            transcript_fixtures.record('<!-- backpass:self-session --> typed in self session'),
+            transcript_fixtures.record('typed message survives')])
+        proc = self.run_collector()
+        self.assertNotIn('typed in self session', proc.stdout)
+        self.assertNotIn('typed message survives', proc.stdout)
+
+    def test_implementer_opening_excludes_the_whole_session(self):
+        self.write_session(self.root, 'implementer.jsonl', [
+            transcript_fixtures.record(
+                'You are the implementer for one step of a plan written by Claude Opus.'),
+            transcript_fixtures.record('typed message survives')])
+        proc = self.run_collector()
+        self.assertNotIn('typed message survives', proc.stdout)
+
+    def test_opencode_child_session_is_excluded(self):
+        path = self.make_db([
+            ('parent-session', self.root, 0, [
+                transcript_fixtures.opencode_user('parent session message')]),
+            ('child-session', self.root, 0, [
+                transcript_fixtures.opencode_user('child session message')]),
+        ])
+        conn = sqlite3.connect(str(path))
+        conn.execute("UPDATE session_v2 SET parent_id='parent-session' WHERE id='child-session'")
+        conn.commit()
+        conn.close()
+        proc = self.run_collector()
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn('parent session message', proc.stdout)
+        self.assertNotIn('child session message', proc.stdout)
+
+    def test_forked_opencode_sessions_share_the_fork_group(self):
+        path = self.make_db([
+            ('origin-session', self.root, 0, [
+                transcript_fixtures.opencode_user('origin session message')]),
+            ('branch-session', self.root, 0, [
+                transcript_fixtures.opencode_user('branch session message')]),
+        ])
+        conn = sqlite3.connect(str(path))
+        conn.execute("UPDATE session_v2 SET fork_session_id='origin-session' "
+                     "WHERE id='branch-session'")
+        conn.commit()
+        conn.close()
+        evidence = os.path.join(self.tmp, 'evidence.json')
+        proc = self.run_collector('--evidence-out', evidence)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        with open(evidence, encoding='utf-8') as handle:
+            payload = json.load(handle)
+        groups = {session['id']: session['group'] for session in payload['sessions']}
+        self.assertEqual(groups['opencode:branch-session'], 'origin-session')
+        self.assertEqual(groups['opencode:origin-session'], 'origin-session')
+
+    def test_pasted_spans_are_removed_and_the_rest_is_kept(self):
+        self.write_session(self.root, 'pasted.jsonl', [
+            transcript_fixtures.record(
+                'keep before <pasted_content>hidden paste content</pasted_content> keep after')])
+        proc = self.run_collector()
+        self.assertIn('keep before', proc.stdout)
+        self.assertIn('keep after', proc.stdout)
+        self.assertNotIn('hidden paste content', proc.stdout)
+
+    def test_unterminated_pasted_span_removes_to_the_end(self):
+        self.write_session(self.root, 'unterminated.jsonl', [
+            transcript_fixtures.record('visible head <pasted_content>secret tail')])
+        proc = self.run_collector()
+        self.assertIn('visible head', proc.stdout)
+        self.assertNotIn('secret tail', proc.stdout)
+
+
+class CollectorSamplingTests(CollectorCase):
+    """A3: round-robin weekly sampling, interactive-first, skip, and count arithmetic."""
+
+    def labels(self, proc):
+        return [line.rsplit(' · ', 1)[-1] for line in proc.stdout.splitlines()
+                if line.startswith('## ')]
+
+    def test_round_robin_across_weekly_buckets(self):
+        now = time.time()
+        for age, name in [(0, 'week0-a'), (1, 'week0-b'), (8, 'week1-a'), (9, 'week1-b'),
+                          (15, 'week2-a')]:
+            self.write_session(self.root, name + '.jsonl',
+                               [transcript_fixtures.record('body ' + name)],
+                               mtime=now - age * 86400)
+        proc = self.run_collector()
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        labels = self.labels(proc)
+        self.assertEqual(labels[:3], ['week0-a.jsonl', 'week1-a.jsonl', 'week2-a.jsonl'])
+        self.assertEqual(labels[3:], ['week0-b.jsonl', 'week1-b.jsonl'])
+
+    def test_interactive_sessions_come_before_headless_ones(self):
+        now = time.time()
+        self.write_session(self.root, 'headless.jsonl',
+                           [transcript_fixtures.record('headless body'),
+                            transcript_fixtures.record('boot', entrypoint='sdk-cli')],
+                           mtime=now)
+        self.write_session(self.root, 'interactive.jsonl',
+                           [transcript_fixtures.record('interactive body')], mtime=now - 10)
+        proc = self.run_collector()
+        self.assertEqual(self.labels(proc)[0], 'interactive.jsonl')
+
+    def test_block_too_large_for_the_budget_is_skipped(self):
+        now = time.time()
+        big = [transcript_fixtures.record('BIGSTART message number %d %s' % (i, 'x' * 400))
+               for i in range(15)]
+        self.write_session(self.root, 'big.jsonl', big, mtime=now)
+        self.write_session(self.root, 'small.jsonl',
+                           [transcript_fixtures.record('small message survives')],
+                           mtime=now - 10)
+        proc = self.run_collector('--max-chars', '1500')
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn('small message survives', proc.stdout)
+        self.assertNotIn('BIGSTART', proc.stdout)
+
+    def test_date_range_uses_only_the_shown_sessions(self):
+        now = time.time()
+        big = [transcript_fixtures.record('BIGSTART message %d %s' % (i, 'x' * 400))
+               for i in range(15)]
+        self.write_session(self.root, 'big.jsonl', big, mtime=now)
+        self.write_session(self.root, 'small.jsonl',
+                           [transcript_fixtures.record('small message survives')],
+                           mtime=now - 9 * 86400)
+        proc = self.run_collector('--max-chars', '1500')
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn('small message survives', proc.stdout)
+        self.assertNotIn('BIGSTART', proc.stdout)
+        match = re.search(r'(\d+) shown\. (\S+) to (\S+)\.', proc.stdout)
+        self.assertIsNotNone(match, proc.stdout)
+        shown, start, end = match.groups()
+        self.assertEqual(shown, '1')
+        self.assertEqual(start, time.strftime('%Y-%m-%d',
+                                              time.localtime(now - 9 * 86400)))
+        self.assertEqual(end, start)
+
+    def test_counts_and_date_range_are_reported(self):
+        now = time.time()
+        self.write_session(self.root, 'interactive.jsonl',
+                           [transcript_fixtures.record('interactive body')], mtime=now)
+        self.write_session(self.root, 'headless.jsonl',
+                           [transcript_fixtures.record('headless body'),
+                            transcript_fixtures.record('boot', entrypoint='sdk-cli')],
+                           mtime=now - 86400)
+        self.write_session(self.root, 'excluded.jsonl',
+                           [transcript_fixtures.record('assistant only', role='assistant')],
+                           mtime=now - 172800)
+        proc = self.run_collector()
+        match = re.search(
+            r'(\d+) sessions in last (\d+) days: (\d+) interactive, (\d+) headless, '
+            r'(\d+) excluded, (\d+) shown\. (\S+) to (\S+)\.', proc.stdout)
+        self.assertIsNotNone(match, proc.stdout)
+        total, days, interactive, headless, excluded, shown, start, end = match.groups()
+        self.assertEqual(int(total), 3)
+        self.assertEqual(int(interactive), 1)
+        self.assertEqual(int(headless), 1)
+        self.assertEqual(int(excluded), 1)
+        self.assertEqual(int(shown), 2)
+        self.assertEqual(int(interactive) + int(headless) + int(excluded), int(total))
+        self.assertEqual(start, time.strftime('%Y-%m-%d', time.localtime(now - 86400)))
+        self.assertEqual(end, time.strftime('%Y-%m-%d', time.localtime(now)))
+
+
+class CollectorCorrectionTests(unittest.TestCase):
+    """A4: the correction marker flags the committed corrections, not the controls."""
+
+    def test_committed_corrections_are_flagged(self):
+        module = load_collector()
+        flagged = [text for text in transcript_fixtures.CORRECTIONS if module.is_correction(text)]
+        self.assertGreaterEqual(len(flagged), 9, flagged)
+
+    def test_committed_non_corrections_are_not_flagged(self):
+        module = load_collector()
+        flagged = [text for text in transcript_fixtures.NON_CORRECTIONS
+                   if module.is_correction(text)]
+        self.assertLessEqual(len(flagged), 1, flagged)
+
+
+class CollectorRedactionTests(CollectorCase):
+    """A5: new secret kinds are redacted everywhere, including header and evidence."""
+
+    def test_new_redaction_kinds_in_digest_and_evidence(self):
+        self.root = os.path.join(self.tmp, 'Users', 'alice', 'repo')
+        os.makedirs(self.root, exist_ok=True)
+        email = 'alice' + '@' + 'example.test'
+        jwt = '.'.join(['eyJ' + 'a' * 10, 'b' * 10, 'c' * 10])
+        pem = '-----BEGIN ' + 'RSA PRIVATE KEY-----\n' + 'MIIB' + 'x' * 40 + \
+              '\n-----END ' + 'RSA PRIVATE KEY-----'
+        truncated = '-----BEGIN ' + 'OPENSSH PRIVATE KEY-----\n' + 'AAAAB3Nza'
+        url = 'https://' + 'user' + ':' + 'pw' + '@' + 'git.example.test/repo.git'
+        home = '/' + 'Users' + '/alice/private/file.txt'
+        token = 'token=' + 'SECRET-TOKEN-VALUE'
+        github = 'gh' + 'p_' + 'a' * 36
+        self.write_session(self.root, 'secrets.jsonl', [
+            transcript_fixtures.record('reach me at ' + email),
+            transcript_fixtures.record('session ' + jwt),
+            transcript_fixtures.record('key ' + pem),
+            transcript_fixtures.record('truncated ' + truncated),
+            transcript_fixtures.record('clone ' + url),
+            transcript_fixtures.record('path ' + home),
+            transcript_fixtures.record(token),
+            transcript_fixtures.record('push ' + github),
+            {'type': 'user', 'message': {'role': 'user', 'content': [
+                {'type': 'tool_result', 'is_error': True,
+                 'content': 'failed at %s for %s' % (home, email)}]}},
+        ])
+        evidence = os.path.join(self.tmp, 'evidence.json')
+        proc = self.run_collector('--evidence-out', evidence)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        with open(evidence, encoding='utf-8') as handle:
+            payload = json.load(handle)
+        blob = proc.stdout + json.dumps(payload)
+        self.assertIn('[REDACTED]', proc.stdout)
+        for secret in (email, jwt, 'MIIB' + 'x' * 40, 'AAAAB3Nza', 'user:pw',
+                       'SECRET-TOKEN-VALUE', 'a' * 36):
+            self.assertNotIn(secret, blob)
+        self.assertNotIn('alice', proc.stdout.splitlines()[0])
+        self.assertNotIn('alice', blob)
+
+
+class CollectorDriftTests(CollectorCase):
+    """A6: format drift thresholds, strict exit, and v1-only counting."""
+
+    def test_drift_needs_twenty_records(self):
+        nineteen = ['not json %d' % i for i in range(19)]
+        self.write_raw_session(self.root, 'junk19.jsonl', nineteen)
+        proc = self.run_collector()
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertNotIn('FORMAT DRIFT', proc.stdout)
+        self.write_raw_session(self.root, 'junk20.jsonl', ['not json 19'])
+        proc = self.run_collector()
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn('FORMAT DRIFT: claude-code', proc.stdout)
+        strict = self.run_collector('--strict')
+        self.assertEqual(strict.returncode, 3, strict.stderr)
+
+    def test_drift_when_no_well_formed_user_record(self):
+        records = [json.dumps({'type': 'assistant',
+                               'message': {'role': 'assistant', 'content': 'x'}})
+                   for _ in range(20)]
+        self.write_raw_session(self.root, 'assistant-only.jsonl', records)
+        proc = self.run_collector()
+        self.assertIn('FORMAT DRIFT: claude-code', proc.stdout)
+
+    def test_missing_table_and_missing_parent_id_are_drift(self):
+        self.make_db([], missing=('session_v2',))
+        proc = self.run_collector()
+        self.assertIn('FORMAT DRIFT: opencode', proc.stdout)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(self.run_collector('--strict').returncode, 3)
+        os.remove(str(self.db_path()))
+        self.make_db([('inside-session', self.root, 0, [
+            transcript_fixtures.opencode_user('parentless message')])], parent_column=False)
+        proc = self.run_collector()
+        self.assertIn('FORMAT DRIFT: opencode', proc.stdout)
+        self.assertNotIn('parentless message', proc.stdout)
+
+    def test_v1_only_sessions_are_counted_without_reading_message_or_part(self):
+        path = self.make_db([('v2-session', self.root, 0, [
+            transcript_fixtures.opencode_user('v2 session message')])])
+        conn = sqlite3.connect(str(path))
+        conn.execute('CREATE TABLE session (id text PRIMARY KEY, directory text, '
+                     'time_updated integer)')
+        now = int(time.time() * 1000)
+        conn.execute('INSERT INTO session VALUES (?, ?, ?)', ('v1-session', self.root, now))
+        conn.execute('INSERT INTO session VALUES (?, ?, ?)',
+                     ('v1-old', self.root, now - 400 * 86400 * 1000))
+        conn.execute('INSERT INTO session VALUES (?, ?, ?)',
+                     ('v1-elsewhere', os.path.join(self.tmp, 'elsewhere'), now))
+        conn.execute('CREATE VIEW message AS SELECT * FROM missing_message_table')
+        conn.execute('CREATE VIEW part AS SELECT * FROM missing_part_table')
+        conn.commit()
+        conn.close()
+        evidence = os.path.join(self.tmp, 'evidence.json')
+        proc = self.run_collector('--evidence-out', evidence)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn('v2 session message', proc.stdout)
+        with open(evidence, encoding='utf-8') as handle:
+            payload = json.load(handle)
+        self.assertEqual(payload['counts']['opencode_v1_only'], 1)
+
+
+class CollectorEvidenceTests(GitRepoCase):
+    """A7: evidence schema, mode and path refusals."""
+
+    def setUp(self):
+        super().setUp()
+        self.init_repo(self.root)
+
+    def test_evidence_schema_and_mode_under_permissive_umask(self):
+        long_text = 'long evidence message ' + 'y' * 400
+        self.write_session(self.root, 'evidence.jsonl', [
+            transcript_fixtures.record('short typed message'),
+            transcript_fixtures.record(long_text)])
+        evidence = os.path.join(self.tmp, 'evidence.json')
+        proc = self.run_collector('--evidence-out', evidence, umask=0)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(stat.S_IMODE(os.stat(evidence).st_mode), 0o600)
+        with open(evidence, encoding='utf-8') as handle:
+            payload = json.load(handle)
+        self.assertEqual(payload['version'], 1)
+        self.assertRegex(payload['repo_id'], r'^[0-9a-f]{64}$')
+        self.assertEqual(set(payload['counts']),
+                         {'total', 'interactive', 'headless', 'excluded', 'shown',
+                          'opencode_v1_only'})
+        self.assertEqual(payload['counts']['shown'], 1)
+        self.assertIn('date_range', payload)
+        self.assertIn('drift', payload)
+        session = payload['sessions'][0]
+        self.assertEqual(session['id'], 'claude-code:evidence.jsonl')
+        self.assertEqual(session['source'], 'claude-code')
+        self.assertEqual(session['kind'], 'interactive')
+        self.assertEqual(session['group'], 'evidence.jsonl')
+        texts = [item['text'] for item in session['human']]
+        self.assertIn(long_text, texts)
+        self.assertTrue(all('correction' in item and 'msg' in item
+                            for item in session['human']))
+        self.assertIn('errors', session)
+
+    def test_evidence_path_refusals(self):
+        self.write_session(self.root, 'evidence.jsonl',
+                           [transcript_fixtures.record('typed message survives')])
+        targets = [
+            os.path.join(self.root, 'evidence.json'),
+            os.path.join(self.root, '.git', 'evidence.json'),
+        ]
+        bridge = os.path.join(self.tmp, 'bridge')
+        os.symlink(self.root, bridge)
+        targets.append(os.path.join(bridge, 'evidence.json'))
+        for target in targets:
+            with self.subTest(target):
+                proc = self.run_collector('--evidence-out', target)
+                self.assertEqual(proc.returncode, 2, proc.stderr)
+                self.assertFalse(os.path.lexists(target))
+        existing = os.path.join(self.tmp, 'existing.json')
+        with open(existing, 'w', encoding='utf-8') as handle:
+            handle.write('keep me')
+        proc = self.run_collector('--evidence-out', existing)
+        self.assertEqual(proc.returncode, 2)
+        with open(existing, encoding='utf-8') as handle:
+            self.assertEqual(handle.read(), 'keep me')
+        link = os.path.join(self.tmp, 'link.json')
+        os.symlink(os.path.join(self.tmp, 'nowhere.json'), link)
+        proc = self.run_collector('--evidence-out', link)
+        self.assertEqual(proc.returncode, 2)
+        self.assertTrue(os.path.islink(link))
 
 
 if __name__ == '__main__':

@@ -18,7 +18,7 @@ workflow repository, not a supported product.
 | [`intrinsic-responsive-ui`](skills/intrinsic-responsive-ui/) | Guides fluid, container-aware responsive layouts built on intrinsic sizing rather than breakpoint patches.                                                                                            |
 | [`review-loop`](skills/review-loop/)                         | Runs an independent, evidence-backed review of a finished change before it lands, with risk tiers and a three-round cap.                                                                             |
 | [`safe-switch`](skills/safe-switch/)                         | Hands the current work off losslessly to a fresh background Claude Code session, on explicit request only.                                                                                           |
-| [`sync-agent-instructions`](skills/sync-agent-instructions/) | Rewrites a repository's `AGENTS.md` from past sessions, git history and the code, keeping `CLAUDE.md` as an `@AGENTS.md` import.                                                                     |
+| [`sync-agent-instructions`](skills/sync-agent-instructions/) | Rewrites a repository's `AGENTS.md` from past sessions, git history and the code through a staged edit that evidence and typed claims must pass; keeps `CLAUDE.md` as an `@AGENTS.md` import.         |
 
 ## Layout
 
@@ -33,7 +33,8 @@ skills/
 ├── intrinsic-responsive-ui/   SKILL.md
 ├── review-loop/               SKILL.md
 ├── safe-switch/               SKILL.md
-└── sync-agent-instructions/   SKILL.md, scripts/collect_sessions.py, tests/
+└── sync-agent-instructions/   SKILL.md, scripts/ (collect_sessions.py, check_instructions.py),
+                               tests/ (collector, checker)
 ```
 
 `consolidate` and `frontend-ui-ux-overhaul` delegate their planning and review tasks to
@@ -69,7 +70,9 @@ python3 ~/.agents/skills/dependency-upgrade/admin/depup-admin.py install
 python3 ~/.agents/skills/dependency-upgrade/admin/depup-admin.py doctor
 ```
 
-Requirements: git and Python 3.9+ (`sync-agent-instructions` needs Python 3 only).
+Requirements: git and Python 3.9+. The `sync-agent-instructions` collector and checker are
+stdlib-only; the checker stages, gates and applies memory-file edits and never commits or
+pushes.
 `execution-protocol` also needs the `claude` CLI (signed in), `gh` (signed in), the `opencode` CLI
 (OpenCode Go, model `opencode-go/deepseek-v4.1-flash#high`) and `python3`;
 `scripts/implement.sh` also needs `timeout` and `lsof`. It optionally uses `claude-swap`
@@ -100,6 +103,10 @@ python3 -m unittest discover -s skills/dependency-upgrade/tests -t skills/depend
 python3 -m unittest discover -s skills/sync-agent-instructions/tests -t skills/sync-agent-instructions
 bash skills/execution-protocol/tests/smoke.sh
 ```
+
+The `sync-agent-instructions` suite covers the collector (`scripts/collect_sessions.py`) and
+the checker (`scripts/check_instructions.py`); the checker tests stage, gate and apply edits in
+scratch repositories and never touch this checkout.
 
 ## License
 
