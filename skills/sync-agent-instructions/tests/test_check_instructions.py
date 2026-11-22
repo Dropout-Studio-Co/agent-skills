@@ -384,6 +384,21 @@ class ReferenceClassificationTests(CheckerCase):
         self.assertEqual(code, 0, payload)
         self.assertEqual(payload['status'], 'pass')
 
+    def test_explained_stale_references_in_several_files_pass(self):
+        self.write('.agents/skills/demo/SKILL.md',
+                   '---\nname: demo\ndescription: demo\n---\n\n'
+                   '- See `src/other-missing.py` for details.\n')
+        self.write('AGENTS.md', DEFAULT_AGENTS + '\n- See `src/missing.py` for details.\n')
+        self.commit('stale references')
+        self.stage()
+        code, payload = self.gate([], explained=[
+            {'file': 'AGENTS.md', 'ref': 'src/missing.py', 'reason': 'removed upstream'},
+            {'file': '.agents/skills/demo/SKILL.md', 'ref': 'src/other-missing.py',
+             'reason': 'removed upstream'}])
+        self.assertEqual(code, 0, payload)
+        self.assertEqual(payload['status'], 'no_change')
+        self.assertNotIn('existing_stale', self.codes(payload))
+
     def test_existing_ok_references_are_only_reported(self):
         self.write('AGENTS.md', DEFAULT_AGENTS
                    + '- Read `skills/consolidate/SKILL.md` and `https://example.test/doc`.\n')

@@ -1501,10 +1501,10 @@ def _check_existing_stale(rel, base_text, claims, refs, findings, reported):
             fixed.update(claim.get("removed") or [])
     explained_refs = set()
     for item in claims["explained_stale"]:
-        rel = str(item.get("file")).replace(os.sep, "/")
+        item_file = str(item.get("file")).replace(os.sep, "/")
         ref = str(item.get("ref"))
-        explained_refs.add((rel, strip_reference(ref)))
-        explained_refs.add((rel, strip_reference(redact(ref))))
+        explained_refs.add((item_file, strip_reference(ref)))
+        explained_refs.add((item_file, strip_reference(redact(ref))))
     lines = base_text.splitlines()
     for item in references_in(base_text, rel, refs):
         if item["class"] != "stale":
