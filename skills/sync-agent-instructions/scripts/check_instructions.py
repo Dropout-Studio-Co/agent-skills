@@ -1,0 +1,1801 @@
+#!/usr/bin/env python3
+"""Check, stage, gate and apply memory-file edits for one repository.
+
+Commands (all accept --json and print one JSON object):
+
+  check --repo R                    read-only survey: delivery state, budget, imports,
+                                    references, Backpass leads
+  stage --repo R --out S            copy the memory surface into an editable stage
+  gate  --stage S --evidence E --claims C
+                                    validate claims and evidence, write S/gate.json
+  apply --stage S                   write the staged edit in place, or emit S/staged.patch
+
+Exit codes: 0 ok, 1 blocked, 2 invalid or unsafe input. Only `apply` writes to a
+repository. Stdlib only, Python 3.9+.
+"""
+import argparse
+import difflib
+import hashlib
+import importlib.util
+import json
+import math
+import os
+import re
+import shlex
+import shutil
+import stat
+import subprocess
+import sys
+import tempfile
+import time
+from collections import Counter
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+GIT_STRIP = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR")
+EXIT_OK, EXIT_BLOCKED, EXIT_INVALID = 0, 1, 2
+DEFAULT_SKILLS_DIR = ".agents/skills"
+
+
+def _load_collector():
+    spec = importlib.util.spec_from_file_location(
+        "collect_sessions_shared", str(HERE / "collect_sessions.py"))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+COLLECT = _load_collector()
+redact = COLLECT.redact
+fold = COLLECT.fold
+is_correction = COLLECT.is_correction
+
+
+def run_git(args, cwd):
+    env = {key: value for key, value in os.environ.items() if key not in GIT_STRIP}
+    try:
+        return subprocess.run(["git"] + list(args), cwd=str(cwd), capture_output=True,
+                              text=True, env=env)
+    except (OSError, ValueError):
+        return None
+
+
+def digest_bytes(data):
+    return hashlib.sha256(data).hexdigest()
+
+
+def digest_file(path):
+    try:
+        return digest_bytes(Path(path).read_bytes())
+    except OSError:
+        return None
+
+
+def tree_digest(directory):
+    directory = Path(directory)
+    items = []
+    if directory.is_dir():
+        for dirpath, dirnames, filenames in os.walk(str(directory)):
+            dirnames.sort()
+            for name in sorted(filenames):
+                path = Path(dirpath) / name
+                rel = os.path.relpath(str(path), str(directory))
+                if os.path.islink(str(path)):
+                    items.append(rel + "\0link:" + os.readlink(str(path)))
+                else:
+                    items.append(rel + "\0" + (digest_file(path) or ""))
+    return digest_bytes("\n".join(sorted(items)).encode("utf-8"))
+
+
+def _inside(path, parent):
+    try:
+        Path(path).resolve().relative_to(Path(parent).resolve())
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def outside_worktree(path):
+    """True when path (and its real parent) is outside every git worktree."""
+    parent = Path(path).parent
+    try:
+        parent = Path(os.path.realpath(str(parent)))
+    except OSError:
+        return False
+    if not parent.is_dir():
+        return False
+    probe = parent
+    while True:
+        if probe.name == ".git":
+            return False
+        try:
+            if (probe / ".git").exists():
+                return False
+        except OSError:
+            pass
+        if probe.parent == probe:
+            break
+        probe = probe.parent
+    proc = run_git(["rev-parse", "--show-toplevel"], parent)
+    return not (proc is not None and proc.returncode == 0 and proc.stdout.strip())
+
+
+def skills_dir(root):
+    config = Path(root) / ".backpassrc.json"
+    value = None
+    if config.is_file():
+        try:
+            data = json.loads(config.read_text("utf-8", "replace"))
+        except ValueError:
+            data = {}
+        if isinstance(data, dict):
+            value = data.get("skillsDir")
+    if isinstance(value, str) and value.strip():
+        candidate = value.strip().rstrip("/")
+        if not os.path.isabs(candidate) and ".." not in Path(candidate).parts:
+            try:
+                if _inside(Path(root) / candidate, root):
+                    return candidate
+            except OSError:
+                pass
+    return DEFAULT_SKILLS_DIR
+
+
+def is_surface_path(rel, root):
+    rel = rel.replace(os.sep, "/")
+    if rel in ("AGENTS.md", "CLAUDE.md"):
+        return True
+    if rel.endswith("/AGENTS.md") or rel.endswith("/CLAUDE.md"):
+        return True
+    prefix = skills_dir(root).rstrip("/") + "/"
+    if rel.startswith(prefix):
+        rest = rel[len(prefix):]
+        return rest.count("/") == 1 and rest.endswith("/SKILL.md")
+    return False
+
+
+def surface_paths(root):
+    root = Path(root)
+    found = set()
+    for dirpath, dirnames, filenames in os.walk(str(root)):
+        dirnames[:] = sorted(d for d in dirnames
+                             if d not in (".git", "node_modules", "__pycache__", ".venv",
+                                          "graft", ".mypy_cache", ".pytest_cache"))
+        for name in ("AGENTS.md", "CLAUDE.md"):
+            if name in filenames:
+                found.add(os.path.relpath(os.path.join(dirpath, name), str(root)))
+    skills = root / skills_dir(root)
+    if skills.is_dir():
+        try:
+            children = sorted(skills.iterdir())
+        except OSError:
+            children = []
+        for child in children:
+            if child.is_dir() and (child / "SKILL.md").is_file():
+                found.add(os.path.relpath(str(child / "SKILL.md"), str(root)))
+    return sorted(found)
+
+
+def surface_entries(root):
+    root = Path(root)
+    entries = []
+    for rel in surface_paths(root):
+        path = root / rel
+        item = {"path": rel.replace(os.sep, "/")}
+        if path.is_symlink():
+            item["link"] = os.readlink(str(path))
+        else:
+            try:
+                info = path.stat()
+            except OSError:
+                continue
+            item["mode"] = stat.S_IMODE(info.st_mode)
+            item["sha256"] = digest_file(path)
+        entries.append(item)
+    return entries
+
+
+class Repo:
+    def __init__(self, root):
+        self.root = Path(root).resolve()
+        self.is_git = False
+        self.common = None
+        self.worktrees = []
+        self.head = ""
+        self.current = ""
+        self.default_branch = None
+        if not self.root.is_dir():
+            raise ValueError("repository path is not a directory")
+        common = self._common_dir(self.root)
+        if common is not None:
+            self.is_git = True
+            self.common = common
+            proc = run_git(["rev-parse", "HEAD"], self.root)
+            if proc is not None and proc.returncode == 0:
+                self.head = proc.stdout.strip()
+            proc = run_git(["rev-parse", "--abbrev-ref", "HEAD"], self.root)
+            if proc is not None and proc.returncode == 0:
+                self.current = proc.stdout.strip()
+            self.default_branch = self._default_branch()
+            self.worktrees = self._worktrees()
+        basis = self.common if self.common is not None else str(self.root)
+        self.id = digest_bytes(basis.encode("utf-8", "replace"))
+
+    @staticmethod
+    def _common_dir(path):
+        proc = run_git(["rev-parse", "--git-common-dir"], path)
+        if proc is None or proc.returncode != 0 or not proc.stdout.strip():
+            return None
+        common = Path(proc.stdout.strip())
+        if not common.is_absolute():
+            common = Path(path) / common
+        try:
+            return str(common.resolve())
+        except OSError:
+            return os.path.abspath(str(common))
+
+    def _default_branch(self):
+        proc = run_git(["symbolic-ref", "--short", "refs/remotes/origin/HEAD"], self.root)
+        if proc is not None and proc.returncode == 0 and proc.stdout.strip():
+            return proc.stdout.strip().split("/", 1)[-1]
+        proc = run_git(["config", "--get", "init.defaultBranch"], self.root)
+        if proc is not None and proc.returncode == 0 and proc.stdout.strip():
+            return proc.stdout.strip()
+        for name in ("main", "master"):
+            proc = run_git(["show-ref", "--verify", "--quiet", "refs/heads/" + name], self.root)
+            if proc is not None and proc.returncode == 0:
+                return name
+        return None
+
+    def _worktrees(self):
+        proc = run_git(["worktree", "list", "--porcelain"], self.root)
+        if proc is None or proc.returncode != 0:
+            return []
+        found = []
+        for line in proc.stdout.splitlines():
+            if not line.startswith("worktree "):
+                continue
+            try:
+                found.append(str(Path(line[len("worktree "):].strip()).resolve()))
+            except OSError:
+                found.append(line[len("worktree "):].strip())
+        return found
+
+    def main_checkout(self):
+        return Path(self.worktrees[0]) if self.worktrees else self.root
+
+
+def status_paths(root):
+    proc = run_git(["status", "--porcelain"], root)
+    if proc is None or proc.returncode != 0:
+        return set()
+    dirty = set()
+    for line in proc.stdout.splitlines():
+        if len(line) < 4:
+            continue
+        path = line[3:]
+        if " -> " in path:
+            path = path.split(" -> ", 1)[1]
+        dirty.add(path.strip().strip('"'))
+    return dirty
+
+
+PR_REQUIRE = re.compile(
+    r"(?i)(\bmust\b|\brequires?\b|\brequired\b|\balways\b|\bonly\b|\buse\b|\bthrough\b|"
+    r"\bvia\b|\bopen\b|\bgo through\b).{0,60}\b(pull request|PR)\b")
+PR_FORBID = re.compile(
+    r"(?i)(\bno\b|\bnever\b|\bnot\b|\bdon'?t\b|\bdo not\b|\bforbid\w*\b|\bmust not\b)"
+    r".{0,60}\b(direct(?:ly)?\s+)?(push|commit)")
+
+
+def has_pr_rule(root):
+    for name in ("AGENTS.md", "CLAUDE.md", "CONTRIBUTING.md"):
+        path = Path(root) / name
+        if not path.is_file():
+            continue
+        try:
+            text = path.read_text("utf-8", "replace")
+        except OSError:
+            continue
+        for line in text.splitlines():
+            if PR_REQUIRE.search(line) or PR_FORBID.search(line):
+                return True
+    return False
+
+
+def delivery_state(repo, entries):
+    dirty = bool(status_paths(repo.root) & {entry["path"] for entry in entries})
+    if dirty:
+        return {"action": "patch_only", "reason": "dirty memory file", "dirty": True,
+                "commands": []}
+    if not repo.is_git:
+        return {"action": "in_place", "reason": "not a git repository", "dirty": False,
+                "commands": []}
+    if repo.default_branch is None:
+        return {"action": "patch_only", "reason": "unknown default branch", "dirty": False,
+                "commands": []}
+    if repo.current == "HEAD":
+        return {"action": "worktree", "reason": "detached HEAD", "dirty": False,
+                "commands": worktree_commands(repo)}
+    if repo.current != repo.default_branch:
+        return {"action": "in_place", "reason": "task branch", "dirty": False, "commands": []}
+    if has_pr_rule(repo.root):
+        return {"action": "worktree", "reason": "default branch with a written PR rule",
+                "dirty": False, "commands": worktree_commands(repo)}
+    return {"action": "in_place", "reason": "default branch without a written PR rule",
+            "dirty": False, "commands": []}
+
+
+def worktree_commands(repo):
+    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    name = re.sub(r"[^A-Za-z0-9._-]", "-", repo.root.name) or "repo"
+    location = ("$HOME/.local/state/sync-agent-instructions/worktrees/%s-%s" % (name, stamp))
+    branch = "docs/sync-agent-instructions-%s" % stamp
+    return [
+        "git fetch origin %s" % repo.default_branch,
+        'git worktree add -b %s "%s" origin/%s' % (branch, location, repo.default_branch),
+    ]
+
+
+def frontmatter_description(text):
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != "---":
+        return ""
+    body = []
+    for line in lines[1:]:
+        if line.strip() == "---":
+            break
+        body.append(line)
+    for index, line in enumerate(body):
+        match = re.match(r"description:\s*(.*)$", line)
+        if not match:
+            continue
+        value = match.group(1).strip()
+        if value in ("|", ">", "|-", ">-"):
+            collected = []
+            for extra in body[index + 1:]:
+                if extra.startswith((" ", "\t")):
+                    collected.append(extra.strip())
+                elif not extra.strip():
+                    continue
+                else:
+                    break
+            return " ".join(collected)
+        return value.strip('"\'')
+    return ""
+
+
+def budget_report(root):
+    root = Path(root)
+    total = 0
+    seen = set()
+    for name in ("AGENTS.md", "CLAUDE.md"):
+        path = root / name
+        if not path.exists() and not path.is_symlink():
+            continue
+        try:
+            info = os.stat(str(path))
+        except OSError:
+            continue
+        key = (info.st_dev, info.st_ino)
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            total += len(path.read_bytes())
+        except OSError:
+            pass
+    skills = root / skills_dir(root)
+    if skills.is_dir():
+        try:
+            children = sorted(skills.iterdir())
+        except OSError:
+            children = []
+        for child in children:
+            manifest = child / "SKILL.md"
+            if not manifest.is_file():
+                continue
+            try:
+                text = manifest.read_text("utf-8", "replace")
+            except OSError:
+                continue
+            total += len(frontmatter_description(text).encode("utf-8"))
+    cap = 5000
+    config = root / ".backpassrc.json"
+    if config.is_file():
+        try:
+            data = json.loads(config.read_text("utf-8", "replace"))
+        except ValueError:
+            data = {}
+        value = data.get("budgetTokens") if isinstance(data, dict) else None
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+            cap = value
+    tokens = int(math.ceil(total / 4.0))
+    return {"tokens": tokens, "cap": cap, "over": tokens > cap}
+
+
+def first_non_comment_line(text):
+    lines = text.splitlines()
+    index = 0
+    while index < len(lines):
+        stripped = lines[index].strip()
+        if not stripped:
+            index += 1
+            continue
+        if stripped.startswith("<!--"):
+            while index < len(lines) and "-->" not in lines[index]:
+                index += 1
+            index += 1
+            continue
+        return index, stripped
+    return None, None
+
+
+def check_imports(repo):
+    root = repo.root
+    errors = []
+    directories = set()
+    for rel in surface_paths(root):
+        path = Path(rel)
+        if path.name == "AGENTS.md":
+            directories.add(root / path.parent)
+        elif path.name == "CLAUDE.md":
+            directories.add(root / path.parent)
+    for directory in sorted(directories, key=str):
+        agents = directory / "AGENTS.md"
+        claude = directory / "CLAUDE.md"
+        rel_agents = os.path.relpath(str(agents), str(root)).replace(os.sep, "/")
+        rel_claude = os.path.relpath(str(claude), str(root)).replace(os.sep, "/")
+        if not agents.exists() and not agents.is_symlink():
+            if claude.exists() or claude.is_symlink() or directory == root:
+                errors.append({"file": rel_agents, "error": "missing AGENTS.md"})
+            continue
+        if not claude.exists() and not claude.is_symlink():
+            if directory == root:
+                errors.append({"file": rel_claude, "error": "missing CLAUDE.md import"})
+            continue
+        if claude.is_symlink():
+            try:
+                same = os.path.realpath(str(claude)) == os.path.realpath(str(agents))
+            except OSError:
+                same = False
+            if not same:
+                errors.append({"file": rel_claude, "error": "symlink points elsewhere"})
+            continue
+        try:
+            text = claude.read_text("utf-8", "replace")
+        except OSError:
+            errors.append({"file": rel_claude, "error": "unreadable CLAUDE.md"})
+            continue
+        if re.search(r"`\s*@AGENTS\.md\s*`", text):
+            errors.append({"file": rel_claude, "error": "backticked import"})
+        _index, first = first_non_comment_line(text)
+        if first != "@AGENTS.md":
+            errors.append({"file": rel_claude, "error": "missing @AGENTS.md import"})
+        try:
+            agents_text = agents.read_text("utf-8", "replace")
+        except OSError:
+            agents_text = ""
+        agents_lines = {line.strip() for line in agents_text.splitlines()
+                        if len(line.strip()) >= 4 and not line.strip().startswith("#")}
+        for number, line in enumerate(text.splitlines(), 1):
+            stripped = line.strip()
+            if stripped == "@AGENTS.md" or len(stripped) < 4 or stripped.startswith("#"):
+                continue
+            if stripped.startswith("<!--") or stripped.startswith("```"):
+                continue
+            if stripped in agents_lines:
+                errors.append({"file": rel_claude, "line": number,
+                               "error": "line duplicated from AGENTS.md"})
+    return {"ok": not errors, "errors": errors}
+
+
+BACKTICK = re.compile(r"`([^`\n]+)`")
+LINK = re.compile(r"\]\(([^)\s]+)\)")
+SHELL_FENCE = re.compile(r"```[A-Za-z0-9_+-]*\n(.*?)```", re.S)
+PLACEHOLDER = re.compile(r"[<>{}\[\]*?]")
+URL = re.compile(r"^[a-z][a-z0-9+.-]*://", re.I)
+TRACKED_SUFFIX = re.compile(r"\.[A-Za-z0-9]{1,8}$")
+COMMON_CLIS = {
+    "git", "gh", "docker", "kubectl", "terraform", "brew", "cargo", "go", "python",
+    "python3", "node", "npm", "npx", "pnpm", "yarn", "bun", "make", "bash", "sh", "zsh",
+    "source", "pytest", "uv", "pip", "pip3", "deno", "ruby", "bundle", "rails", "perl",
+    "php", "composer", "dotnet", "java", "mvn", "gradle", "ls", "cat", "grep", "rg", "sed",
+    "awk", "find", "curl", "wget", "jq", "yq", "tar", "zip", "unzip", "chmod", "mkdir",
+    "cp", "mv", "rm", "echo", "printf", "env", "which", "test", "diff", "rsync", "ssh",
+    "scp", "open", "pbcopy", "lsof", "timeout", "zstd",
+}
+SCRIPT_RUNNERS = {"bash", "sh", "zsh", "source", "python", "python3", "node", "deno",
+                  "ruby", "perl", "php", "uv", "pytest"}
+PACKAGE_MANAGERS = {"npm", "pnpm", "yarn", "bun"}
+PACKAGE_BUILTINS = {"install", "i", "add", "remove", "rm", "uninstall", "update", "upgrade",
+                    "ci", "init", "create", "publish", "pack", "link", "audit", "why",
+                    "outdated", "prune", "dedupe", "list", "ls", "view", "info", "search",
+                    "login", "logout", "config", "cache", "store", "workspace", "workspaces"}
+NUMERIC_SUFFIX = re.compile(r":\d+(?::\d+)?$")
+ANCHOR_SUFFIX = re.compile(r"#.*$")
+TRAILING = ".,;:!?)]}\"'"
+
+
+def strip_reference(value):
+    value = value.strip()
+    value = NUMERIC_SUFFIX.sub("", value)
+    value = ANCHOR_SUFFIX.sub("", value)
+    return value.rstrip(TRAILING).strip()
+
+
+def normalize_rel(value):
+    value = str(value).replace(os.sep, "/")
+    while value.startswith("./"):
+        value = value[2:]
+    return value
+
+
+def looks_like_path(value):
+    if value.startswith(".") and "." in value[1:]:
+        return True
+    return "/" in value or bool(TRACKED_SUFFIX.search(value))
+
+
+def probable_command(value):
+    tokens = value.split()
+    if not tokens:
+        return False
+    return (tokens[0] in COMMON_CLIS or tokens[0] in PACKAGE_MANAGERS
+            or tokens[0] in SCRIPT_RUNNERS or tokens[0] == "make")
+
+
+class References:
+    def __init__(self, root):
+        self.root = Path(root)
+        self.tracked = self._tracked()
+        self._ignored = {}
+
+    def _tracked(self):
+        proc = run_git(["ls-files", "-z"], self.root)
+        if proc is None or proc.returncode != 0:
+            return []
+        return [item for item in proc.stdout.split("\0") if item]
+
+    def ignored(self, ref):
+        if ref not in self._ignored:
+            proc = run_git(["check-ignore", "-q", "--", ref], self.root)
+            self._ignored[ref] = proc is not None and proc.returncode == 0
+        return self._ignored[ref]
+
+    def classify(self, ref, file_rel):
+        ref = strip_reference(ref)
+        if not ref or ref.startswith("-"):
+            return None
+        if URL.match(ref):
+            return "external"
+        if ref.startswith("~") or ref.startswith("/") or ref.startswith("$"):
+            return "external"
+        if PLACEHOLDER.search(ref):
+            return "scoped"
+        if looks_like_path(ref):
+            memory_dir = (self.root / file_rel).parent
+            for base in (self.root, memory_dir):
+                try:
+                    candidate = (Path(base) / ref)
+                    if candidate.exists():
+                        if _inside(candidate, self.root):
+                            return "ok"
+                        return "external"
+                except OSError:
+                    continue
+            if self.ignored(ref):
+                return "ignored"
+            suffix = normalize_rel(ref)
+            matches = [item for item in self.tracked
+                       if item == suffix or item.endswith("/" + suffix)]
+            if len(matches) == 1:
+                return "scoped"
+            return "stale"
+        return self._command(ref)
+
+    def _command(self, ref):
+        try:
+            tokens = shlex.split(ref)
+        except ValueError:
+            return "unverified"
+        if not tokens:
+            return None
+        command = tokens[0]
+        if command == "make":
+            return self._make_target(tokens[1] if len(tokens) > 1 else "")
+        if command in PACKAGE_MANAGERS:
+            name = None
+            if len(tokens) > 1:
+                if tokens[1] in ("run", "exec", "dlx", "x") and len(tokens) > 2:
+                    name = tokens[2]
+                elif not tokens[1].startswith("-"):
+                    name = tokens[1]
+            if name in PACKAGE_BUILTINS:
+                return "external"
+            return self._package_script(name)
+        if command in SCRIPT_RUNNERS:
+            if len(tokens) > 1 and not tokens[1].startswith("-"):
+                return self.classify(tokens[1], "AGENTS.md")
+            return "external"
+        if command in COMMON_CLIS:
+            return "external"
+        return "unverified"
+
+    def _package_script(self, name):
+        if not name:
+            return "unverified"
+        manifests = []
+        root_manifest = self.root / "package.json"
+        if root_manifest.is_file():
+            manifests.append((root_manifest, "ok"))
+        for rel in self.tracked:
+            if rel.endswith("package.json") and rel != "package.json":
+                manifests.append((self.root / rel, "scoped"))
+        for path, klass in manifests:
+            try:
+                data = json.loads(path.read_text("utf-8", "replace"))
+            except (OSError, ValueError):
+                continue
+            scripts = data.get("scripts") if isinstance(data, dict) else None
+            if isinstance(scripts, dict) and name in scripts:
+                return klass
+        return "stale" if manifests else "unverified"
+
+    def _make_target(self, name):
+        if not name:
+            return "unverified"
+        makefile = self.root / "Makefile"
+        if not makefile.is_file():
+            return "unverified"
+        try:
+            text = makefile.read_text("utf-8", "replace")
+        except OSError:
+            return "unverified"
+        if re.search(r"^%s\s*:" % re.escape(name), text, re.M):
+            return "ok"
+        return "stale"
+
+
+def shell_fence_lines(text):
+    lines = set()
+    for fence in SHELL_FENCE.finditer(text):
+        for line in fence.group(1).splitlines():
+            stripped = line.strip()
+            if stripped and not stripped.startswith("#"):
+                lines.add(stripped)
+    return lines
+
+
+def references_in(text, file_rel, refs):
+    found = []
+    for number, line in enumerate(text.splitlines(), 1):
+        for match in BACKTICK.finditer(line):
+            found.append((number, match.group(1).strip(), False))
+        for match in LINK.finditer(line):
+            found.append((number, match.group(1).strip(), False))
+    for fence in SHELL_FENCE.finditer(text):
+        start = text[:fence.start()].count("\n") + 2
+        for offset, line in enumerate(fence.group(1).splitlines()):
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            found.append((start + offset, stripped, True))
+    out = []
+    for number, value, from_fence in found:
+        klass = refs.classify(value, file_rel) if from_fence \
+            else classify_candidate(value, file_rel, refs)
+        if klass is None:
+            continue
+        out.append({"file": file_rel, "line": number, "ref": value.strip(), "class": klass})
+    return out
+
+
+def classify_candidate(value, file_rel, refs):
+    stripped = value.strip()
+    if not stripped:
+        return None
+    if " " in stripped and not probable_command(stripped):
+        return None
+    klass = refs.classify(stripped, file_rel)
+    if klass == "unverified" and " " not in stripped and not looks_like_path(stripped):
+        return None
+    return klass
+
+
+def collect_references(repo, entries):
+    refs = References(repo.root)
+    results = []
+    for entry in entries:
+        if entry.get("link"):
+            continue
+        path = repo.root / entry["path"]
+        try:
+            text = path.read_text("utf-8", "replace")
+        except OSError:
+            continue
+        results.extend(references_in(text, entry["path"], refs))
+    return results
+
+
+LEAD_KEYS = ("gaps", "entries", "items", "leads")
+ALL_PROJECT = {"all", "all-project", "allprojects", "*", ""}
+V1_KEYS = {"version", "domain", "project", "scope", "instruction", "proposedInstruction",
+           "text", "source", "sessions", "count", "id", "title", "kind"}
+
+
+def read_backpass(repo):
+    notes = []
+    leads = []
+    candidates = []
+    main = repo.main_checkout()
+    base = main / ".backpass"
+    if not base.exists():
+        return {"leads": [], "user_global_candidates": [], "notes": []}
+    for name in ("gap-ledger.json", "evidence-summary.json"):
+        path = base / name
+        if not path.is_file():
+            continue
+        try:
+            data = json.loads(path.read_text("utf-8", "replace"))
+        except (OSError, ValueError):
+            notes.append("%s: unreadable" % name)
+            continue
+        if not isinstance(data, dict) or data.get("version") != 1:
+            notes.append("%s: unsupported version" % name)
+            continue
+        entries = []
+        for key in LEAD_KEYS:
+            value = data.get(key)
+            if isinstance(value, list):
+                entries = value
+                break
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            domain = entry.get("domain", entry.get("project", entry.get("scope", "all")))
+            domain = str(domain).strip().lower() if domain is not None else ""
+            text = (entry.get("proposedInstruction") or entry.get("instruction")
+                    or entry.get("text") or "")
+            if not isinstance(text, str) or not text.strip():
+                continue
+            source = entry.get("source")
+            transcript = ""
+            if isinstance(source, str):
+                transcript = source.split(":", 1)[-1]
+            count = entry.get("sessions", entry.get("count"))
+            if isinstance(count, list):
+                count = len(count)
+            if not isinstance(count, int):
+                count = 0
+            item = {"proposedInstruction": redact(text.strip()), "sessions": count,
+                    "transcript": transcript, "unverified": True}
+            if domain in ALL_PROJECT:
+                leads.append(item)
+            else:
+                candidates.append(item)
+    return {"leads": leads, "user_global_candidates": candidates, "notes": notes}
+
+
+def check_command(repo_path):
+    try:
+        repo = Repo(repo_path)
+    except (OSError, ValueError):
+        return EXIT_INVALID, {"version": 1, "command": "check", "status": "invalid",
+                              "error": "repository is not usable"}
+    entries = surface_entries(repo.root)
+    report = {
+        "version": 1,
+        "command": "check",
+        "status": "ok",
+        "repo": {"id": repo.id, "kind": "git" if repo.is_git else "dir",
+                 "head": repo.head, "default_branch": repo.default_branch},
+        "delivery": delivery_state(repo, entries),
+        "budget": budget_report(repo.root),
+        "import": check_imports(repo),
+        "references": [{**item, "ref": redact(item["ref"])}
+                       for item in collect_references(repo, entries)],
+    }
+    backpass = read_backpass(repo)
+    report["leads"] = backpass["leads"]
+    report["user_global_candidates"] = backpass["user_global_candidates"]
+    if backpass["notes"]:
+        report["notes"] = backpass["notes"]
+    return EXIT_OK, report
+
+
+def stage_command(repo_path, out_path):
+    try:
+        repo = Repo(repo_path)
+    except (OSError, ValueError):
+        return EXIT_INVALID, {"version": 1, "command": "stage", "status": "invalid",
+                              "error": "repository is not usable"}
+    out = Path(out_path)
+    if os.path.lexists(str(out)):
+        return EXIT_INVALID, {"version": 1, "command": "stage", "status": "invalid",
+                              "error": "stage path already exists"}
+    if not outside_worktree(out):
+        return EXIT_INVALID, {"version": 1, "command": "stage", "status": "invalid",
+                              "error": "stage path is inside a git worktree"}
+    entries = surface_entries(repo.root)
+    try:
+        os.makedirs(str(out), mode=0o700)
+        os.chmod(str(out), 0o700)
+        (out / "base").mkdir(mode=0o700)
+        (out / "proposed").mkdir(mode=0o700)
+        for entry in entries:
+            if entry.get("link") is not None:
+                continue
+            source = repo.root / entry["path"]
+            for folder in ("base", "proposed"):
+                target = out / folder / entry["path"]
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(str(source), str(target))
+                os.chmod(str(target), entry.get("mode", 0o644))
+        manifest = {
+            "version": 1,
+            "repo": {"id": repo.id, "root": str(repo.root), "head": repo.head,
+                     "default_branch": repo.default_branch},
+            "delivery": delivery_state(repo, entries),
+            "files": entries,
+        }
+        (out / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+                                           encoding="utf-8")
+    except OSError as exc:
+        return EXIT_INVALID, {"version": 1, "command": "stage", "status": "invalid",
+                              "error": "cannot create stage: %s" % exc}
+    return EXIT_OK, {"version": 1, "command": "stage", "status": "ok",
+                     "stage": str(out), "files": [entry["path"] for entry in entries]}
+
+
+def load_manifest(stage):
+    path = Path(stage) / "manifest.json"
+    if not path.is_file() or path.is_symlink():
+        return None
+    try:
+        data = json.loads(path.read_text("utf-8", "replace"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict) or not isinstance(data.get("files"), list):
+        return None
+    return data
+
+
+def invalid(command, message):
+    return EXIT_INVALID, {"version": 1, "command": command, "status": "invalid",
+                          "error": message}
+
+
+def blocked(command, findings, status="blocked", **extra):
+    payload = {"version": 1, "command": command, "status": status, "findings": findings}
+    payload.update(extra)
+    return EXIT_BLOCKED, payload
+
+
+CLAIM_KEYS = {"id", "type", "file", "removed", "added", "basis", "citations", "proof",
+              "trail", "target"}
+CLAIM_TYPES = {"Fix", "Add", "Remove", "Compress", "Move"}
+CITATION_KEYS = {"session", "quote"}
+EXPLAINED_KEYS = {"file", "ref", "reason"}
+
+
+def normalize_claims(data):
+    if not isinstance(data, dict):
+        return None, "claims must be a JSON object"
+    if data.get("version") != 1:
+        return None, "unsupported claims version"
+    claims = data.get("claims")
+    if not isinstance(claims, list):
+        return None, "claims must be a list"
+    for claim in claims:
+        if not isinstance(claim, dict):
+            return None, "claim must be an object"
+        for key in claim:
+            if key not in CLAIM_KEYS:
+                return None, "unknown claim key: %s" % key
+        if claim.get("type") not in CLAIM_TYPES:
+            return None, "unknown claim type: %s" % claim.get("type")
+        if not isinstance(claim.get("file"), str):
+            return None, "claim file must be a string"
+        for key in ("removed", "added"):
+            value = claim.get(key, [])
+            if not isinstance(value, list) or any(not isinstance(v, str) for v in value):
+                return None, "claim %s must be a list of lines" % key
+        citations = claim.get("citations", [])
+        if not isinstance(citations, list):
+            return None, "claim citations must be a list"
+        for citation in citations:
+            if not isinstance(citation, dict):
+                return None, "citation must be an object"
+            for key in citation:
+                if key not in CITATION_KEYS:
+                    return None, "unknown citation key: %s" % key
+        proof = claim.get("proof")
+        if proof is not None and not isinstance(proof, dict):
+            return None, "claim proof must be an object"
+    explained = data.get("explained_stale", [])
+    if not isinstance(explained, list):
+        return None, "explained_stale must be a list"
+    for item in explained:
+        if not isinstance(item, dict) or set(item) - EXPLAINED_KEYS:
+            return None, "unknown explained_stale key"
+    for key in data:
+        if key not in ("version", "claims", "explained_stale"):
+            return None, "unknown claims key: %s" % key
+    return data, None
+
+
+def evidence_index(evidence):
+    index = {}
+    for session in evidence.get("sessions") or []:
+        if not isinstance(session, dict):
+            continue
+        sid = session.get("id")
+        if isinstance(sid, str):
+            index[sid] = session
+    return index
+
+
+def quote_problem(citation, index):
+    session_id = citation.get("session")
+    quote = citation.get("quote")
+    if not isinstance(session_id, str) or not isinstance(quote, str):
+        return "citation needs a session and a quote"
+    folded = fold(quote)
+    if len(folded) < 12 or len(folded.split()) < 3:
+        return "quote is too short"
+    if "..." in quote or "…" in quote:
+        return "quote is elided"
+    if "[REDACTED]" in quote.upper() or "REDACT" in quote.upper():
+        return "quote contains a redaction marker"
+    session = index.get(session_id)
+    if session is None:
+        return "quote cites an unknown session"
+    for message in session.get("human") or []:
+        text = message.get("text")
+        if isinstance(text, str) and folded in fold(text):
+            if message.get("correction") or is_correction(text):
+                return None
+            return None
+    return "quote is not in one human message of that session"
+
+
+def quote_matches(citation, index):
+    """Return (session, matched_messages) when the quote passes, else (None, [])."""
+    if quote_problem(citation, index) is not None:
+        return None, []
+    quote = fold(citation["quote"])
+    session = index[citation["session"]]
+    matched = [message for message in session.get("human") or []
+               if isinstance(message.get("text"), str) and quote in fold(message["text"])]
+    return session, matched
+
+
+STOPWORDS = {"the", "and", "that", "this", "with", "from", "into", "have", "will", "your",
+             "their", "they", "them", "then", "than", "when", "what", "where", "which",
+             "there", "here", "been", "being", "were", "was", "are", "for", "not", "but",
+             "you", "our", "its", "it's", "can", "should", "would", "could", "does",
+             "don't", "do", "doesn't", "about", "after", "before", "over", "under", "also",
+             "just", "only", "very", "more", "most", "some", "any", "all", "each", "every"}
+
+
+def content_words(text):
+    return {word.lower() for word in re.findall(r"[A-Za-z]{4,}", text)
+            if word.lower() not in STOPWORDS}
+
+
+def anchor_refs(text, file_rel, refs):
+    anchors = set()
+    for line in text.splitlines():
+        for match in BACKTICK.finditer(line):
+            if classify_candidate(match.group(1), file_rel, refs) in ("ok", "scoped"):
+                anchors.add(strip_reference(match.group(1)))
+    return anchors
+
+
+def related_to_lines(quote, lines, file_rel, refs):
+    joined = " ".join(lines)
+    if anchor_refs(quote, file_rel, refs) & anchor_refs(joined, file_rel, refs):
+        return True
+    return len(content_words(quote) & content_words(joined)) >= 2
+
+
+PROTECTED = re.compile(
+    r"(?i)\b(never|must not|do not|don't|always|secret|credential|password|token|auth|"
+    r"permission|security|safety|production|deploy|migration|destructive|force-push|"
+    r"billing|payment|privacy|boundary|ask first)\b")
+HEADING = re.compile(r"^\s{0,3}#{1,6}\s")
+MODEL_NAME = re.compile(
+    r"(?i)\b(claude|anthropic|openai|gpt|gemini|deepseek|opus|sonnet|haiku|cursor|"
+    r"copilot|codex|opencode|chatgpt|windsurf)\b")
+EVERY_REPO = re.compile(
+    r"(?i)\b(every|all|any)\s+(repo|repository|project)s?\b|\bacross\s+projects?\b|"
+    r"\bglobally\b")
+STYLE = re.compile(r"(?i)\b(response style|tone|be concise|be verbose|reply|respond)\b")
+INLINE_CODE_SPAN = re.compile(r"`[^`]*`")
+
+
+def protected_lines(text):
+    marked = []
+    heading_protected = False
+    for line in text.splitlines():
+        if HEADING.match(line):
+            heading_protected = bool(PROTECTED.search(line))
+        marked.append(heading_protected or bool(PROTECTED.search(line)))
+    return marked
+
+
+def user_global(line, file_rel, refs):
+    stripped = INLINE_CODE_SPAN.sub(" ", line)
+    if MODEL_NAME.search(stripped) or EVERY_REPO.search(stripped) or STYLE.search(stripped):
+        return True
+    for match in BACKTICK.finditer(line):
+        value = match.group(1).strip()
+        if refs.classify(value, file_rel) in ("ok", "scoped"):
+            return False
+        proc = run_git(["grep", "-F", "-e", value, "--"], refs.root)
+        if value and proc is not None and proc.returncode == 0 and proc.stdout.strip():
+            return False
+    return True
+
+
+def diff_lines(base_text, proposed_text):
+    base = base_text.splitlines()
+    proposed = proposed_text.splitlines()
+    matcher = difflib.SequenceMatcher(None, base, proposed, autojunk=False)
+    removed, added = [], []
+    hunks = []
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == "equal":
+            continue
+        removed.extend(base[i1:i2])
+        added.extend(proposed[j1:j2])
+        hunks.append((tag, base[i1:i2], proposed[j1:j2]))
+    return removed, added, hunks, base, proposed
+
+
+def read_stage_file(stage, folder, rel):
+    path = Path(stage) / folder / rel
+    if not path.exists():
+        return ""
+    return path.read_text("utf-8", "replace")
+
+
+def proposed_paths(stage):
+    root = Path(stage) / "proposed"
+    found = []
+    for dirpath, dirnames, filenames in os.walk(str(root)):
+        for name in filenames:
+            path = Path(dirpath) / name
+            found.append(os.path.relpath(str(path), str(root)).replace(os.sep, "/"))
+    return sorted(found)
+
+
+def check_evidence_file(path, repo_id):
+    target = Path(path)
+    if not target.is_file() or target.is_symlink():
+        return "evidence must be a regular file"
+    if not outside_worktree(target):
+        return "evidence is inside a git worktree"
+    try:
+        mode = stat.S_IMODE(target.stat().st_mode)
+    except OSError:
+        return "evidence is unreadable"
+    if mode != 0o600:
+        return "evidence mode must be 0600"
+    try:
+        data = json.loads(target.read_text("utf-8", "replace"))
+    except (OSError, ValueError):
+        return "evidence is not valid JSON"
+    if not isinstance(data, dict) or data.get("version") != 1:
+        return "evidence version must be 1"
+    if data.get("repo_id") != repo_id:
+        return "evidence repo_id does not match the stage"
+    return None
+
+
+def check_claims_file(path):
+    target = Path(path)
+    if not target.is_file() or target.is_symlink():
+        return "claims must be a regular file"
+    if not outside_worktree(target):
+        return "claims are inside a git worktree"
+    try:
+        return json.loads(target.read_text("utf-8", "replace"))
+    except (OSError, ValueError):
+        return None
+
+
+def move_target_problem(claim, root, proposed_root):
+    target = claim.get("target")
+    if not isinstance(target, str) or not target:
+        return "Move claim needs a target"
+    target = normalize_rel(target)
+    if ".." in Path(target).parts or os.path.isabs(target):
+        return "Move target is not a safe relative path"
+    if not is_surface_path(target, root):
+        return "Move target is not a surface path"
+    if not (Path(proposed_root) / target).is_file():
+        return "Move target is missing from the stage"
+    return None
+
+
+def validate_gate(stage_path, evidence_path, claims_path):
+    stage = Path(stage_path)
+    manifest = load_manifest(stage)
+    if manifest is None:
+        return invalid("gate", "stage manifest is missing or unreadable")
+    stage_repo = manifest.get("repo") or {}
+    repo_id = stage_repo.get("id")
+    repo_root = stage_repo.get("root")
+    if not isinstance(repo_id, str) or not isinstance(repo_root, str):
+        return invalid("gate", "stage manifest has no repo id or root")
+    repo_root = Path(repo_root)
+    evidence_problem = check_evidence_file(evidence_path, repo_id)
+    if evidence_problem:
+        return invalid("gate", evidence_problem)
+    raw_claims = check_claims_file(claims_path)
+    if raw_claims is None:
+        return invalid("gate", "claims are not valid JSON")
+    claims, problem = normalize_claims(raw_claims)
+    if problem:
+        finding = _finding(None, "", "claim_schema", problem)
+        gate = {"version": 1, "status": "blocked", "findings": [finding], "reported": [],
+                "hashes": {}, "inputs": {}}
+        try:
+            (stage / "gate.json").write_text(
+                json.dumps(gate, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        except OSError:
+            pass
+        return EXIT_BLOCKED, {"version": 1, "command": "gate", "status": "blocked",
+                              "findings": [finding]}
+    try:
+        evidence = json.loads(Path(evidence_path).read_text("utf-8", "replace"))
+    except (OSError, ValueError):
+        return invalid("gate", "evidence is not valid JSON")
+    index = evidence_index(evidence)
+
+    files = {entry["path"]: entry for entry in manifest["files"]}
+    proposed = proposed_paths(stage)
+    for rel in proposed:
+        if os.path.isabs(rel) or ".." in Path(rel).parts:
+            return invalid("gate", "proposed path is absolute or escapes the stage")
+        if not is_surface_path(rel, repo_root):
+            return invalid("gate", "proposed path is not a surface path: %s" % rel)
+        if os.path.islink(str(Path(stage) / "proposed" / rel)):
+            return invalid("gate", "proposed path is a symlink: %s" % rel)
+    for claim in claims["claims"]:
+        rel = str(claim["file"]).replace(os.sep, "/")
+        if not is_surface_path(rel, repo_root):
+            return invalid("gate", "claim names a non-surface file: %s" % rel)
+
+    refs = References(repo_root)
+    budget_base = _stage_budget(stage, "base", repo_root)
+    budget_proposed = _stage_budget(stage, "proposed", repo_root)
+
+    findings = []
+    reported = []
+    expected_removed, expected_added = _expected_lines(claims["claims"])
+    allowed = _allowed_extras(claims["claims"], stage)
+    move_targets = {normalize_rel(claim.get("target") or "")
+                    for claim in claims["claims"] if claim.get("type") == "Move"}
+
+    changed_files = []
+    for rel in sorted(set(files) | set(proposed)):
+        entry = files.get(rel)
+        if entry and entry.get("link"):
+            live = repo_root / rel
+            proposed_copy = Path(stage) / "proposed" / rel
+            if proposed_copy.exists() and \
+                    digest_file(proposed_copy) != digest_file(live):
+                findings.append(_finding(None, rel, "symlink_edit",
+                                         "a symlinked surface file must not be edited"))
+            continue
+        base_text = read_stage_file(stage, "base", rel) if entry else ""
+        proposed_text = read_stage_file(stage, "proposed", rel)
+        _check_existing_stale(rel, base_text, claims, refs, findings, reported)
+        if base_text == proposed_text:
+            continue
+        changed_files.append(rel)
+        removed, added, _hunks, _base, _proposed = diff_lines(base_text, proposed_text)
+        _compare_lines(rel, removed, expected_removed.get(rel, []),
+                       allowed.get(rel, []), findings, "removed")
+        _compare_lines(rel, added, expected_added.get(rel, []),
+                       allowed.get(rel, []), findings, "added",
+                       allow_extra=rel in move_targets)
+        _check_added_references(rel, added, refs, findings,
+                                shell_fence_lines(proposed_text))
+
+    for rel in sorted(set(expected_removed) | set(expected_added)):
+        if rel and rel not in files and rel not in proposed:
+            findings.append(_finding(None, rel, "unknown_file",
+                                     "claim names a file outside the surface"))
+        base_lines = read_stage_file(stage, "base", rel).splitlines()
+        proposed_lines = read_stage_file(stage, "proposed", rel).splitlines()
+        for line in expected_removed.get(rel, []):
+            if line not in base_lines:
+                findings.append(_finding(None, rel, "phantom_line",
+                                         "claim removed line is not in the base"))
+        for line in expected_added.get(rel, []):
+            if line not in proposed_lines:
+                findings.append(_finding(None, rel, "phantom_line",
+                                         "claim added line is not in the proposed file"))
+
+    add_remove = sum(1 for claim in claims["claims"]
+                     if claim.get("type") in ("Add", "Remove"))
+    if add_remove > 5:
+        findings.append(_finding(None, "", "too_many_claims",
+                                 "more than five Add and Remove claims"))
+
+    if budget_base["over"] and budget_proposed["tokens"] >= budget_base["tokens"]:
+        findings.append(_finding(None, "", "budget_not_smaller",
+                                 "an over-budget surface must end strictly smaller"))
+    if not budget_base["over"] and budget_proposed["over"]:
+        findings.append(_finding(None, "", "budget_over",
+                                 "the edit ends over the token cap"))
+
+    for claim in claims["claims"]:
+        findings.extend(_check_claim(claim, stage, claims, index, repo_root,
+                                     budget_base))
+
+    if findings:
+        status = "blocked"
+    elif not changed_files and not claims["claims"]:
+        status = "no_change"
+    else:
+        status = "pass"
+
+    hashes = {
+        "stage": digest_file(Path(stage) / "manifest.json"),
+        "base": tree_digest(Path(stage) / "base"),
+        "proposed": tree_digest(Path(stage) / "proposed"),
+        "claims": digest_file(claims_path),
+        "evidence": digest_file(evidence_path),
+    }
+    user_global = [{"claim": finding.get("claim"), "file": finding.get("file")}
+                   for finding in findings if finding.get("code") == "user_global"]
+    gate = {"version": 1, "status": status, "findings": findings, "reported": reported,
+            "user_global": user_global, "hashes": hashes,
+            "inputs": {"claims": str(claims_path), "evidence": str(evidence_path)}}
+    try:
+        (Path(stage) / "gate.json").write_text(json.dumps(gate, indent=2, sort_keys=True) + "\n",
+                                               encoding="utf-8")
+    except OSError as exc:
+        return invalid("gate", "cannot write gate.json: %s" % exc)
+    code = EXIT_OK if status in ("pass", "no_change") else EXIT_BLOCKED
+    payload = {"version": 1, "command": "gate", "status": status, "findings": findings,
+               "reported": reported, "user_global": user_global, "hashes": hashes}
+    return code, payload
+
+
+def _stage_budget(stage, folder, repo_root):
+    root = Path(stage) / folder
+    total = 0
+    for rel in ("AGENTS.md", "CLAUDE.md"):
+        path = root / rel
+        if path.is_file():
+            total += len(path.read_bytes())
+    skills = root / skills_dir(repo_root)
+    if skills.is_dir():
+        for child in sorted(skills.iterdir()):
+            manifest = child / "SKILL.md"
+            if manifest.is_file():
+                total += len(frontmatter_description(
+                    manifest.read_text("utf-8", "replace")).encode("utf-8"))
+    cap = budget_report(repo_root)["cap"]
+    tokens = int(math.ceil(total / 4.0))
+    return {"tokens": tokens, "over": tokens > cap, "cap": cap}
+
+
+def _finding(claim, file_rel, code, message):
+    return {"claim": claim, "file": file_rel, "code": code, "message": message}
+
+
+def _expected_lines(claims):
+    removed, added = {}, {}
+    for claim in claims:
+        rel = str(claim.get("file", "")).replace(os.sep, "/")
+        removed.setdefault(rel, []).extend(claim.get("removed") or [])
+        if claim.get("type") == "Move":
+            target = normalize_rel(claim.get("target") or "")
+            added.setdefault(target, []).extend(
+                claim.get("added") or claim.get("removed") or [])
+        else:
+            added.setdefault(rel, []).extend(claim.get("added") or [])
+    return removed, added
+
+
+def _allowed_extras(claims, stage):
+    """Lines a Move may add around the moved body without a second claim."""
+    extras = {}
+    for claim in claims:
+        if claim.get("type") != "Move":
+            continue
+        target = normalize_rel(claim.get("target") or "")
+        if not target:
+            continue
+        if target.endswith("SKILL.md"):
+            lines = read_stage_file(stage, "proposed", target).splitlines()
+            if lines and lines[0].strip() == "---":
+                for index in range(1, len(lines)):
+                    if lines[index].strip() == "---":
+                        extras.setdefault(target, []).extend(lines[: index + 1])
+                        break
+        directory = os.path.dirname(target)
+        if directory:
+            extras.setdefault(directory + "/CLAUDE.md", []).append("@AGENTS.md")
+    return extras
+
+
+def _compare_lines(rel, actual, expected, extras, findings, label, allow_extra=False):
+    counter = Counter(actual)
+    expected_counter = Counter(expected)
+    extra_counter = Counter(extras)
+    if allow_extra:
+        return
+    if counter - expected_counter - extra_counter:
+        findings.append(_finding(None, rel, "unmapped_hunk",
+                                 "%s lines are not mapped to a claim" % label))
+
+
+def _check_added_references(rel, added, refs, findings, command_lines=()):
+    for line in added:
+        if not line.strip():
+            continue
+        if line.strip() in command_lines:
+            klass = refs.classify(line.strip(), rel)
+            if klass in ("stale", "unverified"):
+                findings.append(_finding(None, rel, "reference_" + klass,
+                                         "added line has a %s reference" % klass))
+            continue
+        for match in BACKTICK.finditer(line):
+            klass = classify_candidate(match.group(1), rel, refs)
+            if klass in ("stale", "unverified"):
+                findings.append(_finding(None, rel, "reference_" + klass,
+                                         "added line has a %s reference" % klass))
+        for match in LINK.finditer(line):
+            klass = classify_candidate(match.group(1), rel, refs)
+            if klass in ("stale", "unverified"):
+                findings.append(_finding(None, rel, "reference_" + klass,
+                                         "added line has a %s reference" % klass))
+
+
+def _check_existing_stale(rel, base_text, claims, refs, findings, reported):
+    fixed = set()
+    for claim in claims["claims"]:
+        if claim.get("type") in ("Fix", "Remove", "Compress", "Move"):
+            fixed.update(claim.get("removed") or [])
+    explained_refs = set()
+    for item in claims["explained_stale"]:
+        explained_refs.add((str(item.get("file")).replace(os.sep, "/"),
+                            strip_reference(str(item.get("ref")))))
+    lines = base_text.splitlines()
+    for item in references_in(base_text, rel, refs):
+        if item["class"] != "stale":
+            reported.append({"file": rel, "line": item["line"],
+                             "ref": redact(item["ref"]), "class": item["class"]})
+            continue
+        line = lines[item["line"] - 1] if item["line"] - 1 < len(lines) else ""
+        if line in fixed:
+            continue
+        if (rel, strip_reference(item["ref"])) in explained_refs:
+            continue
+        findings.append(_finding(None, rel, "existing_stale",
+                                 "existing stale reference is neither fixed nor explained"))
+
+
+def _check_claim(claim, stage, claims, index, root, budget_base):
+    findings = []
+    rel = str(claim.get("file")).replace(os.sep, "/")
+    kind = claim.get("type")
+    refs = References(root)
+
+    if kind == "Fix":
+        basis = claim.get("basis")
+        if basis == "reference":
+            if len(claim.get("removed") or []) != len(claim.get("added") or []):
+                findings.append(_finding(claim.get("id"), rel, "fix_line_count",
+                                         "reference Fix needs the same line count"))
+            for removed, added in zip(claim.get("removed") or [], claim.get("added") or []):
+                stale = [item for item in references_in(removed, rel, refs)
+                         if item["class"] == "stale"]
+                if not stale:
+                    findings.append(_finding(claim.get("id"), rel, "fix_not_stale",
+                                             "removed line has no stale reference"))
+                if _without_refs(removed) != _without_refs(added):
+                    findings.append(_finding(claim.get("id"), rel, "fix_mismatch",
+                                             "line does not match its replacement"))
+        elif basis == "import":
+            if not rel.endswith("CLAUDE.md"):
+                findings.append(_finding(claim.get("id"), rel, "import_target",
+                                         "import Fix must repair CLAUDE.md"))
+            agents = read_stage_file(stage, "proposed", "AGENTS.md")
+            for line in claim.get("removed") or []:
+                if line not in agents.splitlines():
+                    findings.append(_finding(claim.get("id"), rel, "import_missing_line",
+                                             "removed line is not in proposed AGENTS.md"))
+        else:
+            findings.append(_finding(claim.get("id"), rel, "fix_basis",
+                                     "unknown Fix basis"))
+
+    elif kind == "Add":
+        added = claim.get("added") or []
+        for line in added:
+            if not line.strip():
+                continue
+            if user_global(line, rel, refs):
+                findings.append(_finding(claim.get("id"), rel, "user_global",
+                                         "added line is user-global and never written"))
+        if not _add_supported(claim, index, rel, added, root):
+            findings.append(_finding(claim.get("id"), rel, "add_unsupported",
+                                     "Add claim has no passing evidence"))
+        for citation in claim.get("citations") or []:
+            quote = citation.get("quote")
+            if isinstance(quote, str):
+                for line in added:
+                    if fold(quote) and fold(quote) in fold(line):
+                        findings.append(_finding(claim.get("id"), rel, "quote_verbatim",
+                                                 "an added line repeats a cited quote"))
+
+    elif kind == "Remove":
+        basis = claim.get("basis")
+        removed = claim.get("removed") or []
+        base_text = read_stage_file(stage, "base", rel)
+        marked = protected_lines(base_text)
+        line_numbers = {line: i for i, line in enumerate(base_text.splitlines())}
+        for line in removed:
+            position = line_numbers.get(line)
+            if position is not None and marked[position]:
+                findings.append(_finding(claim.get("id"), rel, "remove_protected",
+                                         "protected boundary line cannot be removed"))
+        if basis == "repo_disproof":
+            stale = False
+            for line in removed:
+                if any(item["class"] == "stale" for item in references_in(line, rel, refs)):
+                    stale = True
+            if not stale:
+                findings.append(_finding(claim.get("id"), rel, "remove_unsupported",
+                                         "Remove needs a checker-confirmed stale reference"))
+        elif basis == "corroborated_harm":
+            if not _corroborated(claim, index, rel, removed, refs):
+                findings.append(_finding(claim.get("id"), rel, "remove_unsupported",
+                                         "Remove needs correction quotes from two sessions"))
+        else:
+            findings.append(_finding(claim.get("id"), rel, "remove_basis",
+                                     "Remove basis is not allowed"))
+
+    elif kind == "Compress":
+        if not budget_base["over"]:
+            findings.append(_finding(claim.get("id"), rel, "compress_under_budget",
+                                     "Compress is only allowed when the surface is over budget"))
+        base_text = read_stage_file(stage, "base", rel)
+        proposed_text = read_stage_file(stage, "proposed", rel)
+        if len(proposed_text.encode("utf-8")) >= len(base_text.encode("utf-8")):
+            findings.append(_finding(claim.get("id"), rel, "compress_not_smaller",
+                                     "Compress must shrink the file"))
+        for token in _kept_tokens(base_text) - _kept_tokens(proposed_text):
+            findings.append(_finding(claim.get("id"), rel, "compress_lost_token",
+                                     "Compress dropped a token, path, number or directive"))
+
+    elif kind == "Move":
+        problem = move_target_problem(claim, root, Path(stage) / "proposed")
+        if problem:
+            findings.append(_finding(claim.get("id"), rel, "move_target", problem))
+            return findings
+        if not budget_base["over"]:
+            findings.append(_finding(claim.get("id"), rel, "move_under_budget",
+                                     "Move is only allowed when the surface is over budget"))
+        target = normalize_rel(claim["target"])
+        base_text = read_stage_file(stage, "base", rel)
+        marked = protected_lines(base_text)
+        positions = {line: i for i, line in enumerate(base_text.splitlines())}
+        for line in claim.get("removed") or []:
+            position = positions.get(line)
+            if position is not None and marked[position]:
+                findings.append(_finding(claim.get("id"), rel, "move_protected",
+                                         "protected boundary line cannot move"))
+        target_text = read_stage_file(stage, "proposed", target)
+        moved = list(claim.get("removed") or [])
+        if moved and "\n".join(moved) not in target_text:
+            findings.append(_finding(claim.get("id"), rel, "move_not_identical",
+                                     "moved lines must stay byte-identical and in order"))
+        if target.endswith("SKILL.md"):
+            expected = skills_dir(root) + "/"
+            if not target.startswith(expected):
+                findings.append(_finding(claim.get("id"), rel, "move_target",
+                                         "a procedure moves only into a project skill"))
+        else:
+            target_dir = os.path.dirname(target)
+            for line in moved:
+                for item in references_in(line, rel, refs):
+                    if item["class"] in ("ok", "scoped") and target_dir and \
+                            not item["ref"].startswith(target_dir):
+                        findings.append(_finding(claim.get("id"), rel, "move_wrong_subtree",
+                                                 "moved line covers a path outside the target"))
+            bridge = Path(stage) / "proposed" / target_dir / "CLAUDE.md" if target_dir else None
+            if bridge is None or not bridge.is_file() or \
+                    [ln.strip() for ln in bridge.read_text("utf-8", "replace").splitlines()
+                     if ln.strip()] != ["@AGENTS.md"]:
+                findings.append(_finding(claim.get("id"), rel, "move_missing_bridge",
+                                         "target directory needs a one-line @AGENTS.md bridge"))
+    return findings
+
+
+def _without_refs(line):
+    line = BACKTICK.sub("", line)
+    line = re.sub(r"\]\([^)]*\)", "]", line)
+    return line.strip()
+
+
+def _kept_tokens(text):
+    tokens = set()
+    tokens.update(m.group(1) for m in BACKTICK.finditer(text))
+    tokens.update(re.findall(r"\b\d+(?:\.\d+)?\b", text))
+    tokens.update(word.lower() for word in
+                  re.findall(r"(?i)\b(?:never|must|always|do not|don't|only|shall|"
+                             r"required|cannot|may not)\b", text))
+    return {token for token in tokens if token}
+
+
+def _corroborated(claim, index, rel, lines, refs):
+    groups = set()
+    messages = set()
+    count = 0
+    for citation in claim.get("citations") or []:
+        session, matched = quote_matches(citation, index)
+        if session is None or not matched:
+            continue
+        if not related_to_lines(citation["quote"], lines, rel, refs):
+            continue
+        group = session.get("group") or session.get("id")
+        ids = {message.get("msg") for message in matched}
+        if group in groups or (ids & messages):
+            continue
+        groups.add(group)
+        messages |= ids
+        if all(message.get("correction") or is_correction(str(message.get("text") or ""))
+               for message in matched):
+            count += 1
+    return count >= 2
+
+
+def _add_supported(claim, index, rel, added, root):
+    basis = claim.get("basis")
+    refs = References(root)
+    if basis == "sessions":
+        sessions = set()
+        messages = set()
+        for citation in claim.get("citations") or []:
+            session, matched = quote_matches(citation, index)
+            if session is None or not matched:
+                continue
+            if not related_to_lines(citation["quote"], added, rel, refs):
+                continue
+            group = session.get("group") or session.get("id")
+            ids = {message.get("msg") for message in matched}
+            if group in sessions or (ids & messages):
+                continue
+            sessions.add(group)
+            messages |= ids
+        return len(sessions) >= 2
+    if basis == "correction":
+        for citation in claim.get("citations") or []:
+            session, matched = quote_matches(citation, index)
+            if session is None or not matched:
+                continue
+            if not any(message.get("correction")
+                       or is_correction(str(message.get("text") or ""))
+                       for message in matched):
+                continue
+            if not related_to_lines(citation["quote"], added, rel, refs):
+                continue
+            if anchor_refs(citation["quote"], rel, refs) & anchor_refs(" ".join(added), rel, refs):
+                return True
+        return False
+    if basis == "repo_proof":
+        proof = claim.get("proof") or {}
+        target = proof.get("file")
+        needle = proof.get("contains")
+        if not isinstance(target, str) or not isinstance(needle, str) or not needle:
+            return False
+        tracked = set(refs.tracked)
+        target = normalize_rel(target)
+        if target not in tracked:
+            return False
+        if not any(needle in line for line in added):
+            return False
+        try:
+            content = (root / target).read_text("utf-8", "replace")
+        except OSError:
+            return False
+        return needle in content
+    if basis == "trail":
+        trail = claim.get("trail")
+        if isinstance(trail, dict):
+            path = trail.get("file")
+            scope = trail.get("scope")
+        else:
+            path, scope = trail, "repo"
+        if not isinstance(path, str) or scope != "repo":
+            return False
+        candidate = root / normalize_rel(path)
+        if not candidate.is_file():
+            return False
+        try:
+            text = candidate.read_text("utf-8", "replace")
+        except OSError:
+            return False
+        return bool(re.search(r"(?im)^status:\s*active\s*$", text)) and \
+            bool(re.search(r"(?im)^scope:\s*repo\s*$", text))
+    return False
+
+
+def apply_command(stage_path):
+    stage = Path(stage_path)
+    manifest = load_manifest(stage)
+    if manifest is None:
+        return invalid("apply", "stage manifest is missing or unreadable")
+    gate_path = stage / "gate.json"
+    if not gate_path.is_file() or gate_path.is_symlink():
+        return invalid("apply", "gate.json is missing")
+    try:
+        gate = json.loads(gate_path.read_text("utf-8", "replace"))
+    except (OSError, ValueError):
+        return invalid("apply", "gate.json is not valid JSON")
+    status = gate.get("status")
+    if status == "no_change":
+        return EXIT_OK, {"version": 1, "command": "apply", "status": "no_change"}
+    if status != "pass":
+        return EXIT_BLOCKED, {"version": 1, "command": "apply", "status": "blocked",
+                              "error": "gate did not pass"}
+    hashes = gate.get("hashes") or {}
+    current = {
+        "stage": digest_file(stage / "manifest.json"),
+        "base": tree_digest(stage / "base"),
+        "proposed": tree_digest(stage / "proposed"),
+    }
+    for key, value in current.items():
+        if hashes.get(key) != value:
+            return EXIT_BLOCKED, {"version": 1, "command": "apply", "status": "blocked",
+                                  "error": "stage hash mismatch: %s" % key}
+    inputs = gate.get("inputs") or {}
+    for key in ("claims", "evidence"):
+        recorded = hashes.get(key)
+        path = inputs.get(key)
+        if not isinstance(path, str) or digest_file(path) != recorded:
+            return EXIT_BLOCKED, {"version": 1, "command": "apply", "status": "blocked",
+                                  "error": "input hash mismatch: %s" % key}
+    repo_info = manifest.get("repo") or {}
+    raw_root = repo_info.get("root")
+    if not isinstance(raw_root, str) or not os.path.isabs(raw_root):
+        return invalid("apply", "stage has no live repository")
+    root = Path(raw_root)
+    if not root.is_dir():
+        return invalid("apply", "stage has no live repository")
+    return _apply_files(stage, manifest, root)
+
+
+def _apply_files(stage, manifest, root):
+    known = {entry["path"]: entry for entry in manifest.get("files", [])
+             if not entry.get("link")}
+    proposed = proposed_paths(stage)
+    surface = set(known) | set(proposed)
+    changed = []
+    for rel in sorted(surface):
+        prop_path = stage / "proposed" / rel
+        if not prop_path.is_file():
+            continue
+        base_sha = digest_file(stage / "base" / rel)
+        if base_sha == digest_file(prop_path):
+            continue
+        live = root / rel
+        if rel in known:
+            if not live.is_file() or digest_file(live) != base_sha:
+                return EXIT_BLOCKED, {"version": 1, "command": "apply",
+                                      "status": "concurrent_edit",
+                                      "error": "live file changed: %s" % rel}
+        elif os.path.lexists(str(live)):
+            return EXIT_BLOCKED, {"version": 1, "command": "apply",
+                                  "status": "concurrent_edit",
+                                  "error": "live file already exists: %s" % rel}
+        changed.append(rel)
+    live_dirty = status_paths(root) & surface
+    delivery = manifest.get("delivery") or {}
+    action = delivery.get("action")
+    if action == "worktree":
+        return EXIT_BLOCKED, {"version": 1, "command": "apply", "status": "wrong_checkout",
+                              "error": "the stage requires a linked worktree"}
+    if action == "patch_only" or live_dirty:
+        return _write_patch(stage, manifest, root)
+    return _write_in_place(stage, manifest, root, changed)
+
+
+def _write_patch(stage, manifest, root):
+    base = stage / "base"
+    proposed = stage / "proposed"
+    proc = run_git(["diff", "--no-index", "--no-color", "--", "base", "proposed"], stage)
+    if proc is None:
+        return invalid("apply", "cannot run git diff")
+    patch = proc.stdout
+    if not patch.strip():
+        return EXIT_OK, {"version": 1, "command": "apply", "status": "no_change"}
+    try:
+        (stage / "staged.patch").write_text(patch, encoding="utf-8")
+    except OSError as exc:
+        return invalid("apply", "cannot write staged.patch: %s" % exc)
+    return EXIT_OK, {"version": 1, "command": "apply", "status": "patched",
+                     "patch": str(stage / "staged.patch")}
+
+
+def _write_in_place(stage, manifest, root, changed):
+    known = {entry["path"]: entry for entry in manifest.get("files", [])}
+    written = []
+    try:
+        for rel in changed:
+            live = root / rel
+            proposed = stage / "proposed" / rel
+            live.parent.mkdir(parents=True, exist_ok=True)
+            existed = live.exists()
+            handle, temp = tempfile.mkstemp(prefix=".sync-", dir=str(live.parent))
+            os.close(handle)
+            shutil.copyfile(str(proposed), temp)
+            try:
+                os.chmod(temp, known.get(rel, {}).get("mode", 0o644))
+            except OSError:
+                pass
+            os.replace(temp, str(live))
+            written.append((rel, existed))
+    except OSError as exc:
+        for rel, existed in written:
+            live = root / rel
+            try:
+                if existed:
+                    shutil.copyfile(str(stage / "base" / rel), str(live))
+                    os.chmod(str(live), known.get(rel, {}).get("mode", 0o644))
+                else:
+                    lives = live
+                    if lives.exists():
+                        lives.unlink()
+            except OSError:
+                pass
+        return EXIT_BLOCKED, {"version": 1, "command": "apply", "status": "blocked",
+                              "error": "replacement failed: %s" % exc}
+    return EXIT_OK, {"version": 1, "command": "apply", "status": "applied",
+                     "files": list(changed)}
+
+
+def main(argv=None):
+    argv = list(sys.argv[1:] if argv is None else argv)
+    parser = argparse.ArgumentParser(prog="check_instructions.py")
+    sub = parser.add_subparsers(dest="command", required=True)
+    check = sub.add_parser("check")
+    check.add_argument("--repo", required=True)
+    check.add_argument("--json", action="store_true")
+    stage = sub.add_parser("stage")
+    stage.add_argument("--repo", required=True)
+    stage.add_argument("--out", required=True)
+    stage.add_argument("--json", action="store_true")
+    gate = sub.add_parser("gate")
+    gate.add_argument("--stage", required=True)
+    gate.add_argument("--evidence", required=True)
+    gate.add_argument("--claims", required=True)
+    gate.add_argument("--json", action="store_true")
+    apply_parser = sub.add_parser("apply")
+    apply_parser.add_argument("--stage", required=True)
+    apply_parser.add_argument("--json", action="store_true")
+    args = parser.parse_args(argv)
+
+    if args.command == "check":
+        code, payload = check_command(args.repo)
+    elif args.command == "stage":
+        code, payload = stage_command(args.repo, args.out)
+    elif args.command == "gate":
+        code, payload = validate_gate(args.stage, args.evidence, args.claims)
+    else:
+        code, payload = apply_command(args.stage)
+    sys.stdout.write(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    return code
+
+
+if __name__ == "__main__":
+    sys.exit(main())
