@@ -3,6 +3,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 import stat
 import subprocess
@@ -94,6 +95,13 @@ class CheckerCase(unittest.TestCase):
     def checker(self, *args, cwd=None):
         env = dict(os.environ)
         env.update({'GIT_CONFIG_GLOBAL': os.devnull, 'GIT_CONFIG_SYSTEM': os.devnull})
+        return subprocess.run([sys.executable, SCRIPT] + list(args), capture_output=True,
+                              text=True, cwd=cwd or self.repo, env=env)
+
+    def checker_env(self, extra, *args, cwd=None):
+        env = dict(os.environ)
+        env.update({'GIT_CONFIG_GLOBAL': os.devnull, 'GIT_CONFIG_SYSTEM': os.devnull})
+        env.update(extra)
         return subprocess.run([sys.executable, SCRIPT] + list(args), capture_output=True,
                               text=True, cwd=cwd or self.repo, env=env)
 
@@ -345,6 +353,20 @@ class ReferenceClassificationTests(CheckerCase):
         self.assertEqual(code, 1)
         self.assertIn('reference_stale', self.codes(payload))
 
+    def test_script_runner_commands_are_classified_by_their_script_path(self):
+        self.write('scripts/tool.sh', '#!/bin/sh\n')
+        self.commit('script')
+        self.write('AGENTS.md', DEFAULT_AGENTS + (
+            '\n## Scripts\n\n'
+            '- Run `bash scripts/tool.sh` before merging.\n'
+            '- Run `python3 -m unittest discover -s tests` too.\n'
+            '- Never run `bash scripts/missing.sh`.\n'))
+        self.commit('script commands')
+        classes = self.reference_classes()
+        self.assertEqual(classes['bash scripts/tool.sh'], 'ok')
+        self.assertEqual(classes['python3 -m unittest discover -s tests'], 'external')
+        self.assertEqual(classes['bash scripts/missing.sh'], 'stale')
+
     def test_added_unverified_command_in_a_fence_blocks(self):
         self.stage()
         base = self.base_read('AGENTS.md')
@@ -459,6 +481,50 @@ class ShellFenceTests(CheckerCase):
         self.commit('command')
         classes = {item['ref']: item['class'] for item in self.references()}
         self.assertEqual(classes['mysterytool --fast'], 'unverified')
+
+
+class StaleFenceTests(CheckerCase):
+    """Round 1 review: a stale command inside a shell fence can be fixed or removed."""
+
+    def setUp(self):
+        super().setUp()
+        self.write('package.json', json.dumps(
+            {'name': 'x', 'scripts': {'build': 'true', 'test': 'true'}}))
+        self.old = 'npm run old-script'
+        self.write('AGENTS.md', DEFAULT_AGENTS + '\n```sh\n' + self.old + '\n```\n')
+        self.commit('stale fence')
+
+    def test_stale_fence_command_can_be_fixed(self):
+        self.stage()
+        self.proposed('AGENTS.md', self.base_read('AGENTS.md').replace(
+            self.old, 'npm run build'))
+        claim = {'id': 'f1', 'type': 'Fix', 'file': 'AGENTS.md',
+                 'removed': [self.old], 'added': ['npm run build'],
+                 'basis': 'reference'}
+        code, payload = self.gate([claim])
+        self.assertEqual(code, 0, payload)
+
+    def test_stale_fence_command_can_be_removed(self):
+        self.stage()
+        self.proposed('AGENTS.md', self.base_read('AGENTS.md').replace(
+            self.old + '\n', ''))
+        claim = {'id': 'r1', 'type': 'Remove', 'file': 'AGENTS.md',
+                 'removed': [self.old], 'added': [], 'basis': 'repo_disproof'}
+        code, payload = self.gate([claim])
+        self.assertEqual(code, 0, payload)
+
+    def test_a_valid_fence_command_is_not_a_disproof(self):
+        self.stage()
+        self.proposed('AGENTS.md', self.base_read('AGENTS.md').replace(
+            self.old + '\n', ''))
+        claim = {'id': 'r1', 'type': 'Remove', 'file': 'AGENTS.md',
+                 'removed': [self.old], 'added': [], 'basis': 'repo_disproof'}
+        self.write('package.json', json.dumps(
+            {'name': 'x', 'scripts': {'old-script': 'true', 'build': 'true'}}))
+        self.commit('script exists now')
+        code, payload = self.gate([claim])
+        self.assertEqual(code, 1, payload)
+        self.assertIn('remove_unsupported', self.codes(payload))
 
 
 class ImportCheckTests(CheckerCase):
@@ -606,6 +672,69 @@ class SurfaceExclusionTests(CheckerCase):
         self.assertIn('sub/CLAUDE.md', paths)
 
 
+class SymlinkEscapeTests(CheckerCase):
+    """Round 1 review: symlinked directories never escape the repository root."""
+
+    def outside_skill(self):
+        outside = os.path.join(self.tmp, 'outside-skills')
+        os.makedirs(os.path.join(outside, 'demo'), exist_ok=True)
+        with open(os.path.join(outside, 'demo', 'SKILL.md'), 'w', encoding='utf-8') as handle:
+            handle.write('---\nname: demo\ndescription: demo\n---\n')
+        return outside
+
+    def test_symlinked_skills_directory_is_not_a_surface(self):
+        outside = self.outside_skill()
+        os.makedirs(os.path.join(self.repo, '.agents'), exist_ok=True)
+        os.symlink(outside, os.path.join(self.repo, '.agents', 'skills'))
+        module = load_module('checker_for_escape', SCRIPT)
+        self.assertFalse(module.is_surface_path('.agents/skills/demo/SKILL.md', self.repo))
+        out = self.stage()
+        self.assertNotIn('.agents/skills/demo/SKILL.md', out['files'])
+
+    def test_symlinked_skill_child_is_skipped(self):
+        outside = self.outside_skill()
+        os.makedirs(os.path.join(self.repo, '.agents', 'skills'), exist_ok=True)
+        os.symlink(os.path.join(outside, 'demo'),
+                   os.path.join(self.repo, '.agents', 'skills', 'demo'))
+        out = self.stage()
+        self.assertNotIn('.agents/skills/demo/SKILL.md', out['files'])
+
+    def test_configured_skills_dir_cannot_escape_through_a_symlink(self):
+        outside = self.outside_skill()
+        os.symlink(outside, os.path.join(self.repo, 'skills-link'))
+        self.write('.backpassrc.json', json.dumps({'skillsDir': 'skills-link'}))
+        self.commit('unsafe skills dir')
+        module = load_module('checker_for_skills_dir', SCRIPT)
+        self.assertFalse(module.is_surface_path('skills-link/demo/SKILL.md', self.repo))
+        out = self.stage()
+        self.assertNotIn('skills-link/demo/SKILL.md', out['files'])
+
+    def test_directory_symlink_escape_is_refused_by_gate(self):
+        outside = os.path.join(self.tmp, 'outside-sub')
+        os.makedirs(outside, exist_ok=True)
+        os.symlink(outside, os.path.join(self.repo, 'sub'))
+        self.stage()
+        self.proposed('sub/AGENTS.md', '# Sub\n')
+        proc = self.checker('gate', '--stage', self.stage_dir,
+                            '--evidence', self.evidence([]),
+                            '--claims', self.claims([]), '--json')
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+
+    def test_git_and_backpass_paths_are_not_surface(self):
+        module = load_module('checker_for_hidden_paths', SCRIPT)
+        self.assertFalse(module.is_surface_path('.git/AGENTS.md', self.repo))
+        self.assertFalse(module.is_surface_path('.backpass/AGENTS.md', self.repo))
+        self.assertFalse(module.is_surface_path('.worktrees/x/AGENTS.md', self.repo))
+        self.assertFalse(module.is_surface_path('.claude/worktrees/x/AGENTS.md', self.repo))
+        self.stage()
+        claim = {'id': 'r1', 'type': 'Remove', 'file': '.git/AGENTS.md',
+                 'removed': ['- x'], 'added': [], 'basis': 'repo_disproof'}
+        proc = self.checker('gate', '--stage', self.stage_dir,
+                            '--evidence', self.evidence([]),
+                            '--claims', self.claims([claim]), '--json')
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+
+
 class ImportScopeTests(CheckerCase):
     """V2 replay: only imports in touched or newly broken directories block."""
 
@@ -737,6 +866,27 @@ class ClaimContractTests(CheckerCase):
         code, payload = self.gate([claim])
         self.assertEqual(code, 1)
         self.assertIn('phantom_line', self.codes(payload))
+
+    def test_a_claimed_line_that_the_diff_leaves_in_place_is_phantom(self):
+        self.stage()
+        unchanged = '`AGENTS.md` is the source of truth for this repository.'
+        claim = {'id': 'c1', 'type': 'Compress', 'file': 'AGENTS.md',
+                 'removed': [unchanged], 'added': []}
+        code, payload = self.gate([claim])
+        self.assertEqual(code, 1)
+        self.assertIn('phantom_line', self.codes(payload))
+
+    def test_a_stale_line_left_in_place_fails_phantom_and_existing_stale(self):
+        stale = '- See `src/missing.py` for details.'
+        self.write('AGENTS.md', DEFAULT_AGENTS + '\n' + stale + '\n')
+        self.commit('stale')
+        self.stage()
+        claim = {'id': 'r1', 'type': 'Remove', 'file': 'AGENTS.md',
+                 'removed': [stale], 'added': [], 'basis': 'repo_disproof'}
+        code, payload = self.gate([claim])
+        self.assertEqual(code, 1)
+        self.assertIn('phantom_line', self.codes(payload))
+        self.assertIn('existing_stale', self.codes(payload))
 
     def test_added_lines_that_redaction_would_change_are_blocked(self):
         self.write('package.json', json.dumps({'name': 'x', 'marker': 'needle'}))
@@ -997,6 +1147,25 @@ class AddGateTests(CheckerCase):
         self.assertEqual(code, 1)
         self.assertIn('add_unsupported', self.codes(payload))
 
+    def test_trail_basis_rejects_unsafe_paths(self):
+        self.write('.trail/notes/one.md', '---\nstatus: active\nscope: repo\n---\n')
+        link = os.path.join(self.repo, '.trail', 'learnings', 'link.md')
+        os.symlink(os.path.join(self.repo, '.trail', 'learnings', 'one.md'), link)
+        self.commit('trail fixtures')
+        unsafe = [
+            os.path.join(self.repo, '.trail', 'learnings', 'one.md'),
+            '.trail/learnings/../../AGENTS.md',
+            '.trail/learnings/link.md',
+            '.trail/notes/one.md',
+        ]
+        for path in unsafe:
+            with self.subTest(path):
+                if os.path.isdir(self.stage_dir):
+                    shutil.rmtree(self.stage_dir)
+                code, payload = self.run_add({'basis': 'trail', 'trail': path})
+                self.assertEqual(code, 1, payload)
+                self.assertIn('add_unsupported', self.codes(payload))
+
     def test_user_global_lines_are_blocked_and_reported(self):
         code, payload = self.run_add({
             'basis': 'sessions',
@@ -1090,6 +1259,61 @@ class RemoveGateTests(CheckerCase):
         self.assertIn('remove_protected', self.codes(payload))
 
 
+class ClaimScopeTests(CheckerCase):
+    """Round 1 review: claim types cannot carry the other direction's lines."""
+
+    def test_add_with_removed_lines_is_blocked(self):
+        self.stage()
+        self.proposed('AGENTS.md', self.base_read('AGENTS.md') + '- a new line\n')
+        claim = {'id': 'a1', 'type': 'Add', 'file': 'AGENTS.md',
+                 'removed': ['- a line that should not be here'],
+                 'added': ['- a new line'], 'basis': 'sessions', 'citations': []}
+        code, payload = self.gate([claim])
+        self.assertEqual(code, 1, payload)
+        self.assertIn('add_has_removed', self.codes(payload))
+
+    def test_remove_with_added_lines_is_blocked(self):
+        stale = '- See `src/missing.py` for details.'
+        self.write('AGENTS.md', DEFAULT_AGENTS + '\n' + stale + '\n')
+        self.commit('stale')
+        self.stage()
+        self.proposed('AGENTS.md', self.base_read('AGENTS.md').replace(
+            stale + '\n', '- replacement line\n'))
+        claim = {'id': 'r1', 'type': 'Remove', 'file': 'AGENTS.md',
+                 'removed': [stale], 'added': ['- replacement line'],
+                 'basis': 'repo_disproof'}
+        code, payload = self.gate([claim])
+        self.assertEqual(code, 1, payload)
+        self.assertIn('remove_has_added', self.codes(payload))
+
+    def import_fixture(self):
+        self.write('sub/AGENTS.md', '# Sub\n\n- Keep the subtree tidy.\n')
+        self.write('sub/CLAUDE.md', '`@AGENTS.md`\n')
+        self.commit('nested import')
+
+    def test_import_fix_repairs_a_backticked_import(self):
+        self.import_fixture()
+        self.stage()
+        self.proposed('sub/CLAUDE.md', '@AGENTS.md\n')
+        claim = {'id': 'f1', 'type': 'Fix', 'file': 'sub/CLAUDE.md',
+                 'removed': ['`@AGENTS.md`'], 'added': ['@AGENTS.md'],
+                 'basis': 'import'}
+        code, payload = self.gate([claim])
+        self.assertEqual(code, 0, payload)
+
+    def test_import_fix_cannot_inject_other_lines(self):
+        self.import_fixture()
+        self.stage()
+        self.proposed('sub/CLAUDE.md', '@AGENTS.md\n- Use the shared logger.\n')
+        claim = {'id': 'f1', 'type': 'Fix', 'file': 'sub/CLAUDE.md',
+                 'removed': ['`@AGENTS.md`'],
+                 'added': ['@AGENTS.md', '- Use the shared logger.'],
+                 'basis': 'import'}
+        code, payload = self.gate([claim])
+        self.assertEqual(code, 1, payload)
+        self.assertIn('import_invalid_added', self.codes(payload))
+
+
 class SmallEditTests(CheckerCase):
     """A16: no_change, the five-claim cap and Compress rules."""
 
@@ -1102,6 +1326,14 @@ class SmallEditTests(CheckerCase):
         code, _out = self.apply()
         self.assertEqual(code, 0)
         self.assertEqual(self.snapshot(), before)
+
+    def test_an_over_budget_repository_allows_no_change(self):
+        self.write('.backpassrc.json', json.dumps({'budgetTokens': 1}))
+        self.commit('over cap')
+        self.stage()
+        code, payload = self.gate([])
+        self.assertEqual(code, 0, payload)
+        self.assertEqual(payload['status'], 'no_change')
 
     def test_more_than_five_add_and_remove_claims_block(self):
         self.stage()
@@ -1243,6 +1475,37 @@ class MoveTests(CheckerCase):
         code, payload = self.gate([claim])
         self.assertEqual(code, 1)
         self.assertIn('unmapped_hunk', self.codes(payload))
+
+    def test_extra_added_lines_in_a_move_claim_block(self):
+        target = 'sub/AGENTS.md'
+        self.stage()
+        remaining = self.base_read('AGENTS.md')
+        for line in self.lines:
+            remaining = remaining.replace(line + '\n', '')
+        self.proposed('AGENTS.md', remaining)
+        self.proposed(target, '\n'.join(self.lines) + '\n- An extra claimed line.\n')
+        self.proposed('sub/CLAUDE.md', '@AGENTS.md\n')
+        claim = {'id': 'm1', 'type': 'Move', 'file': 'AGENTS.md',
+                 'removed': self.lines, 'added': ['- An extra claimed line.'],
+                 'target': target}
+        code, payload = self.gate([claim])
+        self.assertEqual(code, 1, payload)
+        self.assertIn('move_extra_added', self.codes(payload))
+
+    def test_a_prefix_sibling_path_is_the_wrong_subtree(self):
+        self.write('sub-other/helper.py', 'VALUE = 2\n')
+        line = '- Keep `sub-other/helper.py` small.'
+        self.write('AGENTS.md', self.read('AGENTS.md') + line + '\n')
+        self.commit('prefix sibling')
+        self.stage()
+        self.proposed('AGENTS.md', self.base_read('AGENTS.md').replace(line + '\n', ''))
+        self.proposed('sub/AGENTS.md', line + '\n')
+        self.proposed('sub/CLAUDE.md', '@AGENTS.md\n')
+        claim = {'id': 'm1', 'type': 'Move', 'file': 'AGENTS.md', 'removed': [line],
+                 'added': [], 'target': 'sub/AGENTS.md'}
+        code, payload = self.gate([claim])
+        self.assertEqual(code, 1, payload)
+        self.assertIn('move_wrong_subtree', self.codes(payload))
 
     def test_wrong_subtree_blocks(self):
         code, payload = self.do_move('other/AGENTS.md')
@@ -1451,6 +1714,76 @@ class DeliveryTests(CheckerCase):
         _code, payload = self.check()
         self.assertEqual(payload['delivery']['action'], 'worktree')
 
+    def test_shell_metacharacter_default_branch_is_unknown(self):
+        shutil.rmtree(self.repo)
+        os.makedirs(self.repo)
+        self.write('AGENTS.md', DEFAULT_AGENTS)
+        self.write('CLAUDE.md', '@AGENTS.md\n')
+        branch = 'evil;id'
+        self.git('init', '-q', '-b', branch)
+        self.git('add', '.')
+        self.commit('evil branch')
+        config = os.path.join(self.private, 'gitconfig')
+        with open(config, 'w', encoding='utf-8') as handle:
+            handle.write('[init]\n\tdefaultBranch = %s\n' % branch)
+        proc = self.checker_env({'GIT_CONFIG_GLOBAL': config},
+                                'check', '--repo', self.repo, '--json')
+        payload = json.loads(proc.stdout)
+        self.assertIsNone(payload['repo']['default_branch'])
+        self.assertEqual(payload['delivery']['action'], 'patch_only')
+        self.assertEqual(payload['delivery']['commands'], [])
+
+    def test_worktree_commands_quote_every_argument(self):
+        module = load_module('checker_for_worktree_commands', SCRIPT)
+
+        class FakeRepo:
+            root = Path(self.repo)
+            default_branch = 'main'
+
+        commands = module.worktree_commands(FakeRepo())
+        self.assertEqual(len(commands), 2)
+        fetch = shlex.split(commands[0])
+        self.assertEqual(fetch[-1], 'main')
+        add = shlex.split(commands[1])
+        self.assertIn('origin/main', add)
+        self.assertIn('"$HOME"', commands[1])
+
+        class EvilRepo:
+            root = Path(self.repo)
+            default_branch = 'evil;id'
+
+        self.assertEqual(module.worktree_commands(EvilRepo()), [])
+
+    def test_global_init_default_branch_respects_existing_branches(self):
+        shutil.rmtree(self.repo)
+        os.makedirs(self.repo)
+        self.write('AGENTS.md', DEFAULT_AGENTS)
+        self.write('CLAUDE.md', '@AGENTS.md\n')
+        self.git('init', '-q', '-b', 'master')
+        self.git('add', '.')
+        self.commit('master only')
+        config = os.path.join(self.private, 'gitconfig')
+        with open(config, 'w', encoding='utf-8') as handle:
+            handle.write('[init]\n\tdefaultBranch = main\n')
+        proc = self.checker_env({'GIT_CONFIG_GLOBAL': config},
+                                'check', '--repo', self.repo, '--json')
+        payload = json.loads(proc.stdout)
+        self.assertEqual(payload['repo']['default_branch'], 'master')
+        self.assertEqual(payload['delivery']['action'], 'in_place')
+
+        shutil.rmtree(self.repo)
+        os.makedirs(self.repo)
+        self.write('AGENTS.md', DEFAULT_AGENTS)
+        self.write('CLAUDE.md', '@AGENTS.md\n')
+        self.git('init', '-q', '-b', 'trunk')
+        self.git('add', '.')
+        self.commit('trunk only')
+        proc = self.checker_env({'GIT_CONFIG_GLOBAL': config},
+                                'check', '--repo', self.repo, '--json')
+        payload = json.loads(proc.stdout)
+        self.assertIsNone(payload['repo']['default_branch'])
+        self.assertEqual(payload['delivery']['action'], 'patch_only')
+
     def test_dirty_memory_file_and_unknown_default_use_patch_only(self):
         self.write('AGENTS.md', DEFAULT_AGENTS + '- dirty line\n')
         _code, payload = self.check()
@@ -1581,6 +1914,27 @@ class ConcurrentEditTests(CheckerCase):
         self.assertEqual(payload['status'], 'concurrent_edit')
         self.assertIn('edited after the gate', self.read('AGENTS.md'))
 
+    def test_untouched_surface_file_change_is_a_concurrent_edit(self):
+        line = self.passing_edit()
+        self.write('CLAUDE.md', '@AGENTS.md\n<!-- touched after the gate -->\n')
+        code, out = self.apply()
+        payload = json.loads(out)
+        self.assertEqual(code, 1)
+        self.assertEqual(payload['status'], 'concurrent_edit')
+        self.assertNotIn(line, self.read('AGENTS.md'))
+
+    def test_a_checkout_that_now_needs_a_worktree_is_refused(self):
+        self.write('CONTRIBUTING.md', 'Open a pull request for every change.\n')
+        self.commit('pr rule')
+        self.git('checkout', '-q', '-b', 'feat/two')
+        line = self.passing_edit()
+        self.git('checkout', '-q', 'main')
+        code, out = self.apply()
+        payload = json.loads(out)
+        self.assertEqual(code, 1)
+        self.assertEqual(payload['status'], 'wrong_checkout')
+        self.assertNotIn(line, self.read('AGENTS.md'))
+
     def test_tampered_proposed_claims_and_evidence_are_refused(self):
         line = self.passing_edit()
         self.proposed('AGENTS.md', self.base_read('AGENTS.md') + line + '\n- tampered\n')
@@ -1669,15 +2023,15 @@ class SyncSafetyTests(unittest.TestCase):
 
     def hold_regex(self):
         fragments = [
-            r"/" + "Users" + r"/[^/\s]+",
-            r"/" + "home" + r"/[^/\s]+",
-            "sk" + "-" + "ant" + r"-[A-Za-z0-9_-]{16,}",
-            "gh" + r"p_[A-Za-z0-9]{20,}",
-            "gh" + r"o_[A-Za-z0-9]{20,}",
-            "github" + r"_pat_[A-Za-z0-9_]{20,}",
-            "AK" + r"IA[0-9A-Z]{16}",
-            "xo" + r"x[abpr]-[A-Za-z0-9-]{10,}",
-            "-----BEGIN " + r"[A-Z0-9 ]*PRIVATE KEY-----",
+            "/" + "Users" + "/",
+            "/" + "home" + "/",
+            "sk" + "-" + "ant" + "-",
+            "gh" + "p_",
+            "gh" + "o_",
+            "github" + "_pat_",
+            "AK" + "IA[0-9A-Z]{16}",
+            "xo" + "x[abpr]-",
+            "-----BEGIN " + "[A-Z ]*PRIVATE KEY-----",
         ]
         return re.compile("|".join(fragments))
 
@@ -1693,6 +2047,22 @@ class SyncSafetyTests(unittest.TestCase):
             "AK" + "IA" + "A" * 16,
             "xo" + "x" + "b" + "-" + "a" * 12,
             "-----BEGIN " + "RSA PRIVATE KEY-----",
+        ]
+        for sample in samples:
+            self.assertTrue(pattern.search(sample), sample)
+
+    def test_the_hold_regex_catches_bare_prefixes(self):
+        pattern = self.hold_regex()
+        samples = [
+            "/" + "Users" + "/",
+            "/" + "home" + "/",
+            "sk" + "-" + "ant" + "-",
+            "gh" + "p_",
+            "gh" + "o_",
+            "github" + "_pat_",
+            "AK" + "IA" + "A" * 16,
+            "xo" + "x" + "b" + "-",
+            "-----BEGIN " + "PRIVATE KEY-----",
         ]
         for sample in samples:
             self.assertTrue(pattern.search(sample), sample)

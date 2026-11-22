@@ -35,6 +35,12 @@ HERE = Path(__file__).resolve().parent
 GIT_STRIP = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR")
 EXIT_OK, EXIT_BLOCKED, EXIT_INVALID = 0, 1, 2
 DEFAULT_SKILLS_DIR = ".agents/skills"
+BRANCH_NAME = re.compile(r"^[A-Za-z0-9._/-]+$")
+
+
+def valid_branch(name):
+    return (isinstance(name, str) and bool(name) and bool(BRANCH_NAME.match(name))
+            and not name.startswith("-") and ".." not in name and "//" not in name)
 
 
 def _load_collector():
@@ -95,6 +101,30 @@ def _inside(path, parent):
         return False
 
 
+def _path_escapes_root(root, rel, include_leaf=False):
+    """True when rel is absolute, climbs out, or any ancestor is a symlink or escapes root."""
+    rel = normalize_rel(rel)
+    parts = Path(rel).parts
+    if not parts or os.path.isabs(rel) or ".." in parts:
+        return True
+    root_real = os.path.realpath(str(root))
+    current = Path(root)
+    checked = parts if include_leaf else parts[:-1]
+    for part in checked:
+        current = current / part
+        try:
+            if current.is_symlink():
+                return True
+        except OSError:
+            return True
+    target = Path(root) / rel
+    try:
+        Path(os.path.realpath(str(target))).relative_to(root_real)
+    except (OSError, ValueError):
+        return True
+    return False
+
+
 def outside_worktree(path):
     """True when path (and its real parent) is outside every git worktree."""
     parent = Path(path).parent
@@ -134,7 +164,8 @@ def skills_dir(root):
         candidate = value.strip().rstrip("/")
         if not os.path.isabs(candidate) and ".." not in Path(candidate).parts:
             try:
-                if _inside(Path(root) / candidate, root):
+                if _inside(Path(root) / candidate, root) and \
+                        not _path_escapes_root(root, candidate, include_leaf=True):
                     return candidate
             except OSError:
                 pass
@@ -142,13 +173,21 @@ def skills_dir(root):
 
 
 def is_surface_path(rel, root):
-    rel = rel.replace(os.sep, "/")
+    rel = normalize_rel(rel)
+    parts = Path(rel).parts
+    if ".git" in parts or ".backpass" in parts or ".worktrees" in parts:
+        return False
+    for index in range(len(parts) - 1):
+        if parts[index] == ".claude" and parts[index + 1] == "worktrees":
+            return False
     if rel in ("AGENTS.md", "CLAUDE.md"):
         return True
     if rel.endswith("/AGENTS.md") or rel.endswith("/CLAUDE.md"):
-        return True
+        return not _path_escapes_root(root, rel)
     prefix = skills_dir(root).rstrip("/") + "/"
     if rel.startswith(prefix):
+        if _path_escapes_root(root, prefix.rstrip("/"), include_leaf=True):
+            return False
         rest = rel[len(prefix):]
         return rest.count("/") == 1 and rest.endswith("/SKILL.md")
     return False
@@ -169,6 +208,8 @@ def surface_paths(root):
                 continue
             child = here / name
             try:
+                if child.is_symlink():
+                    continue
                 if (child / ".git").exists() or (child / ".git").is_symlink():
                     continue
             except OSError:
@@ -178,14 +219,21 @@ def surface_paths(root):
         for name in ("AGENTS.md", "CLAUDE.md"):
             if name in filenames:
                 found.add(os.path.relpath(os.path.join(dirpath, name), str(root)))
-    skills = root / skills_dir(root)
-    if skills.is_dir():
+    skills_rel = skills_dir(root)
+    skills = root / skills_rel
+    if skills.is_dir() and not _path_escapes_root(root, skills_rel, include_leaf=True):
         try:
             children = sorted(skills.iterdir())
         except OSError:
             children = []
         for child in children:
-            if child.is_dir() and (child / "SKILL.md").is_file():
+            try:
+                if child.is_symlink() or not _inside(child, root):
+                    continue
+            except OSError:
+                continue
+            if child.is_dir() and (child / "SKILL.md").is_file() and \
+                    not (child / "SKILL.md").is_symlink():
                 found.add(os.path.relpath(str(child / "SKILL.md"), str(root)))
     return sorted(found)
 
@@ -251,14 +299,21 @@ class Repo:
     def _default_branch(self):
         proc = run_git(["symbolic-ref", "--short", "refs/remotes/origin/HEAD"], self.root)
         if proc is not None and proc.returncode == 0 and proc.stdout.strip():
-            return proc.stdout.strip().split("/", 1)[-1]
-        proc = run_git(["config", "--get", "init.defaultBranch"], self.root)
-        if proc is not None and proc.returncode == 0 and proc.stdout.strip():
-            return proc.stdout.strip()
+            name = proc.stdout.strip().split("/", 1)[-1]
+            if valid_branch(name):
+                return name
         for name in ("main", "master"):
             proc = run_git(["show-ref", "--verify", "--quiet", "refs/heads/" + name], self.root)
             if proc is not None and proc.returncode == 0:
                 return name
+        proc = run_git(["config", "--get", "init.defaultBranch"], self.root)
+        if proc is not None and proc.returncode == 0 and proc.stdout.strip():
+            name = proc.stdout.strip()
+            if valid_branch(name):
+                proc = run_git(["show-ref", "--verify", "--quiet", "refs/heads/" + name],
+                               self.root)
+                if proc is not None and proc.returncode == 0:
+                    return name
         return None
 
     def _worktrees(self):
@@ -343,11 +398,15 @@ def delivery_state(repo, entries):
 def worktree_commands(repo):
     stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
     name = re.sub(r"[^A-Za-z0-9._-]", "-", repo.root.name) or "repo"
-    location = ("$HOME/.local/state/sync-agent-instructions/worktrees/%s-%s" % (name, stamp))
     branch = "docs/sync-agent-instructions-%s" % stamp
+    if not valid_branch(repo.default_branch):
+        return []
+    location = ('"$HOME"' + shlex.quote(
+        "/.local/state/sync-agent-instructions/worktrees/%s-%s" % (name, stamp)))
     return [
-        "git fetch origin %s" % repo.default_branch,
-        'git worktree add -b %s "%s" origin/%s' % (branch, location, repo.default_branch),
+        "git fetch origin -- %s" % shlex.quote(repo.default_branch),
+        "git worktree add -b %s -- %s %s" % (
+            shlex.quote(branch), location, shlex.quote("origin/" + repo.default_branch)),
     ]
 
 
@@ -604,6 +663,8 @@ class References:
             return "external"
         if PLACEHOLDER.search(ref):
             return "scoped"
+        if probable_command(ref):
+            return self._command(ref)
         if looks_like_path(ref):
             memory_dir = (self.root / file_rel).parent
             for base in (self.root, memory_dir):
@@ -646,8 +707,13 @@ class References:
                 return "external"
             return self._package_script(name)
         if command in SCRIPT_RUNNERS:
-            if len(tokens) > 1 and not tokens[1].startswith("-"):
-                return self.classify(tokens[1], "AGENTS.md")
+            rest = tokens[1:]
+            if command in ("python", "python3") and "-m" in rest:
+                return "external"
+            for token in rest:
+                if token.startswith("-"):
+                    continue
+                return self.classify(token, "AGENTS.md")
             return "external"
         if command in COMMON_CLIS:
             return "external"
@@ -1187,39 +1253,56 @@ def proposed_paths(stage):
     return sorted(found)
 
 
-def check_evidence_file(path, repo_id):
+def _read_private_input(path):
+    """Read a regular, non-symlinked file outside any worktree exactly once."""
     target = Path(path)
     if not target.is_file() or target.is_symlink():
-        return "evidence must be a regular file"
+        return None, None, "must be a regular file"
     if not outside_worktree(target):
-        return "evidence is inside a git worktree"
+        return None, None, "is inside a git worktree"
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
     try:
-        mode = stat.S_IMODE(target.stat().st_mode)
+        handle = os.open(str(target), flags)
     except OSError:
-        return "evidence is unreadable"
-    if mode != 0o600:
-        return "evidence mode must be 0600"
+        return None, None, "is unreadable"
     try:
-        data = json.loads(target.read_text("utf-8", "replace"))
-    except (OSError, ValueError):
-        return "evidence is not valid JSON"
+        info = os.fstat(handle)
+        chunks = []
+        while True:
+            chunk = os.read(handle, 65536)
+            if not chunk:
+                break
+            chunks.append(chunk)
+    finally:
+        os.close(handle)
+    return b"".join(chunks), stat.S_IMODE(info.st_mode), None
+
+
+def check_evidence_file(path, repo_id):
+    raw, mode, problem = _read_private_input(path)
+    if problem:
+        return "evidence " + problem, None
+    if mode != 0o600:
+        return "evidence mode must be 0600", None
+    try:
+        data = json.loads(raw.decode("utf-8", "replace"))
+    except ValueError:
+        return "evidence is not valid JSON", None
     if not isinstance(data, dict) or data.get("version") != 1:
-        return "evidence version must be 1"
+        return "evidence version must be 1", None
     if data.get("repo_id") != repo_id:
-        return "evidence repo_id does not match the stage"
-    return None
+        return "evidence repo_id does not match the stage", None
+    return None, raw
 
 
 def check_claims_file(path):
-    target = Path(path)
-    if not target.is_file() or target.is_symlink():
-        return None, "claims must be a regular file"
-    if not outside_worktree(target):
-        return None, "claims are inside a git worktree"
+    raw, _mode, problem = _read_private_input(path)
+    if problem:
+        return None, None, "claims " + problem
     try:
-        return json.loads(target.read_text("utf-8", "replace")), None
-    except (OSError, ValueError):
-        return None, "claims are not valid JSON"
+        return json.loads(raw.decode("utf-8", "replace")), raw, None
+    except ValueError:
+        return None, None, "claims are not valid JSON"
 
 
 def move_target_problem(claim, root, proposed_root):
@@ -1231,6 +1314,10 @@ def move_target_problem(claim, root, proposed_root):
         return "Move target is not a safe relative path"
     if not is_surface_path(target, root):
         return "Move target is not a surface path"
+    if _path_escapes_root(proposed_root, target, include_leaf=True):
+        return "Move target escapes the stage"
+    if _path_escapes_root(root, target):
+        return "Move target escapes the repository"
     if not (Path(proposed_root) / target).is_file():
         return "Move target is missing from the stage"
     return None
@@ -1247,10 +1334,10 @@ def validate_gate(stage_path, evidence_path, claims_path):
     if not isinstance(repo_id, str) or not isinstance(repo_root, str):
         return invalid("gate", "stage manifest has no repo id or root")
     repo_root = Path(repo_root)
-    evidence_problem = check_evidence_file(evidence_path, repo_id)
+    evidence_problem, evidence_bytes = check_evidence_file(evidence_path, repo_id)
     if evidence_problem:
         return invalid("gate", evidence_problem)
-    raw_claims, claims_problem = check_claims_file(claims_path)
+    raw_claims, claims_bytes, claims_problem = check_claims_file(claims_path)
     if claims_problem:
         return invalid("gate", claims_problem)
     claims, problem = normalize_claims(raw_claims)
@@ -1266,8 +1353,8 @@ def validate_gate(stage_path, evidence_path, claims_path):
         return EXIT_BLOCKED, {"version": 1, "command": "gate", "status": "blocked",
                               "findings": [finding]}
     try:
-        evidence = json.loads(Path(evidence_path).read_text("utf-8", "replace"))
-    except (OSError, ValueError):
+        evidence = json.loads(evidence_bytes.decode("utf-8", "replace"))
+    except ValueError:
         return invalid("gate", "evidence is not valid JSON")
     index = evidence_index(evidence)
 
@@ -1278,12 +1365,19 @@ def validate_gate(stage_path, evidence_path, claims_path):
             return invalid("gate", "proposed path is absolute or escapes the stage")
         if not is_surface_path(rel, repo_root):
             return invalid("gate", "proposed path is not a surface path: %s" % rel)
-        if os.path.islink(str(Path(stage) / "proposed" / rel)):
+        proposed_root = Path(stage) / "proposed"
+        if os.path.islink(str(proposed_root / rel)):
             return invalid("gate", "proposed path is a symlink: %s" % rel)
+        if _path_escapes_root(proposed_root, rel, include_leaf=True):
+            return invalid("gate", "proposed path escapes the stage: %s" % rel)
+        if _path_escapes_root(repo_root, rel, include_leaf=True):
+            return invalid("gate", "proposed path escapes the repository: %s" % rel)
     for claim in claims["claims"]:
         rel = str(claim["file"]).replace(os.sep, "/")
         if not is_surface_path(rel, repo_root):
             return invalid("gate", "claim names a non-surface file: %s" % rel)
+        if _path_escapes_root(repo_root, rel):
+            return invalid("gate", "claim names a path outside the repository: %s" % rel)
 
     refs = References(repo_root)
     budget_base = _stage_budget(stage, "base", repo_root)
@@ -1295,7 +1389,8 @@ def validate_gate(stage_path, evidence_path, claims_path):
     allowed = _allowed_extras(claims["claims"], stage)
 
     changed_files = []
-    for rel in sorted(set(files) | set(proposed)):
+    for rel in sorted(set(files) | set(proposed) | set(expected_removed)
+                      | set(expected_added)):
         entry = files.get(rel)
         if entry and entry.get("link"):
             live = repo_root / rel
@@ -1307,15 +1402,15 @@ def validate_gate(stage_path, evidence_path, claims_path):
             continue
         base_text = read_stage_file(stage, "base", rel) if entry else ""
         proposed_text = read_stage_file(stage, "proposed", rel)
-        _check_existing_stale(rel, base_text, claims, refs, findings, reported)
+        removed, added, _hunks, _base, _proposed = diff_lines(base_text, proposed_text)
+        _check_existing_stale(rel, base_text, removed, claims, refs, findings, reported)
+        _compare_lines(rel, removed, expected_removed.get(rel, []), None,
+                       findings, "removed")
+        _compare_lines(rel, added, expected_added.get(rel, []),
+                       allowed.get(rel, []), findings, "added")
         if base_text == proposed_text:
             continue
         changed_files.append(rel)
-        removed, added, _hunks, _base, _proposed = diff_lines(base_text, proposed_text)
-        _compare_lines(rel, removed, expected_removed.get(rel, []),
-                       allowed.get(rel, []), findings, "removed")
-        _compare_lines(rel, added, expected_added.get(rel, []),
-                       allowed.get(rel, []), findings, "added")
         for line in added:
             if redact(line) != line:
                 findings.append(_finding(None, rel, "redaction_triggered",
@@ -1346,16 +1441,6 @@ def validate_gate(stage_path, evidence_path, claims_path):
         if rel and rel not in files and rel not in proposed:
             findings.append(_finding(None, rel, "unknown_file",
                                      "claim names a file outside the surface"))
-        base_lines = read_stage_file(stage, "base", rel).splitlines()
-        proposed_lines = read_stage_file(stage, "proposed", rel).splitlines()
-        for line in expected_removed.get(rel, []):
-            if line not in base_lines:
-                findings.append(_finding(None, rel, "phantom_line",
-                                         "claim removed line is not in the base"))
-        for line in expected_added.get(rel, []):
-            if line not in proposed_lines:
-                findings.append(_finding(None, rel, "phantom_line",
-                                         "claim added line is not in the proposed file"))
 
     add_remove = sum(1 for claim in claims["claims"]
                      if claim.get("type") in ("Add", "Remove"))
@@ -1363,7 +1448,8 @@ def validate_gate(stage_path, evidence_path, claims_path):
         findings.append(_finding(None, "", "too_many_claims",
                                  "more than five Add and Remove claims"))
 
-    if budget_base["over"] and budget_proposed["tokens"] >= budget_base["tokens"]:
+    if changed_files and budget_base["over"] and \
+            budget_proposed["tokens"] >= budget_base["tokens"]:
         findings.append(_finding(None, "", "budget_not_smaller",
                                  "an over-budget surface must end strictly smaller"))
     if not budget_base["over"] and budget_proposed["over"]:
@@ -1385,8 +1471,8 @@ def validate_gate(stage_path, evidence_path, claims_path):
         "stage": digest_file(Path(stage) / "manifest.json"),
         "base": tree_digest(Path(stage) / "base"),
         "proposed": tree_digest(Path(stage) / "proposed"),
-        "claims": digest_file(claims_path),
-        "evidence": digest_file(evidence_path),
+        "claims": digest_bytes(claims_bytes),
+        "evidence": digest_bytes(evidence_bytes),
     }
     user_global = [{"claim": finding.get("claim"), "file": finding.get("file")}
                    for finding in findings if finding.get("code") == "user_global"]
@@ -1464,10 +1550,13 @@ def _allowed_extras(claims, stage):
 
 
 def _compare_lines(rel, actual, expected, extras, findings, label):
-    counter = Counter(actual)
+    actual_counter = Counter(actual)
     expected_counter = Counter(expected)
-    extra_counter = Counter(extras)
-    if counter - expected_counter - extra_counter:
+    extra_counter = Counter(extras) if label == "added" else Counter()
+    if expected_counter - actual_counter:
+        findings.append(_finding(None, rel, "phantom_line",
+                                 "claimed %s line does not appear in the diff" % label))
+    if actual_counter - expected_counter - extra_counter:
         findings.append(_finding(None, rel, "unmapped_hunk",
                                  "%s lines are not mapped to a claim" % label))
 
@@ -1494,11 +1583,13 @@ def _check_added_references(rel, added, refs, findings, command_lines=()):
                                          "added line has a %s reference" % klass))
 
 
-def _check_existing_stale(rel, base_text, claims, refs, findings, reported):
+def _check_existing_stale(rel, base_text, removed_lines, claims, refs, findings, reported):
     fixed = set()
     for claim in claims["claims"]:
-        if claim.get("type") in ("Fix", "Remove", "Compress", "Move"):
+        claim_file = str(claim.get("file", "")).replace(os.sep, "/")
+        if claim_file == rel and claim.get("type") in ("Fix", "Remove", "Compress", "Move"):
             fixed.update(claim.get("removed") or [])
+    removed_counter = Counter(removed_lines)
     explained_refs = set()
     for item in claims["explained_stale"]:
         item_file = str(item.get("file")).replace(os.sep, "/")
@@ -1512,7 +1603,7 @@ def _check_existing_stale(rel, base_text, claims, refs, findings, reported):
                              "ref": redact(item["ref"]), "class": item["class"]})
             continue
         line = lines[item["line"] - 1] if item["line"] - 1 < len(lines) else ""
-        if line in fixed:
+        if line in fixed and removed_counter[line] > 0:
             continue
         if (rel, strip_reference(item["ref"])) in explained_refs:
             continue
@@ -1534,7 +1625,19 @@ def _check_claim(claim, stage, claims, index, root, budget_base):
             if len(claim.get("removed") or []) != len(claim.get("added") or []):
                 findings.append(_finding(claim.get("id"), rel, "fix_line_count",
                                          "reference Fix needs the same line count"))
+            base_commands = shell_fence_lines(read_stage_file(stage, "base", rel))
             for removed, added in zip(claim.get("removed") or [], claim.get("added") or []):
+                old_command = removed.strip() in base_commands
+                if old_command:
+                    old_class = refs.classify(removed.strip(), rel)
+                    new_class = refs.classify(added.strip(), rel)
+                    if old_class != "stale":
+                        findings.append(_finding(claim.get("id"), rel, "fix_not_stale",
+                                                 "removed line has no stale reference"))
+                    if new_class not in ("ok", "scoped", "external"):
+                        findings.append(_finding(claim.get("id"), rel, "fix_mismatch",
+                                                 "line does not match its replacement"))
+                    continue
                 stale = [item for item in references_in(removed, rel, refs)
                          if item["class"] == "stale"]
                 if not stale:
@@ -1551,15 +1654,22 @@ def _check_claim(claim, stage, claims, index, root, budget_base):
             agents_rel = (directory + "/AGENTS.md") if directory else "AGENTS.md"
             agents = read_stage_file(stage, "proposed", agents_rel)
             for line in claim.get("removed") or []:
-                if line not in agents.splitlines():
+                if line not in agents.splitlines() and "@AGENTS.md" not in line:
                     findings.append(_finding(claim.get("id"), rel, "import_missing_line",
                                              "removed line is not in proposed AGENTS.md"))
+            for line in claim.get("added") or []:
+                if line.strip() and line.strip() != "@AGENTS.md":
+                    findings.append(_finding(claim.get("id"), rel, "import_invalid_added",
+                                             "import Fix may only add @AGENTS.md"))
         else:
             findings.append(_finding(claim.get("id"), rel, "fix_basis",
                                      "unknown Fix basis"))
 
     elif kind == "Add":
         added = claim.get("added") or []
+        if claim.get("removed"):
+            findings.append(_finding(claim.get("id"), rel, "add_has_removed",
+                                     "Add claim must not carry removed lines"))
         for line in added:
             if not line.strip():
                 continue
@@ -1584,6 +1694,10 @@ def _check_claim(claim, stage, claims, index, root, budget_base):
         basis = claim.get("basis")
         removed = claim.get("removed") or []
         base_text = read_stage_file(stage, "base", rel)
+        base_commands = shell_fence_lines(base_text)
+        if claim.get("added"):
+            findings.append(_finding(claim.get("id"), rel, "remove_has_added",
+                                     "Remove claim must not carry added lines"))
         marked = protected_lines(base_text)
         line_numbers = {line: i for i, line in enumerate(base_text.splitlines())}
         for line in removed:
@@ -1592,10 +1706,13 @@ def _check_claim(claim, stage, claims, index, root, budget_base):
                 findings.append(_finding(claim.get("id"), rel, "remove_protected",
                                          "protected boundary line cannot be removed"))
         if basis == "repo_disproof":
+            def stale_line(line):
+                if line.strip() and line.strip() in base_commands:
+                    return refs.classify(line.strip(), rel) == "stale"
+                return any(item["class"] == "stale"
+                           for item in references_in(line, rel, refs))
             non_empty = [line for line in removed if line.strip()]
-            missing = [line for line in non_empty
-                       if not any(item["class"] == "stale"
-                                  for item in references_in(line, rel, refs))]
+            missing = [line for line in non_empty if not stale_line(line)]
             if not non_empty or missing:
                 findings.append(_finding(claim.get("id"), rel, "remove_unsupported",
                                          "Remove needs a checker-confirmed stale reference"))
@@ -1629,6 +1746,10 @@ def _check_claim(claim, stage, claims, index, root, budget_base):
         if problem:
             findings.append(_finding(claim.get("id"), rel, "move_target", problem))
             return findings
+        extra_added = claim.get("added") or []
+        if extra_added and extra_added != (claim.get("removed") or []):
+            findings.append(_finding(claim.get("id"), rel, "move_extra_added",
+                                     "Move may not claim extra added lines"))
         if not budget_base["over"]:
             findings.append(_finding(claim.get("id"), rel, "move_under_budget",
                                      "Move is only allowed when the surface is over budget"))
@@ -1655,8 +1776,9 @@ def _check_claim(claim, stage, claims, index, root, budget_base):
             target_dir = os.path.dirname(target)
             for line in moved:
                 for item in references_in(line, rel, refs):
-                    if item["class"] in ("ok", "scoped") and target_dir and \
-                            not item["ref"].startswith(target_dir):
+                    if item["class"] in ("ok", "scoped") and target_dir and not (
+                            item["ref"] == target_dir
+                            or item["ref"].startswith(target_dir + "/")):
                         findings.append(_finding(claim.get("id"), rel, "move_wrong_subtree",
                                                  "moved line covers a path outside the target"))
             bridge = Path(stage) / "proposed" / target_dir / "CLAUDE.md" if target_dir else None
@@ -1785,8 +1907,14 @@ def _add_supported(claim, index, rel, added, root):
             path, scope = trail, "repo"
         if not isinstance(path, str) or scope != "repo":
             return False
-        candidate = root / normalize_rel(path)
-        if not candidate.is_file():
+        path = normalize_rel(path)
+        if os.path.isabs(path) or ".." in Path(path).parts or \
+                not path.startswith(".trail/learnings/"):
+            return False
+        if _path_escapes_root(root, path, include_leaf=True):
+            return False
+        candidate = root / path
+        if not candidate.is_file() or candidate.is_symlink():
             return False
         try:
             text = candidate.read_text("utf-8", "replace")
@@ -1847,8 +1975,18 @@ def _apply_files(stage, manifest, root):
              if not entry.get("link")}
     proposed = proposed_paths(stage)
     surface = set(known) | set(proposed)
+    for rel in sorted(known):
+        live = root / rel
+        if _path_escapes_root(root, rel, include_leaf=True) or live.is_symlink() \
+                or not live.is_file() \
+                or digest_file(live) != known[rel].get("sha256"):
+            return EXIT_BLOCKED, {"version": 1, "command": "apply",
+                                  "status": "concurrent_edit",
+                                  "error": "live file changed: %s" % rel}
     changed = []
     for rel in sorted(surface):
+        if _path_escapes_root(root, rel, include_leaf=True):
+            return invalid("apply", "target path escapes the repository: %s" % rel)
         prop_path = stage / "proposed" / rel
         if not prop_path.is_file():
             continue
@@ -1867,8 +2005,8 @@ def _apply_files(stage, manifest, root):
                                   "error": "live file already exists: %s" % rel}
         changed.append(rel)
     live_dirty = status_paths(root) & surface
-    delivery = manifest.get("delivery") or {}
-    action = delivery.get("action")
+    live_delivery = delivery_state(Repo(root), surface_entries(root))
+    action = live_delivery.get("action")
     if action == "worktree":
         return EXIT_BLOCKED, {"version": 1, "command": "apply", "status": "wrong_checkout",
                               "error": "the stage requires a linked worktree"}
@@ -1894,6 +2032,21 @@ def _write_patch(stage, manifest, root):
                      "patch": str(stage / "staged.patch")}
 
 
+def _atomic_restore(path, data, mode):
+    handle, temp = tempfile.mkstemp(prefix=".sync-", dir=str(path.parent))
+    try:
+        with os.fdopen(handle, "wb") as stream:
+            stream.write(data)
+        os.chmod(temp, mode)
+        os.replace(temp, str(path))
+    except OSError:
+        try:
+            os.unlink(temp)
+        except OSError:
+            pass
+        raise
+
+
 def _write_in_place(stage, manifest, root, changed):
     known = {entry["path"]: entry for entry in manifest.get("files", [])}
     written = []
@@ -1901,6 +2054,8 @@ def _write_in_place(stage, manifest, root, changed):
     try:
         for rel in changed:
             live = root / rel
+            if _path_escapes_root(root, rel, include_leaf=True) or live.is_symlink():
+                raise OSError("target path escapes the repository: %s" % rel)
             proposed = stage / "proposed" / rel
             live.parent.mkdir(parents=True, exist_ok=True)
             existed = live.exists()
@@ -1924,8 +2079,8 @@ def _write_in_place(stage, manifest, root, changed):
             live = root / rel
             try:
                 if existed:
-                    shutil.copyfile(str(stage / "base" / rel), str(live))
-                    os.chmod(str(live), known.get(rel, {}).get("mode", 0o644))
+                    _atomic_restore(live, (stage / "base" / rel).read_bytes(),
+                                    known.get(rel, {}).get("mode", 0o644))
                 else:
                     lives = live
                     if lives.exists():
