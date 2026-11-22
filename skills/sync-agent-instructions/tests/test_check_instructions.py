@@ -2119,6 +2119,21 @@ class DocsTests(unittest.TestCase):
         for key in ('name:', 'description:', 'license:'):
             self.assertIn(key, text)
 
+    def test_skill_is_unified_and_agent_agnostic(self):
+        for rel in ('SKILL.md', 'references/audit-rubric.md', 'references/agent-surfaces.md'):
+            with open(os.path.join(SKILL_DIR, rel), encoding='utf-8') as handle:
+                text = handle.read().lower()
+            self.assertNotIn('/doctor', text, rel)
+            self.assertNotIn('mode selection', text, rel)
+            self.assertNotIn('audit mode', text, rel)
+            self.assertNotIn('sync mode', text, rel)
+        with open(os.path.join(SKILL_DIR, 'SKILL.md'), encoding='utf-8') as handle:
+            skill_text = handle.read()
+        self.assertIn('check_instructions.py check', skill_text)
+        self.assertIn('check_instructions.py audit', skill_text)
+        self.assertIn('references/audit-rubric.md', skill_text)
+        self.assertIn('references/agent-surfaces.md', skill_text)
+
     def test_docs_name_existing_files_and_commands(self):
         for name in ('AGENTS.md', 'README.md', 'CONTRIBUTING.md'):
             with open(os.path.join(REPO_ROOT, name), encoding='utf-8') as handle:

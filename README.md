@@ -18,7 +18,7 @@ workflow repository, not a supported product.
 | [`intrinsic-responsive-ui`](skills/intrinsic-responsive-ui/) | Guides fluid, container-aware responsive layouts built on intrinsic sizing rather than breakpoint patches.                                                                                            |
 | [`review-loop`](skills/review-loop/)                         | Runs an independent, evidence-backed review of a finished change before it lands, with risk tiers and a three-round cap.                                                                             |
 | [`safe-switch`](skills/safe-switch/)                         | Captures verified task state and hands the current work off losslessly to a fresh session using the current harness, model and effort, on explicit request only.                                      |
-| [`sync-agent-instructions`](skills/sync-agent-instructions/) | Audits a repository's cross-agent instructions, rules, skills, subagents and core docs (agent-agnostic prompt-audit) and updates `AGENTS.md`/`CLAUDE.md` from past sessions, git history and repo truth through a gated staged edit. |
+| [`sync-agent-instructions`](skills/sync-agent-instructions/) | Audits and syncs a repository's cross-agent instructions, rules, skills, subagents and core docs in one unified workflow: full cross-agent audit plus evidence-backed, gated updates to `AGENTS.md` and `CLAUDE.md`. |
 
 ## Layout
 
