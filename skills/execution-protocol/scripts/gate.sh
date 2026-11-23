@@ -121,8 +121,20 @@ PY
 attempt() { local rc=0; if run_claude "$1"; then rc=0; else rc=$?; fi; classify "$rc" > "$EVID/$gate-$key.cls"
   KIND=""; SESSION=""; INTOK=0; OUTOK=0; COST=0; VERDICT=""; TIERBAD=0; while IFS='=' read -r k v; do case $k in KIND) KIND=$v;; SESSION) SESSION=$v;; INTOK) INTOK=$v;; OUTOK) OUTOK=$v;; COST) COST=$v;; VERDICT) VERDICT=$v;; TIERBAD) TIERBAD=$v;; esac; done < "$EVID/$gate-$key.cls"; rm -f "$EVID/$gate-$key.cls"
   if [ "$KIND" != ok ]; then local why="opus attempt: $KIND"; if [ "$TIERBAD" = 1 ]; then why="plan tier mismatch (requested $tier)"; fi; log invalid opus claude-opus-5-5 "$1" "$SESSION" "$account" "$INTOK" "$OUTOK" "$COST" "" "$why" ""; fi; }
+log_metrics() { [ "$gate" = review ] || [ "$gate" = security ] || return 0
+  local mdir=${XDG_STATE_HOME:-$HOME/.local/state}/review-metrics repo=outside
+  if [ -z "$diff" ]; then repo=$(basename "$(git rev-parse --show-toplevel 2>/dev/null || pwd)"); fi
+  mkdir -p "$mdir" 2>/dev/null || return 0
+  python3 -I - "$1" "$TS" "$(basename "$EVID")" "$repo" "$key" "$tier" "$round" "$gate" "$2" >> "$mdir/findings.jsonl" 2>/dev/null <<'PY' || true
+import json, sys
+p, ts, task, repo, sha, tier, rnd, gate, model = sys.argv[1:10]
+sev = {"important": "Important", "nit": "Nit", "pre-existing": "Pre-existing"}
+for f in (json.load(open(p)).get("structured_output") or {}).get("findings") or []:
+    print(json.dumps({"date": ts[:10], "task": task, "repo": repo, "sha": sha, "tier": tier, "round": int(rnd), "severity": sev.get(f.get("severity", ""), f.get("severity", "")), "class": gate, "outcome": "reported", "reviewer": model}))
+PY
+}
 finish() { local file=$gate-$key.json; mv -f "$out" "$EVID/$file"
-  log ok "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "${9}" "${10}" "$file"
+  log ok "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "${9}" "${10}" "$file"; log_metrics "$EVID/$file" "$2"
   printf '%s %s route=%s verdict=%s file=%s\n' "$gate" "$key" "$1" "${9}" "$file"
   if [ "$gate" = plan ] || [ "${9}" = pass ]; then exit 0; fi; exit 1; }
 if [ "$tier" = low ] && [ "$cfgchg" = 1 ]; then refuse "agent config changed: tier must be >= medium"; fi
