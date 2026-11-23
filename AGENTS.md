@@ -1,25 +1,25 @@
 # agent-skills — notes for agents
 
-Repository of personal AI-agent skills. Each directory under `skills/` is an installable Agent
-Skill; this repository is the source of truth, and `~/.agents/skills/<name>` is kept in sync with
-`main` automatically (see [Automatic sync](#automatic-sync)).
+Repository of Dropout Studio (`ds-*`) AI-agent skills. Each directory under `skills/` is an
+installable Agent Skill; this repository is the source of truth, and `~/.agents/skills/<name>` is
+kept in sync with `main` automatically (see [Automatic sync](#automatic-sync)).
 
 ## Commands
 
 ```sh
-python3 -m unittest discover -s skills/dependency-upgrade/tests -t skills/dependency-upgrade  # dependency-upgrade tests
-python3 -m unittest discover -s skills/sync-agent-instructions/tests -t skills/sync-agent-instructions  # collector + checker tests
-bash skills/execution-protocol/tests/smoke.sh  # execution-protocol smoke tests (fake CLIs)
+python3 -m unittest discover -s skills/ds-deps/tests -t skills/ds-deps  # ds-deps + review_task tests
+python3 -m unittest discover -s skills/ds-sync/tests -t skills/ds-sync  # collector + checker tests
+bash skills/ds-protocol/tests/smoke.sh  # ds-protocol smoke tests (fake CLIs)
 diff -rq -x __pycache__ -x graft skills/<name> ~/.agents/skills/<name>  # drift check: must print nothing
 rsync -a --exclude '__pycache__/' --exclude 'graft/.cache/' skills/<name>/ ~/.agents/skills/<name>/  # sync one skill
 ~/.agents/bin/agent-skills-sync --dry-run  # sync: show what the next run would do, change nothing
 ```
 
-`skills/sync-agent-instructions/scripts/check_instructions.py` surveys a repository, runs a
-read-only cross-agent prompt-audit (`audit --repo R [--scope P]`), stages a memory-file edit,
-gates it against session evidence and typed claims, and applies only a gated stage; it never
-commits or pushes. Its tests live beside the collector's. Both helpers are stdlib-only and run
-on Python 3.9+.
+`skills/ds-sync/scripts/check_instructions.py` surveys a repository, runs a read-only cross-agent
+prompt-audit (`audit --repo R [--scope P]`), stages a memory-file edit, gates it against session
+evidence and typed claims, and applies only a gated stage; it never commits or pushes. Its tests
+live beside `scripts/collect_sessions.py`'s tests. Both helpers are stdlib-only and run on Python
+3.9+.
 
 Run the drift check from an up-to-date `main` before starting a change to a skill: it must print
 nothing (any difference is local drift; bring it into the repository first). After the change is
@@ -63,43 +63,44 @@ up as `Only in ~/.agents/skills/<name>` and are expected; any other difference i
 ## Layout
 
 ```text
-skills/consolidate/               SKILL.md, task-profile.json (plan/review prompt profiles)
-skills/dependency-upgrade/        SKILL.md, README.md, scripts/, references/, tests/, admin/
-skills/execution-protocol/        SKILL.md, reference.md, opus-gate-brief.md, implementer-brief.md, plan-schema.json,
-                                  review-schema.json, opencode/, scripts/ (gate.sh, implement.sh,
-                                  implement_lib.py, premerge-and-merge.sh), tests/ (smoke.sh, implement-smoke.sh)
-skills/frontend-ui-ux-overhaul/   SKILL.md, task-profile.json
-skills/intrinsic-responsive-ui/   SKILL.md
-skills/safe-switch/               SKILL.md
-skills/sync-agent-instructions/   SKILL.md, references/ (audit-rubric.md, agent-surfaces.md),
-                                  scripts/ (collect_sessions.py, check_instructions.py),
-                                  tests/ (collector, checker)
+skills/ds-consolidate/    SKILL.md, task-profile.json (plan/review prompt profiles)
+skills/ds-deps/           SKILL.md, README.md, scripts/, references/, tests/, admin/
+skills/ds-protocol/       SKILL.md, reference.md, opus-gate-brief.md, implementer-brief.md,
+                          plan-schema.json, review-schema.json, opencode/,
+                          scripts/ (gate.sh, implement.sh, implement_lib.py, premerge-and-merge.sh),
+                          tests/ (smoke.sh, implement-smoke.sh)
+skills/ds-responsive/     SKILL.md, references/ (platforms.md)
+skills/ds-switch/         SKILL.md
+skills/ds-sync/           SKILL.md, references/ (audit-rubric.md, agent-surfaces.md),
+                          scripts/ (collect_sessions.py, check_instructions.py),
+                          tests/ (collector, checker)
+skills/ds-ui/             SKILL.md, task-profile.json, references/ (platforms.md)
 ```
 
 ## Invariants
 
-- `skills/dependency-upgrade/scripts/review_task.py` resolves sibling skills as
-  `<parent>/<skill>/task-profile.json`. `consolidate` and `frontend-ui-ux-overhaul` depend on that, so
-  the three folders (`dependency-upgrade`, `consolidate`, `frontend-ui-ux-overhaul`) stay
-  siblings and keep their names. No other skill loads `task-profile.json`.
-- `SKILL.md` frontmatter keeps `name` and `description`; `dependency-upgrade` also declares
-  `allowed-tools`, `license` and `disable-model-invocation`.
+- `skills/ds-deps/scripts/review_task.py` resolves sibling skills as
+  `<parent>/<skill>/task-profile.json`. `ds-consolidate` and `ds-ui` depend on that, so the three
+  folders (`ds-deps`, `ds-consolidate`, `ds-ui`) stay siblings and keep their names. No other
+  skill loads `task-profile.json`.
+- `SKILL.md` frontmatter keeps `name` (matching the `ds-*` folder name) and `description`;
+  `ds-deps` also declares `allowed-tools`, `license` and `disable-model-invocation`.
 - Python helpers are stdlib-only and must run on 3.9+.
 - Scripts keep their executable bit (`scripts/depup.py`, `scripts/review_task.py`,
-  `scripts/collect_sessions.py`, `scripts/check_instructions.py`, execution-protocol
+  `scripts/collect_sessions.py`, `scripts/check_instructions.py`, `ds-protocol`
   `scripts/gate.sh`, `scripts/premerge-and-merge.sh`, `scripts/implement.sh`, `tests/smoke.sh` and
   `tests/implement-smoke.sh`).
 
 ## Always
 
-- Run the test suite after touching `dependency-upgrade` scripts, tests or any `task-profile.json`.
-- Run the collector and checker tests after touching `sync-agent-instructions` scripts or tests.
-- Run `bash skills/execution-protocol/tests/smoke.sh` after touching `execution-protocol` scripts or
-  tests.
+- Run the test suite after touching `ds-deps` scripts, tests or any `task-profile.json`.
+- Run the collector and checker tests after touching `ds-sync` scripts or tests.
+- Run `bash skills/ds-protocol/tests/smoke.sh` after touching `ds-protocol` scripts or tests.
 - Keep documentation accurate to the code: file names, commands and flags.
 
 ## Never
 
 - Commit `__pycache__/`, `graft/.cache/`, run state, transcripts, secrets or home-directory paths.
-- Rename or move a skill folder, or link whole skills directories into a harness root.
+- Rename or move a skill folder without updating all sibling references and tests, or link whole
+  skills directories into a harness root.
 - Add a dependency, a package manifest, or a build step.

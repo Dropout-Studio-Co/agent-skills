@@ -1,6 +1,6 @@
 # agent-skills
 
-A personal collection of 7 ready-made skills for AI coding assistants (like Claude Code and OpenCode). Each skill teaches your AI assistant how to handle a specific job from start to finish — like cleaning up unfinished work, upgrading dependencies, or improving a website's design.
+A collection of 7 Dropout Studio (`ds-*`) skills for AI coding assistants (like Claude Code and OpenCode). Each skill works across web, mobile, native, desktop, TV, CLI, and backend projects — teaching your AI assistant how to handle a specific job from start to finish.
 
 > This is a personal workflow collection shared as-is, not a commercial product.
 
@@ -25,18 +25,18 @@ Once installed, type the phrase in the right column whenever you want to use a s
 
 | Skill | What it does | What to type |
 | --- | --- | --- |
-| [`consolidate`](skills/consolidate/) | Gathers unfinished work from all branches, copies, and pull requests into `main`, verifies everything is safe, and cleans up leftovers. | `consolidate` |
-| [`dependency-upgrade`](skills/dependency-upgrade/) | Safely updates your project's packages from start to finish — checks compatibility, updates code, runs tests, and prepares the change. | `/dependency-upgrade` |
-| [`execution-protocol`](skills/execution-protocol/) | Runs a strict step-by-step plan, build, review, and merge workflow for coding tasks using Claude Code and OpenCode. | Runs automatically |
-| [`frontend-ui-ux-overhaul`](skills/frontend-ui-ux-overhaul/) | Reviews your website or app's design, layout, accessibility, and motion, then applies the improvements. | `Run frontend-ui-ux-overhaul.` |
-| [`intrinsic-responsive-ui`](skills/intrinsic-responsive-ui/) | Helps build layouts that adapt smoothly to any screen size, font size, or device. | `Use intrinsic-responsive-ui.` |
-| [`safe-switch`](skills/safe-switch/) | Saves your current progress and hands it cleanly to a new chat session without losing context. | `Safe Switch` |
-| [`sync-agent-instructions`](skills/sync-agent-instructions/) | Reviews and updates your project's AI instruction files (`AGENTS.md`, `CLAUDE.md`, and docs) so they stay accurate. | `/sync-agent-instructions` |
+| [`ds-consolidate`](skills/ds-consolidate/) | Gathers unfinished work from all branches, copies, worktrees, stashes, and pull requests into the default branch, verifies everything is safe, and cleans up leftovers. | `consolidate` or `/ds-consolidate` |
+| [`ds-deps`](skills/ds-deps/) | Safely updates your project's packages from start to finish across web, mobile, desktop, TV, and backend ecosystems — checks compatibility, updates code, runs tests, and prepares the change. | `/ds-deps` |
+| [`ds-protocol`](skills/ds-protocol/) | Runs a strict step-by-step plan, build, review, and merge workflow for coding tasks using Claude Code and OpenCode. | Runs automatically |
+| [`ds-responsive`](skills/ds-responsive/) | Builds adaptive, responsive layouts, text scaling, input support, and accessibility across web, mobile, native, desktop, and TV screens. | `Use ds-responsive.` |
+| [`ds-switch`](skills/ds-switch/) | Saves your current progress and hands it cleanly to a new chat session without losing context. | `Safe Switch` or `/ds-switch` |
+| [`ds-sync`](skills/ds-sync/) | Reviews and updates your project's AI instruction files (`AGENTS.md`, `CLAUDE.md`, and docs) so they stay accurate. | `/ds-sync` |
+| [`ds-ui`](skills/ds-ui/) | Reviews and improves your app's UI, UX, layout, accessibility, and motion across web, mobile, native, desktop, and TV platforms. | `Run ds-ui.` |
 
 ### Good to Know
 
-- **Updating packages:** `dependency-upgrade` only makes changes when you ask for it by name (`/dependency-upgrade`). If you casually ask to "update my dependencies," it will only show you a plan. You can also run `/dependency-upgrade plan` anytime to preview changes first.
-- **Using `execution-protocol`:** All other skills work with whichever AI assistant you already use. `execution-protocol` is the only one that needs extra tools signed in on your computer: Claude Code (`claude`), GitHub CLI (`gh`), and OpenCode (`opencode`). If you don't use those, you can ignore or remove the `execution-protocol` folder.
+- **Updating packages:** `ds-deps` only makes changes when you ask for it by name (`/ds-deps`). If you casually ask to "update my dependencies," it will only show you a plan. You can also run `/ds-deps plan` anytime to preview changes first.
+- **Using `ds-protocol`:** All other skills work with whichever AI assistant you already use. `ds-protocol` is the only one that needs extra tools signed in on your computer: Claude Code (`claude`), GitHub CLI (`gh`), and OpenCode (`opencode`). If you don't use those, you can ignore or remove the `ds-protocol` folder.
 
 ## License
 

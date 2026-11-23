@@ -1,0 +1,26 @@
+{
+  "skill": "ds-consolidate",
+  "role": "reconcile every piece of unfinished Git work (branches, worktrees, clones, stashes, uncommitted changes, PRs) into the default branch, then clean up only what is proven safe",
+  "rules": [
+    "Fully autonomous: decide from evidence and the repository's own instructions and never pause. When the evidence does not settle a decision, consult once; keep any item still uncertain after the consult and stop on any other unsettled decision.",
+    "An item is deleted, dropped, closed or removed only when its evidence proves it is in the default branch (or superseded there) and its copy is present in the verified restore point.",
+    "Keep every item still uncertain after a consult, and every in-progress (a live process cwd inside the location, or changes within 24 h), foreign (author other than the verified signed-in user, unverified remote authorship, forks, bots) or ignored-non-cache item (including secrets, keystores and signing certs) untouched; kept items are never integrated, deleted, dropped or closed.",
+    "A restore point is written before the first change (before STEP 2) and again after the gate, before cleanup.",
+    "Conflicts resolve in favor of the default branch's current design without losing still-needed behavior.",
+    "Planners, consultants and reviewers are advisory and read-only; the main session performs every merge, commit, push and cleanup."
+  ],
+  "plan_kinds": {
+    "plan": "Reconciliation plan from the audit: check each item's evidence against the four classes (in default branch / superseded by a cited default-branch commit / still-needed / keep); for still-needed items choose merge, cherry-pick or hand port and the order (dependencies, shared files, likely conflicts); how to preserve uncommitted work first; the build/test commands; the kept list with a reason per item; and the deletion evidence for every cleanup-list item (proven in default branch by git cherry, ancestor, reverse-apply or blob match, or a cited commit SHA and file:line). Flag anything that could lose work.",
+    "consult": "Research and analyze the one decision, or one batch of item classifications, named in the handoff, using the handoff evidence and the repository. Brainstorm the realistic options, weigh what each could lose, and recommend the best course of action, citing exact evidence (commit SHA, file:line, patch) for every fact. Steps are optional. If the evidence does not settle it, put it under holds and recommend keeping an item or stopping on a failure. Never recommend integrating or deleting an in-progress, foreign or ignored-non-cache item, and never treat your recommendation as proof: an item is deletable only with the evidence the four classes require.",
+    "architecture": "Deeper analysis of one high-risk reconciliation item (diverged design, large conflict, data/schema, auth, signing/entitlements, deploy config): the safest integration route, alternatives rejected, conflict strategy that keeps the default branch's design, verification and recovery."
+  },
+  "review_kinds": {
+    "reconciliation": {
+      "evidence": "git-inventory",
+      "focus": "Completeness and correctness of the consolidation before cleanup. Using the helper-collected Git inventory (authoritative), the context ledger (claims to verify) and the restore-point manifest and bundle-verify output pasted in the ledger: every branch, worktree, clone, stash, uncommitted or untracked change and open PR is either proven in the default branch with cited evidence or on the kept list with its reason; no kept item was integrated, deleted, dropped or closed; no missing, overwritten or silently discarded change; merge/cherry-pick conflict resolutions keep both the default branch's design and the still-needed behavior; the cleanup list contains only items proven in the default branch, superseded with a cited commit, or the user's own verified items for remote and PR cleanup; every cleanup-list item is present in the verified restore point; a clone is deleted only when clean, stash-free, without local-only commits and bundled. An item moved out of keep after a consult must be backed by evidence cited in the ledger, never by the consult's opinion alone. Missing evidence for any resource is an Important finding."
+    },
+    "code": {
+      "focus": "Code correctness of the integrated changes in the default branch (base = default branch before consolidation): broken callers, bad conflict resolution, duplicated or half-ported changes, regressions, test adequacy and the recorded build/test results in the context."
+    }
+  }
+}
