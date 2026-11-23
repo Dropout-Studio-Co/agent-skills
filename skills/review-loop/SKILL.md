@@ -69,7 +69,7 @@ the radius) and paste its output into
 each brief as the blast-radius starting point. Skip it for docs/config/`.svelte`-only diffs; on
 failure, note the limit in the brief. It never covers `.svelte` callers, so an empty radius is
 not proof of no callers.
-Never include the author's reasoning, conclusions or leading questions. Use the `code-review` skill when a standards/spec split helps.
+Never include the author's reasoning, conclusions or leading questions. When a standards/spec split helps, read `~/.agents/skills/code-review/SKILL.md` by path (the built-in `/code-review` command is a different skill).
 
 Built-in local review output may not follow the requested summary or severity format even when it
 reads the guide. Preserve the raw output, verify and classify each finding against REVIEW.md, and

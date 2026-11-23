@@ -51,12 +51,16 @@ Unless a newer repository authority says otherwise:
 Read `frontend-design`, `swiss-design`, `apple-design` and `intrinsic-responsive-ui` on every run:
 they are required by machine policy, not optional lenses.
 
+Read each installed skill directly from `~/.agents/skills/<name>/SKILL.md` by path so specialists
+with `disable-model-invocation: true` (such as `review-animations`) or skills omitted from a
+truncated skill index (such as `modern-web-guidance`) still load reliably.
+
 Read the other installed specialists by phase and concrete need:
 
 - Design and implementation: `animate`, `animation-vocabulary`, `improve-animations`,
   `find-animation-opportunities`, `review-animations`, `prototype`, `modern-web-guidance`,
   `fixing-metadata`.
-- Performance and delivery: `cloudflare:web-perf`, `chrome-devtools-axi`.
+- Performance and delivery: `chrome-devtools-axi` (and `cloudflare:web-perf` when installed).
 - Component work: `shadcn-svelte` only where the repository already uses it; the `gsap-*` skills
   only where the repository already uses GSAP.
 - Svelte work: the Svelte plugin skills, following `~/.agents/svelte-workflow.md`.
