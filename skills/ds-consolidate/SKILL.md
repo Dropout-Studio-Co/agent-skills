@@ -156,7 +156,7 @@ CONSULT (advisory, read-only; for a decision the evidence and rules do not settl
   prepare the task with
   `python3 $T plan <run_dir> --context <handoff> --kind consult --subject consult-<n>`,
   run the printed `prompt.md` in a fresh, read-only context using this session's current harness,
-  model and effort (or per `ds-protocol` when explicitly invoked alongside this skill), save
+  model and effort (or per `ds-dev-protocol` when explicitly invoked alongside this skill), save
   its answer to `output_path`, and bind it with
   `python3 $T record <run_dir> --task-id <id> --output <output_path> --by "<fresh-context-id>"`.
   `<handoff>` is `<run_dir>/consult-<n>.md`. The subject is always this fixed label: never put a
@@ -187,17 +187,17 @@ CONSULT (advisory, read-only; for a decision the evidence and rules do not settl
 - Paste each consult's question, recommendation, adopt-or-reject reason and verified evidence into
   the ledger: the reconciliation reviewer cannot read the consult's task dir.
 
-FRESH-CONTEXT TASKS (shared with ds-deps; one implementation):
-`T=~/.agents/skills/ds-deps/scripts/review_task.py`
+FRESH-CONTEXT TASKS (shared with ds-deps-upgrade; one implementation):
+`T=~/.agents/skills/ds-deps-upgrade/scripts/review_task.py`
 - `start` (STEP 1) → `run_dir`. Then `python3 $T plan <run_dir> --context <handoff>` /
   `python3 $T review <run_dir> --kind <k> ...` prepare self-contained prompts and inputs; run each
   printed `prompt.md` in a fresh, read-only context, bind the answer with
   `python3 $T record <run_dir> --task-id <id> --output <file> --by "<fresh-context-id>"` (or mark
   unrunnable with `python3 $T unavailable <run_dir> --task-id <id> --reason "<why>"`), and verify
   before STEP 4 with `python3 $T gate <run_dir>`.
-- Model, harness and ds-protocol rule: run every step — including fresh-context plans,
+- Model, harness and ds-dev-protocol rule: run every step — including fresh-context plans,
   consults and reviews — using this session's current harness, model and effort level without
-  switching, selecting or enforcing alternatives. Only when `ds-protocol` is explicitly
+  switching, selecting or enforcing alternatives. Only when `ds-dev-protocol` is explicitly
   invoked alongside `ds-consolidate` do its model-routing and execution rules take precedence for
   the applicable tasks.
 - `reused` means the same candidate was already reviewed/planned: don't repeat it. Never review your
