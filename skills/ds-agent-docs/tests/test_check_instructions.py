@@ -1,4 +1,5 @@
 """check_instructions.py: the lean read-only audit survey."""
+import importlib.util
 import json
 import os
 import re
@@ -15,6 +16,13 @@ REPO_ROOT = os.path.dirname(os.path.dirname(HERE))
 
 DEFAULT_AGENTS = '# Fixture memory\n\nUse the documented commands.\n'
 DEFAULT_README = '# Fixture\n\n```sh\npython3 -m unittest\n```\n'
+
+
+def load_checker():
+    spec = importlib.util.spec_from_file_location('check_instructions_under_test', SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 class AuditCase(unittest.TestCase):
@@ -433,6 +441,66 @@ class ReferenceTests(AuditCase):
         self.assertNotIn('--json', refs)
         self.assertEqual(data['references']['stale'], [])
         self.assertIsNone(data['references']['counts'].get('scoped'))
+
+
+class BatchedIgnoreTests(AuditCase):
+    """Unresolved references need one batched git check-ignore call, not one per reference."""
+
+    def count_check_ignore(self, module):
+        calls = []
+        original = module.git
+
+        def counting(args, cwd, input_text=None):
+            if args[0] == 'check-ignore':
+                calls.append(args)
+            return original(args, cwd, input_text)
+
+        module.git = counting
+        self.addCleanup(setattr, module, 'git', original)
+        return calls
+
+    def test_many_unresolved_references_need_one_check_ignore_call(self):
+        lines = ['- [generated %d](generated/file-%d.md)' % (i, i) for i in range(3)]
+        lines += ['- [cache %d](cache/file-%d.md)' % (i, i) for i in range(3)]
+        self.write('.gitignore', 'generated/\ncache/\n')
+        self.write('AGENTS.md', DEFAULT_AGENTS + '\n' + '\n'.join(lines) + '\n')
+        self.commit()
+        module = load_checker()
+        calls = self.count_check_ignore(module)
+        code, payload = module.audit_command(self.repo)
+        self.assertEqual(code, 0, payload)
+        self.assertLessEqual(len(calls), 1, calls)
+        self.assertEqual(payload['references']['counts'].get('ignored'), 6)
+        self.assertEqual(payload['references']['stale'], [])
+
+    def test_non_git_repository_keeps_missing_references_stale(self):
+        plain = os.path.join(self.tmp, 'plain')
+        os.makedirs(plain)
+        self.write('AGENTS.md', DEFAULT_AGENTS + '\n- [gone](./gone/missing.md)\n', repo=plain)
+        self.write('CLAUDE.md', '@AGENTS.md\n', repo=plain)
+        module = load_checker()
+        calls = self.count_check_ignore(module)
+        code, payload = module.audit_command(plain)
+        self.assertEqual(code, 0, payload)
+        self.assertLessEqual(len(calls), 1, calls)
+        self.assertIn('./gone/missing.md',
+                      [item['ref'] for item in payload['references']['stale']])
+        self.assertIsNone(payload['references']['counts'].get('ignored'))
+
+    def test_traversal_ref_does_not_poison_gitignored_batch(self):
+        self.write('.gitignore', 'generated/\n')
+        self.write('AGENTS.md', DEFAULT_AGENTS + '\n'
+                   '- [generated](generated/index.md)\n'
+                   '- [outside](./../outside.md)\n')
+        self.commit()
+        module = load_checker()
+        calls = self.count_check_ignore(module)
+        code, payload = module.audit_command(self.repo)
+        self.assertEqual(code, 0, payload)
+        self.assertLessEqual(len(calls), 1, calls)
+        self.assertEqual(payload['references']['counts'].get('ignored'), 1)
+        self.assertNotIn('generated/index.md',
+                         [item['ref'] for item in payload['references']['stale']])
 
 
 class StructureTests(AuditCase):

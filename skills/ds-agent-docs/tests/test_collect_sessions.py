@@ -10,6 +10,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -407,6 +408,63 @@ class CollectorIdentityTests(GitRepoCase):
         self.assertNotIn('matched = True', source)
 
 
+class CollectorParallelScanTests(CollectorCase):
+    """B1: bounded parallel scanning keeps a deterministic order and one lookup per cwd."""
+
+    def test_member_lookup_runs_once_per_cwd_across_threads(self):
+        module = load_collector()
+        sub = os.path.join(self.root, 'sub')
+        os.makedirs(sub, exist_ok=True)
+        calls = []
+        original = module._common_dir
+
+        def counting(path):
+            calls.append(str(path))
+            time.sleep(0.01)
+            return '/fixture/common'
+
+        module._common_dir = counting
+        self.addCleanup(setattr, module, '_common_dir', original)
+        repo = module.Repo(self.root)
+        calls.clear()
+        results = []
+        barrier = threading.Barrier(8)
+
+        def worker(cwd):
+            barrier.wait()
+            results.append(repo.member(cwd))
+
+        threads = [threading.Thread(target=worker, args=(cwd,))
+                   for cwd in [self.root, sub] * 4]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(10)
+        self.assertEqual(len(results), 8)
+        self.assertTrue(all(results))
+        self.assertEqual(len(calls), 2, calls)
+        self.assertEqual(sorted(calls), sorted([self.root, sub]))
+
+    def test_equal_mtime_sessions_keep_a_deterministic_order_across_runs(self):
+        now = time.time()
+        names = ['delta', 'alpha', 'charlie', 'bravo', 'echo']
+        for name in names:
+            self.write_session(self.root, name + '.jsonl',
+                               [transcript_fixtures.record('body of ' + name)], mtime=now)
+        orders = []
+        for index in range(3):
+            evidence = os.path.join(self.tmp, 'evidence-%d.json' % index)
+            proc = self.run_collector('--evidence-out', evidence)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            with open(evidence, encoding='utf-8') as handle:
+                payload = json.load(handle)
+            orders.append([session['id'] for session in payload['sessions']])
+        expected = ['claude-code:%s.jsonl' % name for name in sorted(names)]
+        self.assertEqual(orders[0], expected)
+        self.assertEqual(orders[1], orders[0])
+        self.assertEqual(orders[2], orders[0])
+
+
 class CollectorNonGitTests(CollectorCase):
     def test_non_git_root_keeps_path_inside_matching(self):
         inside = os.path.join(self.root, 'sub')
@@ -506,6 +564,17 @@ class CollectorExclusionTests(CollectorCase):
             transcript_fixtures.record('typed message survives')])
         proc = self.run_collector()
         self.assertNotIn('typed message survives', proc.stdout)
+
+    def test_self_session_marker_on_the_last_line_still_excludes_the_session(self):
+        self.write_session(self.root, 'late-marker.jsonl', [
+            transcript_fixtures.record('typed message that must not appear'),
+            transcript_fixtures.record('<!-- ds-agent-docs:self-session --> late marker')])
+        self.write_session(self.root, 'clean.jsonl',
+                           [transcript_fixtures.record('clean message stays')])
+        proc = self.run_collector()
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertNotIn('typed message that must not appear', proc.stdout)
+        self.assertIn('clean message stays', proc.stdout)
 
     def test_opencode_child_session_is_excluded(self):
         path = self.make_db([
@@ -730,6 +799,18 @@ class CollectorDriftTests(CollectorCase):
                                'message': {'role': 'assistant', 'content': 'x'}})
                    for _ in range(20)]
         self.write_raw_session(self.root, 'assistant-only.jsonl', records)
+        proc = self.run_collector()
+        self.assertIn('FORMAT DRIFT: claude-code', proc.stdout)
+
+    def test_blank_lines_are_not_counted_and_malformed_lines_are(self):
+        typed = [json.dumps(transcript_fixtures.record('typed body %d' % i)) for i in range(10)]
+        blank = ['', '   '] * 10
+        self.write_raw_session(self.root, 'mixed.jsonl', typed + blank)
+        proc = self.run_collector()
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertNotIn('FORMAT DRIFT', proc.stdout)
+        junk = ['not json %d' % i for i in range(11)]
+        self.write_raw_session(self.root, 'mixed.jsonl', junk + typed + blank)
         proc = self.run_collector()
         self.assertIn('FORMAT DRIFT: claude-code', proc.stdout)
 
