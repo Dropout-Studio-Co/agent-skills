@@ -21,22 +21,34 @@ That's it. Your AI assistant will download the files, put them in the right fold
 
 ## Included Skills
 
-Once installed, type the phrase in the right column whenever you want to use a skill.
+Once installed, type the phrase in the right column whenever you want to use a skill. Skills are grouped by what they do.
+
+### Workflow & Sessions
 
 | Skill | What it does | What to type |
 | --- | --- | --- |
+| [`ds-dev-protocol`](skills/ds-dev-protocol/) | Runs a strict step-by-step plan, build, review, and merge workflow for coding tasks using Claude Code and OpenCode. | Runs automatically |
+| [`ds-handoff`](skills/ds-handoff/) | Produces a copyable session handoff (no args) or hands off and continues in a fresh session with a next-step directive (with args). | `Safe Switch`, `/ds-handoff`, or `/ds-handoff <next task>` |
 | [`ds-consolidate`](skills/ds-consolidate/) | Gathers unfinished work from all branches, copies, worktrees, stashes, and pull requests into the default branch, verifies everything is safe, and cleans up leftovers. | `consolidate` or `/ds-consolidate` |
-| [`ds-deps`](skills/ds-deps/) | Safely updates your project's packages from start to finish across web, mobile, desktop, TV, and backend ecosystems — checks compatibility, updates code, runs tests, and prepares the change. | `/ds-deps` |
-| [`ds-protocol`](skills/ds-protocol/) | Runs a strict step-by-step plan, build, review, and merge workflow for coding tasks using Claude Code and OpenCode. | Runs automatically |
+
+### UI & Design
+
+| Skill | What it does | What to type |
+| --- | --- | --- |
+| [`ds-ui-overhaul`](skills/ds-ui-overhaul/) | Reviews and improves your app's UI, UX, layout, accessibility, and motion across web, mobile, native, desktop, and TV platforms. | `Run ds-ui-overhaul.` |
 | [`ds-responsive`](skills/ds-responsive/) | Builds adaptive, responsive layouts, text scaling, input support, and accessibility across web, mobile, native, desktop, and TV screens. | `Use ds-responsive.` |
-| [`ds-switch`](skills/ds-switch/) | Produces a copyable session handoff (no args) or hands off and continues in a fresh session with a next-step directive (with args). | `Safe Switch`, `/ds-switch`, or `/ds-switch <next task>` |
-| [`ds-sync`](skills/ds-sync/) | Reviews and updates your project's AI instruction files (`AGENTS.md`, `CLAUDE.md`, and docs) so they stay accurate. | `/ds-sync` |
-| [`ds-ui`](skills/ds-ui/) | Reviews and improves your app's UI, UX, layout, accessibility, and motion across web, mobile, native, desktop, and TV platforms. | `Run ds-ui.` |
+
+### Maintenance & Docs
+
+| Skill | What it does | What to type |
+| --- | --- | --- |
+| [`ds-deps-upgrade`](skills/ds-deps-upgrade/) | Safely updates your project's packages from start to finish across web, mobile, desktop, TV, and backend ecosystems — checks compatibility, updates code, runs tests, and prepares the change. | `/ds-deps-upgrade` |
+| [`ds-agent-docs`](skills/ds-agent-docs/) | Reviews and updates your project's AI instruction files (`AGENTS.md`, `CLAUDE.md`, and docs) so they stay accurate. | `/ds-agent-docs` |
 
 ### Good to Know
 
-- **Updating packages:** `ds-deps` only makes changes when you ask for it by name (`/ds-deps`). If you casually ask to "update my dependencies," it will only show you a plan. You can also run `/ds-deps plan` anytime to preview changes first.
-- **Using `ds-protocol`:** All other skills work with whichever AI assistant you already use. `ds-protocol` is the only one that needs extra tools signed in on your computer: Claude Code (`claude`), GitHub CLI (`gh`), and OpenCode (`opencode`). If you don't use those, you can ignore or remove the `ds-protocol` folder.
+- **Updating packages:** `ds-deps-upgrade` only makes changes when you ask for it by name (`/ds-deps-upgrade`). If you casually ask to "update my dependencies," it will only show you a plan. You can also run `/ds-deps-upgrade plan` anytime to preview changes first.
+- **Using `ds-dev-protocol`:** All other skills work with whichever AI assistant you already use. `ds-dev-protocol` is the only one that needs extra tools signed in on your computer: Claude Code (`claude`), GitHub CLI (`gh`), and OpenCode (`opencode`). If you don't use those, you can ignore or remove the `ds-dev-protocol` folder.
 
 ## License
 

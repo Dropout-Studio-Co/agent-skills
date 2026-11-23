@@ -7,15 +7,15 @@ kept in sync with `main` automatically (see [Automatic sync](#automatic-sync)).
 ## Commands
 
 ```sh
-python3 -m unittest discover -s skills/ds-deps/tests -t skills/ds-deps  # ds-deps + review_task tests
-python3 -m unittest discover -s skills/ds-sync/tests -t skills/ds-sync  # collector + checker tests
-bash skills/ds-protocol/tests/smoke.sh  # ds-protocol smoke tests (fake CLIs)
+python3 -m unittest discover -s skills/ds-deps-upgrade/tests -t skills/ds-deps-upgrade  # ds-deps-upgrade + review_task tests
+python3 -m unittest discover -s skills/ds-agent-docs/tests -t skills/ds-agent-docs  # collector + checker tests
+bash skills/ds-dev-protocol/tests/smoke.sh  # ds-dev-protocol smoke tests (fake CLIs)
 diff -rq -x __pycache__ -x graft skills/<name> ~/.agents/skills/<name>  # drift check: must print nothing
 rsync -a --exclude '__pycache__/' --exclude 'graft/.cache/' skills/<name>/ ~/.agents/skills/<name>/  # sync one skill
 ~/.agents/bin/agent-skills-sync --dry-run  # sync: show what the next run would do, change nothing
 ```
 
-`skills/ds-sync/scripts/check_instructions.py` surveys a repository, runs a read-only cross-agent
+`skills/ds-agent-docs/scripts/check_instructions.py` surveys a repository, runs a read-only cross-agent
 prompt-audit (`audit --repo R [--scope P]`), stages a memory-file edit, gates it against session
 evidence and typed claims, and applies only a gated stage; it never commits or pushes. Its tests
 live beside `scripts/collect_sessions.py`'s tests. Both helpers are stdlib-only and run on Python
@@ -64,38 +64,38 @@ up as `Only in ~/.agents/skills/<name>` and are expected; any other difference i
 
 ```text
 skills/ds-consolidate/    SKILL.md, task-profile.json (plan/review prompt profiles)
-skills/ds-deps/           SKILL.md, README.md, scripts/, references/, tests/, admin/
-skills/ds-protocol/       SKILL.md, reference.md, opus-gate-brief.md, implementer-brief.md,
+skills/ds-deps-upgrade/           SKILL.md, README.md, scripts/, references/, tests/, admin/
+skills/ds-dev-protocol/       SKILL.md, reference.md, opus-gate-brief.md, implementer-brief.md,
                           plan-schema.json, review-schema.json, opencode/,
                           scripts/ (gate.sh, implement.sh, implement_lib.py, premerge-and-merge.sh),
                           tests/ (smoke.sh, implement-smoke.sh)
 skills/ds-responsive/     SKILL.md, references/ (platforms.md)
-skills/ds-switch/         SKILL.md
-skills/ds-sync/           SKILL.md, references/ (audit-rubric.md, agent-surfaces.md),
+skills/ds-handoff/         SKILL.md
+skills/ds-agent-docs/           SKILL.md, references/ (audit-rubric.md, agent-surfaces.md),
                           scripts/ (collect_sessions.py, check_instructions.py),
                           tests/ (collector, checker)
-skills/ds-ui/             SKILL.md, task-profile.json, references/ (platforms.md)
+skills/ds-ui-overhaul/             SKILL.md, task-profile.json, references/ (platforms.md)
 ```
 
 ## Invariants
 
-- `skills/ds-deps/scripts/review_task.py` resolves sibling skills as
-  `<parent>/<skill>/task-profile.json`. `ds-consolidate` and `ds-ui` depend on that, so the three
-  folders (`ds-deps`, `ds-consolidate`, `ds-ui`) stay siblings and keep their names. No other
+- `skills/ds-deps-upgrade/scripts/review_task.py` resolves sibling skills as
+  `<parent>/<skill>/task-profile.json`. `ds-consolidate` and `ds-ui-overhaul` depend on that, so the three
+  folders (`ds-deps-upgrade`, `ds-consolidate`, `ds-ui-overhaul`) stay siblings and keep their names. No other
   skill loads `task-profile.json`.
 - `SKILL.md` frontmatter keeps `name` (matching the `ds-*` folder name) and `description`;
-  `ds-deps` also declares `allowed-tools`, `license` and `disable-model-invocation`.
+  `ds-deps-upgrade` also declares `allowed-tools`, `license` and `disable-model-invocation`.
 - Python helpers are stdlib-only and must run on 3.9+.
 - Scripts keep their executable bit (`scripts/depup.py`, `scripts/review_task.py`,
-  `scripts/collect_sessions.py`, `scripts/check_instructions.py`, `ds-protocol`
+  `scripts/collect_sessions.py`, `scripts/check_instructions.py`, `ds-dev-protocol`
   `scripts/gate.sh`, `scripts/premerge-and-merge.sh`, `scripts/implement.sh`, `tests/smoke.sh` and
   `tests/implement-smoke.sh`).
 
 ## Always
 
-- Run the test suite after touching `ds-deps` scripts, tests or any `task-profile.json`.
-- Run the collector and checker tests after touching `ds-sync` scripts or tests.
-- Run `bash skills/ds-protocol/tests/smoke.sh` after touching `ds-protocol` scripts or tests.
+- Run the test suite after touching `ds-deps-upgrade` scripts, tests or any `task-profile.json`.
+- Run the collector and checker tests after touching `ds-agent-docs` scripts or tests.
+- Run `bash skills/ds-dev-protocol/tests/smoke.sh` after touching `ds-dev-protocol` scripts or tests.
 - Keep documentation accurate to the code: file names, commands and flags.
 
 ## Never

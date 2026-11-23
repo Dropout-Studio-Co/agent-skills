@@ -12,8 +12,8 @@ platform- or domain-specific detail. Keep the change inside the skill it belongs
 ## Invariants
 
 - **Folder names are the skill names.** All skills use lowercase `ds-*` names. `ds-consolidate`
-  and `ds-ui` resolve `../ds-deps/scripts/review_task.py` and their own `task-profile.json` from
-  their location. Renaming or splitting `skills/ds-deps` breaks both.
+  and `ds-ui-overhaul` resolve `../ds-deps-upgrade/scripts/review_task.py` and their own `task-profile.json` from
+  their location. Renaming or splitting `skills/ds-deps-upgrade` breaks both.
 - **Skills stay self-contained.** A folder must work when copied alone into a global skills root,
   except for the shared fresh-context task scripts above.
 - **Frontmatter stays valid.** Every `SKILL.md` keeps `name` and `description`; the description
@@ -25,17 +25,17 @@ platform- or domain-specific detail. Keep the change inside the skill it belongs
 ## Checks
 
 ```sh
-python3 -m unittest discover -s skills/ds-deps/tests -t skills/ds-deps
-python3 -m unittest discover -s skills/ds-sync/tests -t skills/ds-sync
-bash skills/ds-protocol/tests/smoke.sh
+python3 -m unittest discover -s skills/ds-deps-upgrade/tests -t skills/ds-deps-upgrade
+python3 -m unittest discover -s skills/ds-agent-docs/tests -t skills/ds-agent-docs
+bash skills/ds-dev-protocol/tests/smoke.sh
 ```
 
-Run the `ds-deps` suite after any change to `ds-deps` scripts, tests or any `task-profile.json`
-(this also validates the `ds-consolidate` and `ds-ui` profiles). Run the collector and checker
-suite after changes to `ds-sync` scripts or tests, and run `bash skills/ds-protocol/tests/smoke.sh`
-after changes to `ds-protocol` scripts or tests.
+Run the `ds-deps-upgrade` suite after any change to `ds-deps-upgrade` scripts, tests or any `task-profile.json`
+(this also validates the `ds-consolidate` and `ds-ui-overhaul` profiles). Run the collector and checker
+suite after changes to `ds-agent-docs` scripts or tests, and run `bash skills/ds-dev-protocol/tests/smoke.sh`
+after changes to `ds-dev-protocol` scripts or tests.
 
-`ds-sync` ships two stdlib-only helpers. `scripts/collect_sessions.py` collects and redacts session
+`ds-agent-docs` ships two stdlib-only helpers. `scripts/collect_sessions.py` collects and redacts session
 evidence; `scripts/check_instructions.py` surveys a repository (`check`), runs a read-only
 cross-agent prompt-audit (`audit`), stages a memory-file edit (`stage`), gates it against that
 evidence and typed claims (`gate`), and applies only a gated stage (`apply`). The checker never
