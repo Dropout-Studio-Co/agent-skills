@@ -7,7 +7,7 @@ disable-model-invocation: true
 
 # Safe Switch (`ds-handoff`)
 
-Run only when the user invokes `/ds-handoff` or explicitly says "Safe Switch". Never trigger automatically, never for quota, usage or rate limits, and never as an automatic fallback.
+Because `disable-model-invocation: true` prevents harnesses that enforce it from auto-loading this skill, invoke it explicitly: `/ds-handoff`, or say "Safe Switch" when the skill is manually loaded or routed by user policy. Never trigger automatically, never for quota, usage or rate limits, and never as an automatic fallback.
 
 ## Mode Selection
 
@@ -66,8 +66,8 @@ Use **Structured Markdown** with the fixed sections below. Omit sections that do
 
 ### Mode 2 — Handoff and Continue (With Any Argument)
 
-- **Save durably:** Write the handoff to `~/.local/state/ds-handoff/<YYYYMMDD-HHMMSS>-<slug>.md` (create the directory; durable storage, not OS temp).
+- **Save durably:** Write the handoff to `${XDG_STATE_HOME:-~/.local/state}/ds-handoff/<YYYYMMDD-HHMMSS>-<slug>.md` (create the directory; UTC timestamp; mode `0600`; expand `~` before writing; durable storage, not OS temp).
 - **Preserve harness, model, and effort:** Keep the current session's harness, model, and effort level without switching, selecting, or enforcing another model, harness, provider, account, billing, or effort unless the user explicitly requested a specific change (or `ds-dev-protocol` was explicitly invoked for this task, in which case its routing rules apply).
-- **If the current harness supports launching a fresh session/thread:** Start one in the work's directory using the harness's native session-launch tool or command. Give it a short descriptive name derived from the task/argument, and pass the saved handoff file's contents as its prompt without overriding model or effort (and without letting the shell expand backticks or `$` inside the handoff). Confirm the new session started. If launch fails, keep the handoff file and report the exact error; do not retry with another harness, model, or flag set.
+- **If the current harness supports launching a fresh session/thread:** Launch a new top-level session/thread (never a child subagent, so the continued work survives this session's exit) in the work's directory using the harness's native session-launch tool or command. Give it a short descriptive name derived from the task/argument, and pass the saved handoff file's contents as its prompt without overriding model or effort (and without letting the shell expand backticks or `$` inside the handoff). Confirm the new session started. If launch fails, keep the handoff file and report the exact error; do not retry with another harness, model, or flag set.
 - **If the current harness has no automated session-launch capability:** Do not invoke another harness's CLI. Keep the verified handoff file on disk and give the user the handoff file path with a short ready-to-paste resume instruction pointing to it.
 - **Close out:** Stop acting on the work in this session (the new session owns it now). Reply with the handoff file path and either the launched session identifier and how to open/attach to it, or the fallback resume instruction pointing to the handoff path.

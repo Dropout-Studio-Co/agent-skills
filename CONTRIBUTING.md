@@ -36,13 +36,10 @@ suite after changes to `ds-agent-docs` scripts or tests, and run `bash skills/ds
 after changes to `ds-dev-protocol` scripts or tests.
 
 `ds-agent-docs` ships two stdlib-only helpers. `scripts/collect_sessions.py` collects and redacts session
-evidence; `scripts/check_instructions.py` surveys a repository (`check`), runs a read-only
-cross-agent prompt-audit (`audit`), stages a memory-file edit (`stage`), gates it against that
-evidence and typed claims (`gate`), and applies only a gated stage (`apply`). The checker never
-commits, pushes, opens a pull request or merges, and only `apply` writes to a repository. Both
-scripts keep their executable bit, require Python 3.9+, and their tests use scratch repositories
-with no network, credentials or outside paths. Also re-read the file you edited: commands, paths
-and script names must match the repository.
+evidence; `scripts/check_instructions.py` runs a read-only cross-agent instruction and documentation audit
+(`audit --repo R [--scope P]`) and never modifies a repository. Both scripts keep their executable bit,
+require Python 3.9+, and their tests use scratch repositories with no network, credentials or outside
+paths. Also re-read the file you edited: commands, paths and script names must match the repository.
 
 ## Installing a change locally
 

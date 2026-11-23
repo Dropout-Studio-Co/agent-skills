@@ -28,7 +28,7 @@ Once installed, type the phrase in the right column whenever you want to use a s
 | Skill | What it does | What to type |
 | --- | --- | --- |
 | [`ds-dev-protocol`](skills/ds-dev-protocol/) | Runs a strict step-by-step plan, build, review, and merge workflow for coding tasks using Claude Code and OpenCode. | Runs automatically |
-| [`ds-handoff`](skills/ds-handoff/) | Produces a copyable session handoff (no args) or hands off and continues in a fresh session with a next-step directive (with args). | `Safe Switch`, `/ds-handoff`, or `/ds-handoff <next task>` |
+| [`ds-handoff`](skills/ds-handoff/) | Produces a copyable session handoff (no args) or hands off and continues in a fresh session with a next-step directive (with args). | `/ds-handoff` or `/ds-handoff <next task>` (or `Safe Switch` when routed) |
 | [`ds-consolidate`](skills/ds-consolidate/) | Gathers unfinished work from all branches, copies, worktrees, stashes, and pull requests into the default branch, verifies everything is safe, and cleans up leftovers. | `consolidate` or `/ds-consolidate` |
 
 ### UI & Design

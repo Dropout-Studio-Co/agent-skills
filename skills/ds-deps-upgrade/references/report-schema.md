@@ -68,17 +68,9 @@ Receipt shape:
 Use `kind: "independent-review"` or `"security-review"` for review receipts and the risk name
 as `subject`.
 
-Status rules enforced by the helper: `plan` runs report `PLAN` (or `BLOCKED`); `PASS` is
-downgraded to `PARTIAL` unless the `baseline`, `verify` and `review` journal steps are done,
-`verification` is non-empty, every entry has a nonempty
-`command`, `"result": "pass"`, a nonempty log, and a valid candidate-bound evidence receipt; no
-journal step is pending/running/failed/blocked, every `impact_tier: high` upgrade has a matching
-high-risk item (risk `severity` `high` or `critical`) with complete analysis, source links, alternatives, controls, recovery path,
-independent review and security review with distinct candidate-bound receipts and artifacts,
-no high-risk item is blocked, no `skipped_checks` entry has
-`required: true`, no upgrade has status `held`/`blocked`/`failed`, every `reviews` entry with
-`required: true` is `completed` with verdict `pass` and a valid receipt for the current candidate,
-and no review of the current candidate has verdict `fail`. Copy `reviews` entries verbatim from
+Status rules enforced by the helper: `plan` runs report `PLAN` (or `BLOCKED`); `PASS` requires
+the conditions in [verification.md](verification.md#result-rules) and is otherwise downgraded to
+`PARTIAL`. Copy `reviews` entries verbatim from
 `depup.py review record` output ([fresh-context-tasks.md](fresh-context-tasks.md)). `planning` is written by the
 helper from `<run_dir>/plans/*/entry.json` (input values are ignored) and never gates `PASS`. `risk` describes the version
 bump; `impact_tier` describes the affected system and consequences. High-risk items do not require

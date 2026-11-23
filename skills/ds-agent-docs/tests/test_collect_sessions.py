@@ -483,6 +483,22 @@ class CollectorExclusionTests(CollectorCase):
         self.assertNotIn('typed in self session', proc.stdout)
         self.assertNotIn('typed message survives', proc.stdout)
 
+    def test_both_self_session_markers_exclude_the_whole_session(self):
+        self.write_session(self.root, 'active.jsonl', [
+            transcript_fixtures.record('<!-- ds-agent-docs:self-session --> active marker'),
+            transcript_fixtures.record('active tail survives')])
+        self.write_session(self.root, 'legacy.jsonl', [
+            transcript_fixtures.record('<!-- backpass:self-session --> legacy marker'),
+            transcript_fixtures.record('legacy tail survives')])
+        self.write_session(self.root, 'clean.jsonl', [
+            transcript_fixtures.record('clean message stays')])
+        proc = self.run_collector()
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        for text in ('active marker', 'active tail survives', 'legacy marker',
+                     'legacy tail survives'):
+            self.assertNotIn(text, proc.stdout)
+        self.assertIn('clean message stays', proc.stdout)
+
     def test_implementer_opening_excludes_the_whole_session(self):
         self.write_session(self.root, 'implementer.jsonl', [
             transcript_fixtures.record(
@@ -777,7 +793,7 @@ class CollectorEvidenceTests(GitRepoCase):
         self.assertRegex(payload['repo_id'], r'^[0-9a-f]{64}$')
         self.assertEqual(set(payload['counts']),
                          {'total', 'interactive', 'headless', 'excluded', 'shown',
-                          'opencode_v1_only'})
+                          'digest_shown', 'opencode_v1_only'})
         self.assertEqual(payload['counts']['shown'], 1)
         self.assertIn('date_range', payload)
         self.assertIn('drift', payload)
@@ -791,6 +807,20 @@ class CollectorEvidenceTests(GitRepoCase):
         self.assertTrue(all('correction' in item and 'msg' in item
                             for item in session['human']))
         self.assertIn('errors', session)
+
+    def test_evidence_shown_matches_sessions_when_the_digest_truncates(self):
+        for index in range(3):
+            self.write_session(self.root, 'long-%d.jsonl' % index,
+                               [transcript_fixtures.record(
+                                   'long evidence message %d %s' % (index, 'z' * 300))])
+        evidence = os.path.join(self.tmp, 'evidence.json')
+        proc = self.run_collector('--evidence-out', evidence, '--max-chars', '200')
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        with open(evidence, encoding='utf-8') as handle:
+            payload = json.load(handle)
+        self.assertEqual(len(payload['sessions']), payload['counts']['shown'])
+        self.assertEqual(payload['counts']['shown'], 3)
+        self.assertLess(payload['counts']['digest_shown'], payload['counts']['shown'])
 
     def test_evidence_path_refusals(self):
         self.write_session(self.root, 'evidence.jsonl',

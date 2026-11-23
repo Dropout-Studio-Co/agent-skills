@@ -5,7 +5,7 @@
     "Fully autonomous: decide from evidence and the repository's own instructions and never pause. When the evidence does not settle a decision, consult once; keep any item still uncertain after the consult and stop on any other unsettled decision.",
     "An item is deleted, dropped, closed or removed only when its evidence proves it is in the default branch (or superseded there) and its copy is present in the verified restore point.",
     "Keep every item still uncertain after a consult, and every in-progress (a live process cwd inside the location, or changes within 24 h), foreign (author other than the verified signed-in user, unverified remote authorship, forks, bots) or ignored-non-cache item (including secrets, keystores and signing certs) untouched; kept items are never integrated, deleted, dropped or closed.",
-    "A restore point is written before the first change (before STEP 2) and again after the gate, before cleanup.",
+    "A restore point is written before STEP 2 whenever STEP 2 will mutate anything, and a second one after STEP 2 and before STEP 3 — VERIFY whenever STEP 2 changed the repo; the STEP 3 reconciliation reviewer verifies that final manifest and bundle-verify output before the gate and STEP 4 cleanup.",
     "Conflicts resolve in favor of the default branch's current design without losing still-needed behavior.",
     "Planners, consultants and reviewers are advisory and read-only; the main session performs every merge, commit, push and cleanup."
   ],

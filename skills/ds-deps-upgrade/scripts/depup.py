@@ -44,7 +44,6 @@ import os
 import re
 import shutil
 import socket
-import subprocess
 import sys
 import tempfile
 import uuid
@@ -84,148 +83,54 @@ NPM_SAFE_ENV = {
 }
 
 
-class Refusal(Exception):
-    """A safety rule blocked the command; message explains why."""
+# The shared low-level protocol (refusals, atomic writes, redaction, Git state and diff
+# bundles) lives in task_protocol.py so depup.py and review_task.py share one implementation.
+# It is loaded once, cached, and re-exported below so every existing caller keeps working.
+
+_TASK_PROTOCOL = None
 
 
-# --------------------------------------------------------------------- helpers
-
-def now() -> str:
-    return _dt.datetime.now(_dt.timezone.utc).replace(microsecond=0).isoformat()
-
-
-def emit(payload) -> None:
-    sys.stdout.write(json.dumps(redact_output(payload), indent=2, sort_keys=False) + '\n')
-
-
-def run_cmd(argv, cwd=None, timeout=120, env_extra=None):
-    """Run without a shell. Returns dict(rc, stdout, stderr, error)."""
-    env = dict(os.environ)
-    if env_extra:
-        env.update(env_extra)
-    try:
-        proc = subprocess.run(argv, cwd=cwd, capture_output=True, text=True,
-                              timeout=timeout, env=env, stdin=subprocess.DEVNULL)
-        return {'rc': proc.returncode, 'stdout': proc.stdout, 'stderr': proc.stderr, 'error': None}
-    except FileNotFoundError:
-        return {'rc': None, 'stdout': '', 'stderr': '', 'error': 'not-found: ' + argv[0]}
-    except subprocess.TimeoutExpired:
-        return {'rc': None, 'stdout': '', 'stderr': '', 'error': 'timeout after %ss' % timeout}
-    except OSError as exc:
-        return {'rc': None, 'stdout': '', 'stderr': '', 'error': str(exc)}
+def task_protocol():
+    """Load the sibling shared protocol module by path (never from the repository or cwd)."""
+    global _TASK_PROTOCOL
+    if _TASK_PROTOCOL is None:
+        import importlib.util
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'task_protocol.py')
+        spec = importlib.util.spec_from_file_location('depup_task_protocol', path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        _TASK_PROTOCOL = module
+    return _TASK_PROTOCOL
 
 
-def git(repo, *args, timeout=60):
-    # Never block on an interactive credential prompt: fail fast and report instead.
-    return run_cmd(['git', '-C', repo] + list(args), timeout=timeout, env_extra={'GIT_TERMINAL_PROMPT': '0'})
-
-
-def read_text(path, limit=4_000_000):
-    try:
-        with open(path, 'r', encoding='utf-8', errors='replace') as handle:
-            return handle.read(limit)
-    except OSError:
-        return None
-
-
-def read_json(path):
-    text = read_text(path)
-    if text is None:
-        return None, 'unreadable'
-    try:
-        return json.loads(text), None
-    except ValueError as exc:
-        return None, 'invalid json: %s' % exc
-
-
-def atomic_write(path, text):
-    directory = os.path.dirname(path)
-    os.makedirs(directory, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(prefix='.tmp-', dir=directory)
-    try:
-        with os.fdopen(fd, 'w', encoding='utf-8') as handle:
-            handle.write(text)
-        os.replace(tmp, path)
-    except BaseException:
-        if os.path.exists(tmp):
-            os.unlink(tmp)
-        raise
-
-
-def within(root, path):
-    root = os.path.realpath(root)
-    path = os.path.realpath(path)
-    return path == root or path.startswith(root + os.sep)
-
-
-URL_USERINFO_RE = re.compile(r'(?i)([a-z][a-z0-9+.-]*://)[^/@\s]+@')
-URL_SECRET_QUERY_RE = re.compile(
-    r'(?i)([?&#;](?:x-amz-)?(?:access[_-]?token|auth[_-]?token|refresh[_-]?token|npm[_-]?token|token|auth|'
-    r'password|passwd|x[_-]?api[_-]?key|api[_-]?key|client[_-]?secret|private[_-]?key|secret|signature|sig|credential)=)[^&#;\s]+'
-)
-SECRET_ASSIGNMENT_RE = re.compile(
-    r'(?i)(\b(?:[a-z0-9_.-]*(?:token|secret|credential|password|passwd|api[_-]?key|private[_-]?key|'
-    r'access[_-]?key|signature)|authorization|proxy-authorization|cookie|set-cookie)\s*[=:]\s*)'
-    r'("[^"\r\n]*"|\'[^\'\r\n]*\'|[^\s,;]+)'
-)
-AUTH_SCHEME_SECRET_RE = re.compile(r'(?i)\b(Basic|Bearer)\s+[^\s,;]+')
-AUTH_HEADER_SECRET_RE = re.compile(
-    r'(?i)\b((?:proxy-)?authorization\s*[:=]\s*)(?:Basic|Bearer)\s+[^\s,;]+'
-)
-SECRET_FIELD_NAMES = {'accesstoken', 'authtoken', 'refreshtoken', 'npmtoken', 'token', 'password', 'passwd',
-                      'apikey', 'xapikey', 'clientsecret', 'privatekey', 'secret', 'authorization',
-                      'credential', 'credentials', 'cookie', 'setcookie', 'proxyauthorization'}
-
-
-def redact_text(value):
-    value = URL_USERINFO_RE.sub(r'\1[REDACTED]@', value)
-    value = URL_SECRET_QUERY_RE.sub(r'\1[REDACTED]', value)
-    value = AUTH_HEADER_SECRET_RE.sub(r'\1[REDACTED]', value)
-    value = SECRET_ASSIGNMENT_RE.sub(r'\1[REDACTED]', value)
-    return AUTH_SCHEME_SECRET_RE.sub(r'\1 [REDACTED]', value)
-
-
-def redact_output(value):
-    """Redact credentials from all helper JSON and report output."""
-    if isinstance(value, str):
-        return redact_text(value)
-    if isinstance(value, list):
-        return [redact_output(item) for item in value]
-    if isinstance(value, dict):
-        return {key: '[REDACTED]' if is_secret_field_name(key)
-                else redact_output(item) for key, item in value.items()}
-    return value
-
-
-def is_secret_field_name(key):
-    normalized = re.sub(r'[^a-z0-9]', '', str(key).lower())
-    return (normalized in SECRET_FIELD_NAMES or
-            re.search(r'(?:token|secret|credential|password|passwd|apikey|privatekey|accesskey|'
-                      r'authorization|proxyauthorization|cookie)$', normalized) is not None)
-
-
-def evidence_artifact(run_dir, reference):
-    """Accept only a nonempty evidence file owned by this run directory."""
-    if not isinstance(reference, str) or not reference.strip():
-        return False
-    path = os.path.expanduser(reference)
-    if not os.path.isabs(path):
-        path = os.path.join(run_dir, path)
-    try:
-        return within(run_dir, path) and os.path.isfile(path) and os.path.getsize(path) > 0
-    except OSError:
-        return False
-
-
-def file_sha256(path):
-    digest = hashlib.sha256()
-    try:
-        with open(path, 'rb') as handle:
-            for chunk in iter(lambda: handle.read(1024 * 1024), b''):
-                digest.update(chunk)
-        return digest.hexdigest()
-    except OSError:
-        return None
+_tp = task_protocol()
+Refusal = _tp.Refusal
+now = _tp.now
+emit = _tp.emit
+run_cmd = _tp.run_cmd
+git = _tp.git
+read_text = _tp.read_text
+read_json = _tp.read_json
+atomic_write = _tp.atomic_write
+within = _tp.within
+file_sha256 = _tp.file_sha256
+URL_USERINFO_RE = _tp.URL_USERINFO_RE
+URL_SECRET_QUERY_RE = _tp.URL_SECRET_QUERY_RE
+SECRET_ASSIGNMENT_RE = _tp.SECRET_ASSIGNMENT_RE
+AUTH_SCHEME_SECRET_RE = _tp.AUTH_SCHEME_SECRET_RE
+AUTH_HEADER_SECRET_RE = _tp.AUTH_HEADER_SECRET_RE
+SECRET_FIELD_NAMES = _tp.SECRET_FIELD_NAMES
+redact_text = _tp.redact_text
+redact_output = _tp.redact_output
+is_secret_field_name = _tp.is_secret_field_name
+evidence_artifact = _tp.evidence_artifact
+resolve_repo = _tp.resolve_repo
+repo_key = _tp.repo_key
+git_state = _tp.git_state
+tree_fingerprint = _tp.tree_fingerprint
+clean_label = _tp.clean_label
+review_slug = _tp.review_slug
+remove_stale_files = _tp.remove_stale_files
 
 
 def candidate_head(journal):
@@ -307,12 +212,6 @@ def state_root() -> str:
     return os.path.join(base, 'ds-deps-upgrade')
 
 
-def repo_key(root: str) -> str:
-    real = os.path.realpath(root)
-    slug = re.sub(r'[^A-Za-z0-9._-]+', '-', os.path.basename(real)).strip('-') or 'repo'
-    return '%s-%s' % (slug[:40], hashlib.sha256(real.encode()).hexdigest()[:8])
-
-
 def repo_state_dir(root: str) -> str:
     return os.path.join(state_root(), repo_key(root))
 
@@ -342,76 +241,7 @@ def run_dir_for(run_ref: str) -> str:
 
 # ------------------------------------------------------------------- repo root
 
-def resolve_repo(path):
-    path = os.path.abspath(os.path.expanduser(path or os.getcwd()))
-    if not os.path.isdir(path):
-        raise Refusal('not a directory: %s' % path)
-    result = git(path, 'rev-parse', '--show-toplevel')
-    if result['rc'] == 0:
-        return os.path.realpath(result['stdout'].strip()), True
-    return os.path.realpath(path), False
-
-
-def git_state(root):
-    info = {}
-    def val(*args):
-        result = git(root, *args)
-        return result['stdout'].strip() if result['rc'] == 0 else None
-    info['head'] = val('rev-parse', 'HEAD')
-    info['branch'] = val('symbolic-ref', '--short', '-q', 'HEAD')
-    info['detached'] = info['branch'] is None
-    info['upstream'] = val('rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}')
-    git_dir = val('rev-parse', '--absolute-git-dir')
-    info['git_dir'] = git_dir
-    info['is_linked_worktree'] = bool(git_dir and os.sep + 'worktrees' + os.sep in git_dir)
-    status = git(root, 'status', '--porcelain=v1', '-z', '--untracked-files=all')
-    entries = []
-    if status['rc'] == 0:
-        chunks = status['stdout'].split('\0')
-        i = 0
-        while i < len(chunks):
-            chunk = chunks[i]
-            if not chunk:
-                i += 1
-                continue
-            code, name = chunk[:2], chunk[3:]
-            entry = {'code': code, 'path': name}
-            if code[0] in 'RC':
-                i += 1
-                entry['from'] = chunks[i] if i < len(chunks) else None
-            entries.append(entry)
-            i += 1
-    info['dirty'] = [e for e in entries if e['code'] != '??']
-    info['untracked'] = [e['path'] for e in entries if e['code'] == '??']
-    info['clean'] = not entries
-    stash = git(root, 'stash', 'list')
-    info['stash_count'] = len([l for l in stash['stdout'].splitlines() if l]) if stash['rc'] == 0 else None
-    ops = []
-    if git_dir:
-        for marker, label in (('MERGE_HEAD', 'merge'), ('rebase-merge', 'rebase'),
-                              ('rebase-apply', 'rebase/am'), ('CHERRY_PICK_HEAD', 'cherry-pick'),
-                              ('REVERT_HEAD', 'revert'), ('BISECT_LOG', 'bisect')):
-            if os.path.exists(os.path.join(git_dir, marker)):
-                ops.append(label)
-    info['operation_in_progress'] = ops
-    wt = git(root, 'worktree', 'list', '--porcelain')
-    worktrees = []
-    if wt['rc'] == 0:
-        current = {}
-        for line in wt['stdout'].splitlines():
-            if not line:
-                if current:
-                    worktrees.append(current)
-                current = {}
-                continue
-            key, _, value = line.partition(' ')
-            current[key] = value or True
-        if current:
-            worktrees.append(current)
-    info['worktrees'] = worktrees
-    info['submodules'] = os.path.exists(os.path.join(root, '.gitmodules'))
-    info['shallow'] = val('rev-parse', '--is-shallow-repository') == 'true'
-    return info
+# resolve_repo, git_state and tree_fingerprint are provided by task_protocol.py (re-exported above).
 
 
 # ------------------------------------------------------------------ inventory
@@ -574,12 +404,10 @@ def parse_simple_toml_deps(text, sections):
 
 
 def load_toml(text):
-    try:
-        import tomllib  # Python 3.11+
-    except ImportError:
+    if _tomllib is None:
         return None
     try:
-        return tomllib.loads(text)
+        return _tomllib.loads(text)
     except Exception:  # noqa: BLE001 - malformed user TOML is data, not a crash
         return None
 
@@ -962,6 +790,10 @@ PNPM_CONFIG_HAZARD_RE = re.compile(
     r'|(?<![\w-])config[\s_-]?dependencies\b'                         # configDependencies
     r'|(?<![\w-])["\']?manage[\s_-]?package[\s_-]?manager[\s_-]?versions["\']?\s*[=:]\s*["\']?true\b',
     re.I)
+# JSON keys are compared on a normalized form so snake_case, kebab-case, camelCase and
+# unicode-escaped spellings all reach the same check.
+PNPM_CONFIG_KEYS = ('configdependencies', 'globalpnpmfile', 'pnpmfile')
+PNPM_VERSION_KEY = 'managepackagemanagerversions'
 COREPACK_ENV_FILE = '.corepack.env'
 
 
@@ -981,6 +813,42 @@ def _read_config(path, limit=CONFIG_READ_CAP):
     if len(data) > limit:
         return None, 'is larger than the %d-byte read cap (not inspected)' % limit
     return data.decode('utf-8', 'replace'), None
+
+
+def _config_key(key):
+    return re.sub(r'[^a-z0-9]', '', str(key).lower())
+
+
+def _truthy(value):
+    if isinstance(value, str):
+        return value.strip().lower() not in ('', '0', 'false', 'no', 'off')
+    return bool(value)
+
+
+def _pnpm_manifest_hazard(text):
+    """Hazard reason for a parsed package.json, or None. JSON escapes cannot hide a key."""
+    try:
+        data = json.loads(text)
+    except ValueError as exc:
+        return 'is not valid JSON (%s); not inspected' % exc.__class__.__name__
+    if not isinstance(data, dict):
+        return 'is not a JSON object; not inspected'
+
+    def walk(node):
+        if not isinstance(node, dict):
+            return None
+        for key, value in node.items():
+            normalized = _config_key(key)
+            if normalized in PNPM_CONFIG_KEYS:
+                return 'declares pnpm configDependencies/pnpmfile hooks (code loaded by pnpm)'
+            if normalized == PNPM_VERSION_KEY and _truthy(value):
+                return 'enables package-manager version downloads (pnpm may fetch and run it)'
+            found = walk(value)
+            if found:
+                return found
+        return None
+
+    return walk(data)
 
 
 def native_query_hazards(directory, root, manager, pkg):
@@ -1011,7 +879,13 @@ def native_query_hazards(directory, root, manager, pkg):
             rel = os.path.relpath(path, root)
             if problem:
                 hazards.append('%s %s' % (rel, problem))
-            elif text and PNPM_CONFIG_HAZARD_RE.search(text):
+            elif not text:
+                continue
+            elif os.path.basename(path) == 'package.json':
+                hazard = _pnpm_manifest_hazard(text)
+                if hazard:
+                    hazards.append('%s %s' % (rel, hazard))
+            elif PNPM_CONFIG_HAZARD_RE.search(text):
                 hazards.append('%s declares pnpm configDependencies/pnpmfile or enables package-manager '
                                'version downloads (code loaded by pnpm)' % rel)
     declared = (pkg or {}).get('packageManager') or ''
@@ -1901,7 +1775,7 @@ def build_report(run_dir, journal, supplied):
                                          'user_checkout_untouched': True},
         'steps': journal.get('steps', []),
         'planning': [{k: e.get(k) for k in ('id', 'kind', 'subject', 'status', 'head', 'target', 'tree_changed',
-                                             'planner', 'selected', 'candidates', 'reason', 'summary', 'counts',
+                                             'planner', 'reason', 'summary', 'counts',
                                              'result', 'evidence')
                       if e.get(k) is not None} for e in planning_entries(run_dir)],
     }
@@ -2166,58 +2040,9 @@ def copy_evidence(run_dir, target, repo_root):
 SAFE_TASK_ID = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]{0,120}$')
 
 
-def task_protocol():
-    """Load the sibling prompt/parser module by path (never from the repository or the working directory)."""
-    import importlib.util
-    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'task_protocol.py')
-    spec = importlib.util.spec_from_file_location('depup_task_protocol', path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-def review_slug(text):
-    readable = re.sub(r'[^a-z0-9]+', '-', str(text).lower()).strip('-')[:32] or 'subject'
-    return '%s-%s' % (readable, hashlib.sha256(str(text).encode('utf-8')).hexdigest()[:8])  # exact subject, no collisions
-
-
 def write_review_inputs(tp, worktree, base, candidate, review_dir):
     """Complete code diff and lockfile diff of base..candidate, redacted, inside the review directory."""
-    lock_specs = [':(glob)**/' + name for name in tp.LOCKFILES]
-    diffs = {
-        'code.diff': ['diff', '--no-color', '--no-ext-diff', base, candidate, '--', '.'] +
-                     [':(exclude,glob)**/' + name for name in tp.LOCKFILES],
-        'lockfile.diff': ['diff', '--no-color', '--no-ext-diff', base, candidate, '--'] + lock_specs,
-        'diffstat.txt': ['diff', '--stat', '--no-color', base, candidate],
-    }
-    lines = {}
-    for name, argv in diffs.items():
-        res = git(worktree, *argv, timeout=300)
-        if res['rc'] != 0:
-            raise Refusal('git %s failed: %s' % (' '.join(argv[:2]), (res['stderr'] or res['error'] or '').strip()))
-        atomic_write(os.path.join(review_dir, name), redact_text(res['stdout']))
-        lines[name] = res['stdout'].count('\n')
-    return {'code_diff': os.path.join(review_dir, 'code.diff'), 'code_lines': lines['code.diff'],
-            'lock_diff': os.path.join(review_dir, 'lockfile.diff'), 'lock_lines': lines['lockfile.diff'],
-            'stat': os.path.join(review_dir, 'diffstat.txt')}
-
-
-def clean_label(value, flag):
-    text = (value or '').strip()
-    if not text:
-        raise Refusal('%s must be non-empty' % flag)
-    if '\n' in text or '\r' in text:
-        raise Refusal('%s must be a single line without newlines' % flag)
-    return redact_text(text)
-
-
-def remove_stale_files(directory, names):
-    for name in names:
-        path = os.path.join(directory, name)
-        try:
-            os.unlink(path)
-        except FileNotFoundError:
-            pass
+    return tp.write_diff_bundle(worktree, base, review_dir, candidate=candidate)
 
 
 def review_target(args, journal, tp):
@@ -2368,16 +2193,6 @@ def planning_target(journal):
     """The tree a planner reads: the owned worktree once it exists, else the repository (plan mode)."""
     worktree = journal.get('worktree')
     return worktree if worktree and os.path.isdir(worktree) else journal['repo_root']
-
-
-def tree_fingerprint(root):
-    """HEAD + status + tracked diff: proves a planner left the tree it read unchanged."""
-    digest = hashlib.sha256()
-    for argv in (('rev-parse', 'HEAD'), ('status', '--porcelain=v1', '-z', '--untracked-files=all'),
-                 ('diff', '--no-color', '--no-ext-diff', '--binary', 'HEAD')):
-        res = git(root, *argv, timeout=300)
-        digest.update(('%s\0%s\0' % (res['rc'], res['stdout'])).encode('utf-8', 'replace'))
-    return digest.hexdigest()
 
 
 def planning_entries(run_dir):
@@ -2550,19 +2365,27 @@ def cmd_preflight(args):
     out['warnings'] = inv['warnings'][:50]
     if args.check_network:
         out['network'] = {'registry.npmjs.org:443': check_network()}
+    upstream = upstream_default(root) if is_git else {}
     blockers = []
     if is_git and out['git']['operation_in_progress']:
-        blockers.append('git operation in progress: ' + ', '.join(out['git']['operation_in_progress']))
+        # A checkout operation only blocks the upgrade when its HEAD would become the base;
+        # with a reachable upstream default branch the owned worktree starts from that tip.
+        if not (upstream.get('remote') and upstream.get('branch')):
+            blockers.append('git operation in progress: ' + ', '.join(out['git']['operation_in_progress']))
+        else:
+            out['warnings'].append('git operation in progress in the checkout (%s); the owned worktree starts from '
+                                   'the upstream default branch, so its HEAD is not the base'
+                                   % ', '.join(out['git']['operation_in_progress']))
     if not is_git:
         blockers.append('not a Git repository: upgrade mode unavailable (plan only)')
     out['upgrade_blockers'] = blockers
     if is_git and not out['git']['clean']:
         out['dirty_policy'] = ('user checkout is dirty: leave it untouched; upgrades run in an owned worktree from '
-                               'HEAD, so uncommitted changes are NOT included and must be reported')
+                               'the freshly fetched upstream default branch (not the dirty checkout), so uncommitted '
+                               'changes are NOT included and must be reported')
     out['active_runs'] = [dict(r, holds_lock=holds_repo_lock(root, r.get('run_id')))
                           for r in list_runs(root) if r.get('status') == 'active']
     if is_git:
-        upstream = upstream_default(root)
         out['delivery_facts'] = {'remote': upstream.get('remote'), 'default_branch': upstream.get('branch'),
                                  'gh_available': bool(shutil.which('gh-axi') or shutil.which('gh'))}
         out['local_only_config'] = ignored_local_config(root)

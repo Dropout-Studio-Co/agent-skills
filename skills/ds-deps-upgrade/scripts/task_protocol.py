@@ -1,14 +1,276 @@
-"""Provider-neutral prompt builders and strict result parsers for fresh-context tasks.
+"""Shared task protocol: provider-neutral prompts, strict parsers and low-level helpers.
 
-Standard library only (Python 3.9+). This module performs no model selection, no effort
-overrides, no CLI probes and no subprocess calls: tasks run in a fresh read-only context
-using the invoking session's own harness, model and effort (unless ds-dev-protocol was
-explicitly invoked alongside the skill).
+Standard library only (Python 3.9+). This module is the single source of truth for the
+low-level utilities used by both ``depup.py`` and ``review_task.py``: refusals, atomic file
+writes, subprocess helpers, redaction, repository/Git state, labels and the shared diff
+bundle writer. It performs no model selection and no effort overrides: tasks run in a fresh
+read-only context using the invoking session's own harness, model and effort (unless
+ds-dev-protocol was explicitly invoked alongside the skill).
 """
 from __future__ import annotations
 
+import datetime as _dt
+import hashlib
 import json
+import os
 import re
+import subprocess
+import sys
+import tempfile
+
+
+class Refusal(Exception):
+    """A safety rule blocked the command; message explains why."""
+
+
+def now() -> str:
+    return _dt.datetime.now(_dt.timezone.utc).replace(microsecond=0).isoformat()
+
+
+def emit(payload) -> None:
+    sys.stdout.write(json.dumps(redact_output(payload), indent=2, sort_keys=False) + '\n')
+
+
+def run_cmd(argv, cwd=None, timeout=120, env_extra=None):
+    """Run without a shell. Returns dict(rc, stdout, stderr, error)."""
+    env = dict(os.environ)
+    if env_extra:
+        env.update(env_extra)
+    try:
+        proc = subprocess.run(argv, cwd=cwd, capture_output=True, text=True,
+                              timeout=timeout, env=env, stdin=subprocess.DEVNULL)
+        return {'rc': proc.returncode, 'stdout': proc.stdout, 'stderr': proc.stderr, 'error': None}
+    except FileNotFoundError:
+        return {'rc': None, 'stdout': '', 'stderr': '', 'error': 'not-found: ' + argv[0]}
+    except subprocess.TimeoutExpired:
+        return {'rc': None, 'stdout': '', 'stderr': '', 'error': 'timeout after %ss' % timeout}
+    except OSError as exc:
+        return {'rc': None, 'stdout': '', 'stderr': '', 'error': str(exc)}
+
+
+def git(repo, *args, timeout=60):
+    # Never block on an interactive credential prompt: fail fast and report instead.
+    return run_cmd(['git', '-C', repo] + list(args), timeout=timeout, env_extra={'GIT_TERMINAL_PROMPT': '0'})
+
+
+def read_text(path, limit=4_000_000):
+    try:
+        with open(path, 'r', encoding='utf-8', errors='replace') as handle:
+            return handle.read(limit)
+    except OSError:
+        return None
+
+
+def read_json(path):
+    text = read_text(path)
+    if text is None:
+        return None, 'unreadable'
+    try:
+        return json.loads(text), None
+    except ValueError as exc:
+        return None, 'invalid json: %s' % exc
+
+
+def atomic_write(path, text):
+    directory = os.path.dirname(path)
+    os.makedirs(directory, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix='.tmp-', dir=directory)
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as handle:
+            handle.write(text)
+        os.replace(tmp, path)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
+
+
+def within(root, path):
+    root = os.path.realpath(root)
+    path = os.path.realpath(path)
+    return path == root or path.startswith(root + os.sep)
+
+
+URL_USERINFO_RE = re.compile(r'(?i)([a-z][a-z0-9+.-]*://)[^/@\s]+@')
+URL_SECRET_QUERY_RE = re.compile(
+    r'(?i)([?&#;](?:x-amz-)?(?:access[_-]?token|auth[_-]?token|refresh[_-]?token|npm[_-]?token|token|auth|'
+    r'password|passwd|x[_-]?api[_-]?key|api[_-]?key|client[_-]?secret|private[_-]?key|secret|signature|sig|credential)=)[^&#;\s]+'
+)
+SECRET_ASSIGNMENT_RE = re.compile(
+    r'(?i)(\b(?:[a-z0-9_.-]*(?:token|secret|credential|password|passwd|api[_-]?key|private[_-]?key|'
+    r'access[_-]?key|signature)|authorization|proxy-authorization|cookie|set-cookie)\s*[=:]\s*)'
+    r'("[^"\r\n]*"|\'[^\'\r\n]*\'|[^\s,;]+)'
+)
+AUTH_SCHEME_SECRET_RE = re.compile(r'(?i)\b(Basic|Bearer)\s+[^\s,;]+')
+AUTH_HEADER_SECRET_RE = re.compile(
+    r'(?i)\b((?:proxy-)?authorization\s*[:=]\s*)(?:Basic|Bearer)\s+[^\s,;]+'
+)
+SECRET_FIELD_NAMES = {'accesstoken', 'authtoken', 'refreshtoken', 'npmtoken', 'token', 'password', 'passwd',
+                      'apikey', 'xapikey', 'clientsecret', 'privatekey', 'secret', 'authorization',
+                      'credential', 'credentials', 'cookie', 'setcookie', 'proxyauthorization'}
+
+
+def redact_text(value):
+    value = URL_USERINFO_RE.sub(r'\1[REDACTED]@', value)
+    value = URL_SECRET_QUERY_RE.sub(r'\1[REDACTED]', value)
+    value = AUTH_HEADER_SECRET_RE.sub(r'\1[REDACTED]', value)
+    value = SECRET_ASSIGNMENT_RE.sub(r'\1[REDACTED]', value)
+    return AUTH_SCHEME_SECRET_RE.sub(r'\1 [REDACTED]', value)
+
+
+def redact_output(value):
+    """Redact credentials from all helper JSON and report output."""
+    if isinstance(value, str):
+        return redact_text(value)
+    if isinstance(value, list):
+        return [redact_output(item) for item in value]
+    if isinstance(value, dict):
+        return {key: '[REDACTED]' if is_secret_field_name(key)
+                else redact_output(item) for key, item in value.items()}
+    return value
+
+
+def is_secret_field_name(key):
+    normalized = re.sub(r'[^a-z0-9]', '', str(key).lower())
+    return (normalized in SECRET_FIELD_NAMES or
+            re.search(r'(?:token|secret|credential|password|passwd|apikey|privatekey|accesskey|'
+                      r'authorization|proxyauthorization|cookie)$', normalized) is not None)
+
+
+def evidence_artifact(run_dir, reference):
+    """Accept only a nonempty evidence file owned by this run directory."""
+    if not isinstance(reference, str) or not reference.strip():
+        return False
+    path = os.path.expanduser(reference)
+    if not os.path.isabs(path):
+        path = os.path.join(run_dir, path)
+    try:
+        return within(run_dir, path) and os.path.isfile(path) and os.path.getsize(path) > 0
+    except OSError:
+        return False
+
+
+def file_sha256(path):
+    digest = hashlib.sha256()
+    try:
+        with open(path, 'rb') as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b''):
+                digest.update(chunk)
+        return digest.hexdigest()
+    except OSError:
+        return None
+
+
+def resolve_repo(path):
+    path = os.path.abspath(os.path.expanduser(path or os.getcwd()))
+    if not os.path.isdir(path):
+        raise Refusal('not a directory: %s' % path)
+    result = git(path, 'rev-parse', '--show-toplevel')
+    if result['rc'] == 0:
+        return os.path.realpath(result['stdout'].strip()), True
+    return os.path.realpath(path), False
+
+
+def repo_key(root: str) -> str:
+    real = os.path.realpath(root)
+    slug = re.sub(r'[^A-Za-z0-9._-]+', '-', os.path.basename(real)).strip('-') or 'repo'
+    return '%s-%s' % (slug[:40], hashlib.sha256(real.encode()).hexdigest()[:8])
+
+
+def git_state(root):
+    info = {}
+    def val(*args):
+        result = git(root, *args)
+        return result['stdout'].strip() if result['rc'] == 0 else None
+    info['head'] = val('rev-parse', 'HEAD')
+    info['branch'] = val('symbolic-ref', '--short', '-q', 'HEAD')
+    info['detached'] = info['branch'] is None
+    info['upstream'] = val('rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}')
+    git_dir = val('rev-parse', '--absolute-git-dir')
+    info['git_dir'] = git_dir
+    info['is_linked_worktree'] = bool(git_dir and os.sep + 'worktrees' + os.sep in git_dir)
+    status = git(root, 'status', '--porcelain=v1', '-z', '--untracked-files=all')
+    entries = []
+    if status['rc'] == 0:
+        chunks = status['stdout'].split('\0')
+        i = 0
+        while i < len(chunks):
+            chunk = chunks[i]
+            if not chunk:
+                i += 1
+                continue
+            code, name = chunk[:2], chunk[3:]
+            entry = {'code': code, 'path': name}
+            if code[0] in 'RC':
+                i += 1
+                entry['from'] = chunks[i] if i < len(chunks) else None
+            entries.append(entry)
+            i += 1
+    info['dirty'] = [e for e in entries if e['code'] != '??']
+    info['untracked'] = [e['path'] for e in entries if e['code'] == '??']
+    info['clean'] = not entries
+    stash = git(root, 'stash', 'list')
+    info['stash_count'] = len([l for l in stash['stdout'].splitlines() if l]) if stash['rc'] == 0 else None
+    ops = []
+    if git_dir:
+        for marker, label in (('MERGE_HEAD', 'merge'), ('rebase-merge', 'rebase'),
+                              ('rebase-apply', 'rebase/am'), ('CHERRY_PICK_HEAD', 'cherry-pick'),
+                              ('REVERT_HEAD', 'revert'), ('BISECT_LOG', 'bisect')):
+            if os.path.exists(os.path.join(git_dir, marker)):
+                ops.append(label)
+    info['operation_in_progress'] = ops
+    wt = git(root, 'worktree', 'list', '--porcelain')
+    worktrees = []
+    if wt['rc'] == 0:
+        current = {}
+        for line in wt['stdout'].splitlines():
+            if not line:
+                if current:
+                    worktrees.append(current)
+                current = {}
+                continue
+            key, _, value = line.partition(' ')
+            current[key] = value or True
+        if current:
+            worktrees.append(current)
+    info['worktrees'] = worktrees
+    info['submodules'] = os.path.exists(os.path.join(root, '.gitmodules'))
+    info['shallow'] = val('rev-parse', '--is-shallow-repository') == 'true'
+    return info
+
+
+def tree_fingerprint(root):
+    """HEAD + status + tracked diff: proves a planner left the tree it read unchanged."""
+    digest = hashlib.sha256()
+    for argv in (('rev-parse', 'HEAD'), ('status', '--porcelain=v1', '-z', '--untracked-files=all'),
+                 ('diff', '--no-color', '--no-ext-diff', '--binary', 'HEAD')):
+        res = git(root, *argv, timeout=300)
+        digest.update(('%s\0%s\0' % (res['rc'], res['stdout'])).encode('utf-8', 'replace'))
+    return digest.hexdigest()
+
+
+def clean_label(value, flag):
+    text = (value or '').strip()
+    if not text:
+        raise Refusal('%s must be non-empty' % flag)
+    if '\n' in text or '\r' in text:
+        raise Refusal('%s must be a single line without newlines' % flag)
+    return redact_text(text)
+
+
+def review_slug(text):
+    readable = re.sub(r'[^a-z0-9]+', '-', str(text).lower()).strip('-')[:32] or 'subject'
+    return '%s-%s' % (readable, hashlib.sha256(str(text).encode('utf-8')).hexdigest()[:8])  # exact subject, no collisions
+
+
+def remove_stale_files(directory, names):
+    for name in names:
+        path = os.path.join(directory, name)
+        try:
+            os.unlink(path)
+        except FileNotFoundError:
+            pass
+
 
 KINDS = {
     'critical': 'critical review of the complete code diff and lockfile diff',
@@ -28,6 +290,43 @@ LOCKFILES = (
     'composer.lock', 'packages.lock.json', 'Package.resolved', 'gradle.lockfile', 'pubspec.lock',
     'mix.lock', 'flake.lock', 'deno.lock',
 )
+
+
+def write_diff_bundle(root, base, task_dir, candidate=None, include_untracked=False):
+    """Write the complete code diff, lockfile diff and diffstat of base..candidate.
+
+    ``candidate=None`` diffs against the working tree (used by review_task.py); a commit
+    diffs base..candidate (used by depup.py). ``include_untracked`` also records the
+    untracked file list. Every input is redacted and written inside ``task_dir``.
+    """
+    if git(root, 'rev-parse', '--verify', '--quiet', base + '^{commit}')['rc'] != 0:
+        raise Refusal('base %s is not a commit in %s' % (base, root))
+    if candidate is not None and git(root, 'rev-parse', '--verify', '--quiet',
+                                     candidate + '^{commit}')['rc'] != 0:
+        raise Refusal('candidate %s is not a commit in %s' % (candidate, root))
+    target = [candidate] if candidate is not None else []
+    lock_specs = [':(glob)**/' + name for name in LOCKFILES]
+    diffs = [
+        ('code.diff', ['diff', '--no-color', '--no-ext-diff', base] + target + ['--', '.'] +
+         [':(exclude,glob)**/' + name for name in LOCKFILES]),
+        ('lockfile.diff', ['diff', '--no-color', '--no-ext-diff', base] + target + ['--'] + lock_specs),
+        ('diffstat.txt', ['diff', '--stat', '--no-color', base] + target),
+    ]
+    if include_untracked:
+        diffs.append(('untracked.txt', ['ls-files', '--others', '--exclude-standard']))
+    lines = {}
+    for name, argv in diffs:
+        res = git(root, *argv, timeout=300)
+        if res['rc'] != 0:
+            raise Refusal('git %s failed: %s' % (' '.join(argv[:2]), (res['stderr'] or res['error'] or '').strip()))
+        atomic_write(os.path.join(task_dir, name), redact_text(res['stdout']))
+        lines[name] = res['stdout'].count('\n')
+    bundle = {'code_diff': os.path.join(task_dir, 'code.diff'), 'code_lines': lines['code.diff'],
+              'lock_diff': os.path.join(task_dir, 'lockfile.diff'), 'lock_lines': lines['lockfile.diff'],
+              'stat': os.path.join(task_dir, 'diffstat.txt')}
+    if include_untracked:
+        bundle['untracked'] = os.path.join(task_dir, 'untracked.txt')
+    return bundle
 
 
 def parse_result(text):

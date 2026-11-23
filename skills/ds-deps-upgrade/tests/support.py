@@ -20,7 +20,6 @@ def load(name, rel):
 
 
 depup = load('depup', 'scripts/depup.py')
-admin = load('depup_admin', 'admin/depup-admin.py')
 
 
 def write(path, content):

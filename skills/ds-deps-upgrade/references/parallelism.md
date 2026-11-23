@@ -38,8 +38,8 @@ Follow the user's global concurrency limits (they win over this file). Typical s
 
 ## Review
 Review the integrated candidate only, using the fresh-context task workflow
-([fresh-context-tasks.md](fresh-context-tasks.md)): one fresh read-only context per review task on
-the current session's harness, model and effort (or per `ds-dev-protocol` when explicitly
-invoked alongside this skill), tasks run one at a time, never a parallel committee or a duplicate
-review of the same candidate. Fix findings on the integration branch and re-verify. If a required
-review is `unavailable`, do not merge.
+([fresh-context-tasks.md](fresh-context-tasks.md), including its
+[model rule](fresh-context-tasks.md#model-harness-and-ds-dev-protocol-rule)): one fresh read-only
+context per review task on the current session's configuration, tasks run one at a time, never a
+parallel committee or a duplicate review of the same candidate. Fix findings on the integration
+branch and re-verify. If a required review is `unavailable`, do not merge.

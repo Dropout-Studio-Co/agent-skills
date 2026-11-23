@@ -15,11 +15,10 @@ rsync -a --exclude '__pycache__/' --exclude 'graft/.cache/' skills/<name>/ ~/.ag
 ~/.agents/bin/agent-skills-sync --dry-run  # sync: show what the next run would do, change nothing
 ```
 
-`skills/ds-agent-docs/scripts/check_instructions.py` surveys a repository, runs a read-only cross-agent
-prompt-audit (`audit --repo R [--scope P]`), stages a memory-file edit, gates it against session
-evidence and typed claims, and applies only a gated stage; it never commits or pushes. Its tests
-live beside `scripts/collect_sessions.py`'s tests. Both helpers are stdlib-only and run on Python
-3.9+.
+`skills/ds-agent-docs/scripts/check_instructions.py` runs a read-only cross-agent instruction and
+documentation audit (`audit --repo R [--scope P]`); it never modifies a repository.
+`scripts/collect_sessions.py` collects and redacts session evidence. Both helpers are stdlib-only Python
+3.9+, and their tests live under `skills/ds-agent-docs/tests/`.
 
 Run the drift check from an up-to-date `main` before starting a change to a skill: it must print
 nothing (any difference is local drift; bring it into the repository first). After the change is
@@ -64,7 +63,7 @@ up as `Only in ~/.agents/skills/<name>` and are expected; any other difference i
 
 ```text
 skills/ds-consolidate/    SKILL.md, task-profile.json (plan/review prompt profiles)
-skills/ds-deps-upgrade/           SKILL.md, README.md, scripts/, references/, tests/, admin/
+skills/ds-deps-upgrade/           SKILL.md, README.md, scripts/, references/, tests/
 skills/ds-dev-protocol/       SKILL.md, reference.md, opus-gate-brief.md, implementer-brief.md,
                           plan-schema.json, review-schema.json, opencode/,
                           scripts/ (gate.sh, implement.sh, implement_lib.py, premerge-and-merge.sh),
