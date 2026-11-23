@@ -9,7 +9,7 @@ Related content stays in its preferred compact arrangement while it comfortably 
 
 ## Discover and ground first
 
-Verify canonical local/upstream repositories, current default branch and owned isolated task state. Preserve active, dirty, unlanded and foreign work. Inspect project instructions, design/CSS architecture, reusable components and callers, fonts/media, supported browsers, existing tests, responsive compositions, accessibility and performance budgets. Reconcile earlier findings against current source and rendering before duplicating fixes.
+Inspect project instructions, design/CSS architecture, reusable components and callers, fonts/media, supported browsers, existing tests, responsive compositions, accessibility and performance budgets. Reconcile earlier findings against current source and rendering before duplicating fixes.
 
 Use current official framework/library documentation and browser compatibility evidence. Start client HTML/CSS/JS work with the installed modern-web guidance workflow. Svelte decisions use the official documentation/catalog/autofixer workflow when applicable; this skill is not a second framework manual. Primary references include [WCAG 2.2](https://www.w3.org/TR/WCAG22/), [MDN](https://developer.mozilla.org/), and [Core Web Vitals](https://web.dev/articles/vitals); retrieve the relevant current passages, not whole documentation corpora.
 
@@ -83,6 +83,4 @@ Extend existing tests/stories/showrooms and conformance architecture, not a seco
 
 Recheck current official LCP/INP/CLS definitions and product standards before gates. Bind production-build lab results to actual routes/resources/interactions and repeatable conditions; use existing approved field/RUM p75 data where available. Loopback, Lighthouse responsiveness proxies or event samples do not certify field INP/full-session CLS. Missing data/support is UNAVAILABLE, never zero. No invasive new telemetry, budget increase or feature removal to game checks.
 
-A scoped fix is done only after causal regression, required native checks, actual responsive/accessibility/visual/performance evidence and authorized publication/deployment acceptance on the frozen combined candidate. When independent review is required by the task, complete it before landing. Record source/tree, commands/results, intentional exceptions, unavailable dimensions and unresolved findings honestly. Clean only proven disposable owned resources; preserve useful, foreign and unlanded work. Skill installation and research do not certify product or mission acceptance.
-
-This skill grants no additional scope, provider/effort change, recursive-agent, protected-operation or prohibited-tool authority. The permanent No-Mistakes retirement and all existing safeguards remain intact.
+A scoped UI fix is done only after causal regression checks, required native checks, and actual responsive, accessibility, visual and performance evidence on the final candidate. Record commands/results, intentional exceptions, unavailable dimensions and unresolved findings honestly.
