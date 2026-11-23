@@ -1,115 +1,43 @@
 # agent-skills
 
-My AI-agent skills, kept in one place: development, automation, code quality and workflow management.
+A personal collection of 8 ready-made skills for AI coding assistants (like Claude Code and OpenCode). Each skill teaches your AI assistant how to handle a specific job from start to finish — like cleaning up unfinished work, reviewing changes, or improving a website's design.
 
-Eight skills I use across coding harnesses. They live here so they survive a
-reinstall, stay reviewable, and move to another machine in one copy. Each folder is a standard
-Agent Skill: a `SKILL.md` plus the scripts, references and tests it needs. This is a personal
-workflow repository, not a supported product.
+> This is a personal workflow collection shared as-is, not a commercial product.
 
-## Skills
+## Setup (1 Step)
 
-| Skill                                                        | What it does                                                                                                                                                                                         |
-| ------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [`consolidate`](skills/consolidate/)                         | Gets every unfinished branch, worktree, clone, stash and PR into `main`, verifies the result, then deletes only what is proven to be in main, after a restore point.                                  |
-| [`dependency-upgrade`](skills/dependency-upgrade/)           | Upgrades a repository's dependencies end to end in an isolated worktree: research, plan, migrate, test, review, verify, deliver.                                                                     |
-| [`execution-protocol`](skills/execution-protocol/)           | Applies an always-on protocol to every development task: Opus 5.5 conducts in Claude Code and plans/gates through `scripts/gate.sh`; DeepSeek V4.1 Flash High implements through `scripts/implement.sh` (Sonnet 5.5 High only as its fallback); merges go through `scripts/premerge-and-merge.sh`. |
-| [`frontend-ui-ux-overhaul`](skills/frontend-ui-ux-overhaul/) | Audits and implements repository-wide frontend, responsive, accessibility, motion and design-system improvements.                                                                                    |
-| [`intrinsic-responsive-ui`](skills/intrinsic-responsive-ui/) | Guides fluid, container-aware responsive layouts built on intrinsic sizing rather than breakpoint patches.                                                                                            |
-| [`review-loop`](skills/review-loop/)                         | Runs an independent, evidence-backed review of a finished change before it lands, with risk tiers and a three-round cap.                                                                             |
-| [`safe-switch`](skills/safe-switch/)                         | Captures verified task state and hands the current work off losslessly to a fresh session using the current harness, model and effort, on explicit request only.                                      |
-| [`sync-agent-instructions`](skills/sync-agent-instructions/) | Audits and syncs a repository's cross-agent instructions, rules, skills, subagents and core docs in one unified workflow: full cross-agent audit plus evidence-backed, gated updates to `AGENTS.md` and `CLAUDE.md`. |
-
-## Layout
+Open your AI coding assistant and paste this prompt:
 
 ```text
-skills/
-├── consolidate/               SKILL.md, task-profile.json
-├── dependency-upgrade/        SKILL.md, README.md, scripts/, references/, tests/, admin/
-├── execution-protocol/        SKILL.md, reference.md, opus-gate-brief.md, implementer-brief.md, plan-schema.json,
-│                              review-schema.json, opencode/, scripts/ (gate.sh, implement.sh,
-│                              implement_lib.py, premerge-and-merge.sh), tests/ (smoke.sh, implement-smoke.sh)
-├── frontend-ui-ux-overhaul/   SKILL.md, task-profile.json
-├── intrinsic-responsive-ui/   SKILL.md
-├── review-loop/               SKILL.md
-├── safe-switch/               SKILL.md
-└── sync-agent-instructions/   SKILL.md, references/ (audit-rubric.md, agent-surfaces.md),
-                               scripts/ (collect_sessions.py, check_instructions.py),
-                               tests/ (collector, checker)
+Install all skills from https://github.com/beyourahi/agent-skills onto my computer:
+
+1. Download or clone the repository to a temporary folder, copy every folder inside `skills/` into `~/.agents/skills/` (keep all skill folders together in that same directory), and remove the temporary folder when done.
+2. If I use Claude Code (or `~/.claude` exists), create a symlink in `~/.claude/skills/<skill-name>` pointing to `~/.agents/skills/<skill-name>` for each individual skill folder — do not symlink the whole `skills` directory.
+3. Check that `git` and `python3` (3.9 or newer) are installed, and tell me if anything is missing.
+4. Confirm when all 8 skills are installed and ready to use.
 ```
 
-All skills except `execution-protocol` are model-agnostic and harness-agnostic: they use the
-current session's harness, model and effort without switching or enforcing alternatives (when
-`execution-protocol` is explicitly invoked alongside another skill, `execution-protocol`'s
-routing and execution rules take precedence for the applicable tasks). `consolidate` and
-`frontend-ui-ux-overhaul` share `dependency-upgrade/scripts/review_task.py` for fresh-context
-task preparation, candidate binding and required-review gating, reading their prompt profiles
-from `<skills-root>/<skill>/task-profile.json`. Keep those three folders (`dependency-upgrade`,
-`consolidate`, `frontend-ui-ux-overhaul`) as siblings under one skills root.
+That's it. Your AI assistant will download the files, put them in the right folders, and let you know when everything is ready.
 
-## Install
+## Included Skills
 
-Each harness discovers skills from a global root: `~/.agents/skills` for OpenCode and
-`~/.claude/skills` for Claude Code. This repository mirrors that layout under `skills/`:
+Once installed, type the phrase in the right column whenever you want to use a skill.
 
-```sh
-git clone https://github.com/beyourahi/agent-skills.git
-cp -R agent-skills/skills/* ~/.agents/skills/
-```
+| Skill | What it does | What to type |
+| --- | --- | --- |
+| [`consolidate`](skills/consolidate/) | Gathers unfinished work from all branches, copies, and pull requests into `main`, verifies everything is safe, and cleans up leftovers. | `consolidate` |
+| [`dependency-upgrade`](skills/dependency-upgrade/) | Safely updates your project's packages from start to finish — checks compatibility, updates code, runs tests, and prepares the change. | `/dependency-upgrade` |
+| [`execution-protocol`](skills/execution-protocol/) | Runs a strict step-by-step plan, build, review, and merge workflow for coding tasks using Claude Code and OpenCode. | Runs automatically |
+| [`frontend-ui-ux-overhaul`](skills/frontend-ui-ux-overhaul/) | Reviews your website or app's design, layout, accessibility, and motion, then applies the improvements. | `Run frontend-ui-ux-overhaul.` |
+| [`intrinsic-responsive-ui`](skills/intrinsic-responsive-ui/) | Helps build layouts that adapt smoothly to any screen size, font size, or device. | `Use intrinsic-responsive-ui.` |
+| [`review-loop`](skills/review-loop/) | Runs a fresh, thorough review of your finished changes before you save or publish them. | `Review this change with review-loop.` |
+| [`safe-switch`](skills/safe-switch/) | Saves your current progress and hands it cleanly to a new chat session without losing context. | `Safe Switch` |
+| [`sync-agent-instructions`](skills/sync-agent-instructions/) | Reviews and updates your project's AI instruction files (`AGENTS.md`, `CLAUDE.md`, and docs) so they stay accurate. | `/sync-agent-instructions` |
 
-Claude Code reads only `~/.claude/skills`, so link each skill there once:
+### Good to Know
 
-```sh
-cd ~/.claude/skills
-for s in consolidate dependency-upgrade execution-protocol frontend-ui-ux-overhaul intrinsic-responsive-ui review-loop safe-switch sync-agent-instructions; do
-  [ -e "$s" ] || ln -s ../../.agents/skills/$s $s
-done
-```
-
-`dependency-upgrade` also ships an idempotent installer for that link, with a doctor check:
-
-```sh
-python3 ~/.agents/skills/dependency-upgrade/admin/depup-admin.py install
-python3 ~/.agents/skills/dependency-upgrade/admin/depup-admin.py doctor
-```
-
-Requirements: git and Python 3.9+. The `sync-agent-instructions` collector and checker are
-stdlib-only; the checker stages, gates and applies memory-file edits and never commits or
-pushes.
-`execution-protocol` also needs the `claude` CLI (signed in), `gh` (signed in), the `opencode` CLI
-(OpenCode Go, model `opencode-go/deepseek-v4.1-flash#high`) and `python3`;
-`scripts/implement.sh` also needs `timeout` and `lsof`. It optionally uses `claude-swap`
-(`cswap`), if installed, to rotate Opus gates between your signed-in Claude accounts when one runs
-out of quota; without it the gates use the account `claude` is signed in with.
-
-## Usage
-
-| Skill                     | Invoke                                                                          |
-| ------------------------- | ------------------------------------------------------------------------------- |
-| `consolidate`             | `consolidate`                                                                   |
-| `dependency-upgrade`      | `/dependency-upgrade [upgrade\|plan\|verify\|resume\|rollback\|status] [scope]` |
-| `execution-protocol`      | Always on (part of every development task)                                      |
-| `frontend-ui-ux-overhaul` | `Run frontend-ui-ux-overhaul.`                                                  |
-| `intrinsic-responsive-ui` | `Use intrinsic-responsive-ui.`                                                  |
-| `review-loop`             | `Review this change with review-loop.`                                          |
-| `safe-switch`             | `Safe Switch`                                                                   |
-| `sync-agent-instructions` | `/sync-agent-instructions`                                                      |
-
-`dependency-upgrade` runs only when named explicitly; a casual "update my dependencies" gets a
-read-only plan instead. Details and harness notes are in its
-[README](skills/dependency-upgrade/README.md).
-
-## Tests
-
-```sh
-python3 -m unittest discover -s skills/dependency-upgrade/tests -t skills/dependency-upgrade
-python3 -m unittest discover -s skills/sync-agent-instructions/tests -t skills/sync-agent-instructions
-bash skills/execution-protocol/tests/smoke.sh
-```
-
-The `sync-agent-instructions` suite covers the collector (`scripts/collect_sessions.py`) and
-the checker (`scripts/check_instructions.py`); the checker tests stage, gate and apply edits in
-scratch repositories and never touch this checkout.
+- **Updating packages:** `dependency-upgrade` only makes changes when you ask for it by name (`/dependency-upgrade`). If you casually ask to "update my dependencies," it will only show you a plan. You can also run `/dependency-upgrade plan` anytime to preview changes first.
+- **Using `execution-protocol`:** All other skills work with whichever AI assistant you already use. `execution-protocol` is the only one that needs extra tools signed in on your computer: Claude Code (`claude`), GitHub CLI (`gh`), and OpenCode (`opencode`). If you don't use those, you can ignore or remove the `execution-protocol` folder.
 
 ## License
 
