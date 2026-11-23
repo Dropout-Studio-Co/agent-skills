@@ -1,18 +1,19 @@
 # Contributing
 
-These are personal workflow skills, published so they are versioned, reviewable and portable.
-Bug reports and fixes are welcome; there is no roadmap or feature-request process.
+These are Dropout Studio (`ds-*`) workflow skills, published so they are versioned, reviewable and
+portable across web, mobile, native, desktop, TV, CLI, and backend projects. Bug reports and fixes
+are welcome; there is no roadmap or feature-request process.
 
 ## Before you change anything
 
-Read the skill you are touching. `SKILL.md` is the workflow, and for `dependency-upgrade` the
-`references/` files carry the detail. Keep the change inside the skill it belongs to.
+Read the skill you are touching. `SKILL.md` is the workflow, and `references/` files carry
+platform- or domain-specific detail. Keep the change inside the skill it belongs to.
 
 ## Invariants
 
-- **Folder names are the skill names.** `consolidate` and `frontend-ui-ux-overhaul` resolve
-  `../dependency-upgrade/scripts/review_task.py` and their own `task-profile.json` from their location.
-  Renaming or splitting `skills/dependency-upgrade` breaks both.
+- **Folder names are the skill names.** All skills use lowercase `ds-*` names. `ds-consolidate`
+  and `ds-ui` resolve `../ds-deps/scripts/review_task.py` and their own `task-profile.json` from
+  their location. Renaming or splitting `skills/ds-deps` breaks both.
 - **Skills stay self-contained.** A folder must work when copied alone into a global skills root,
   except for the shared fresh-context task scripts above.
 - **Frontmatter stays valid.** Every `SKILL.md` keeps `name` and `description`; the description
@@ -24,24 +25,24 @@ Read the skill you are touching. `SKILL.md` is the workflow, and for `dependency
 ## Checks
 
 ```sh
-python3 -m unittest discover -s skills/dependency-upgrade/tests -t skills/dependency-upgrade
-python3 -m unittest discover -s skills/sync-agent-instructions/tests -t skills/sync-agent-instructions
-bash skills/execution-protocol/tests/smoke.sh
+python3 -m unittest discover -s skills/ds-deps/tests -t skills/ds-deps
+python3 -m unittest discover -s skills/ds-sync/tests -t skills/ds-sync
+bash skills/ds-protocol/tests/smoke.sh
 ```
 
-Run the dependency-upgrade suite after any change to `dependency-upgrade` scripts, tests or any
-`task-profile.json` (this also validates the `consolidate` and `frontend-ui-ux-overhaul` profiles). Run
-the collector and checker suite after changes to `sync-agent-instructions` scripts or tests, and run
-`bash skills/execution-protocol/tests/smoke.sh` after changes to `execution-protocol` scripts or tests.
+Run the `ds-deps` suite after any change to `ds-deps` scripts, tests or any `task-profile.json`
+(this also validates the `ds-consolidate` and `ds-ui` profiles). Run the collector and checker
+suite after changes to `ds-sync` scripts or tests, and run `bash skills/ds-protocol/tests/smoke.sh`
+after changes to `ds-protocol` scripts or tests.
 
-`sync-agent-instructions` ships two stdlib-only helpers. `scripts/collect_sessions.py` collects
-and redacts session evidence; `scripts/check_instructions.py` surveys a repository (`check`),
-runs a read-only cross-agent prompt-audit (`audit`), stages a memory-file edit (`stage`), gates
-it against that evidence and typed claims (`gate`), and applies only a gated stage (`apply`).
-The checker never commits, pushes, opens a pull request or merges, and only `apply` writes to a
-repository. Both scripts keep their executable bit, require Python 3.9+, and their tests use
-scratch repositories with no network, credentials or outside paths. Also re-read the file you
-edited: commands, paths and script names must match the repository.
+`ds-sync` ships two stdlib-only helpers. `scripts/collect_sessions.py` collects and redacts session
+evidence; `scripts/check_instructions.py` surveys a repository (`check`), runs a read-only
+cross-agent prompt-audit (`audit`), stages a memory-file edit (`stage`), gates it against that
+evidence and typed claims (`gate`), and applies only a gated stage (`apply`). The checker never
+commits, pushes, opens a pull request or merges, and only `apply` writes to a repository. Both
+scripts keep their executable bit, require Python 3.9+, and their tests use scratch repositories
+with no network, credentials or outside paths. Also re-read the file you edited: commands, paths
+and script names must match the repository.
 
 ## Installing a change locally
 
@@ -58,8 +59,9 @@ that final check.
 
 On the maintainer's machine a LaunchAgent sync keeps `~/.agents/skills/<name>` and `main` in step
 both ways: it runs on every local change, at login and when the network comes back. An edit to the
-installed copy is pushed straight to `main` without review, so contributions and agent changes go through a PR here; merged changes are installed
-automatically. `~/.agents/bin/agent-skills-sync --dry-run` previews a run. See "Automatic sync" in
+installed copy is pushed straight to `main` without review, so contributions and agent changes go
+through a PR here; merged changes are installed automatically.
+`~/.agents/bin/agent-skills-sync --dry-run` previews a run. See "Automatic sync" in
 [AGENTS.md](./AGENTS.md) for the full rules: managed skills, ignored files and held changes.
 
 ## Commits
