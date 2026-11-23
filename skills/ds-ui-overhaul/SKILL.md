@@ -103,20 +103,29 @@ native verification.
      noise, delay, distraction, frame drops and maintenance cost.
 4. **Prototype** (`prototype`) only when materially different viable solutions cannot be resolved from
    repository truth; never prototype obvious fixes.
+5. **Large multi-surface overhauls** may fan the static, read-only specialist passes (design-system reuse,
+   the `improve-animations` motion audit, a static accessibility/resilience code scan) out to parallel
+   read-only subagents; skip this on small or scoped overhauls. Each subagent receives the repository-truth
+   and authority-order summary, stays strictly source-only (never touches browsers, simulators, emulators
+   or TV devices — the lead keeps sole ownership of rendered inspection), and keeps the current session's
+   model, harness and effort.
 
 ## Phase 2 — Plan (Fresh-Context, Read-Only)
 
 Before modifying files, for meaningful work (more than a trivial local fix), write the handoff — accepted
 requirements, target platform(s), scope, authority order and baseline constraints, repository
 instructions, design system and component inventory, Phase 1 findings with `file:line`, verification
-tooling — then run ONE fresh-context `plan` task with `review_task.py` (runner below). Add a single
-`--kind architecture --subject <change>` task only for significant or high-risk changes (shared
-design-system primitive, layout/navigation/focus shell, checkout/auth UI, animation/rendering pipeline,
-cross-repository contract).
+tooling — then run ONE fresh-context `plan` task with `review_task.py` (runner below). Keep that `plan`
+serial. Add a `--kind architecture --subject <change>` task only for significant or high-risk changes
+(shared design-system primitive, layout/navigation/focus shell, checkout/auth UI, animation/rendering
+pipeline, cross-repository contract); when several exist, those `architecture` tasks may run concurrently
+before `plan`, reconciling or re-planning if an architecture decision changes shared primitives or ordering.
 
-The planner is read-only and advisory: check every decision against the authority order and this skill,
-adopt or reject each with a reason, and implement it yourself. A plan never authorizes destructive
-operations, policy changes or unrequested redesign; replan only when scope or findings change materially.
+The planner is read-only and advisory and never implements: check every decision against the authority
+order and this skill, and adopt or reject each with a reason. Implementation happens in the lead session,
+or in explicitly scoped vertical workers under `## Parallel work`; it never happens in the planner. A plan
+never authorizes destructive operations, policy changes or unrequested redesign; replan only when scope or
+findings change materially.
 Create or update `DESIGN.md` only after the plan and only when it adds durable project value — existing
 tokens, patterns and identity win. If planning is `unavailable`, do not edit: report the blocker and stop.
 
@@ -182,32 +191,57 @@ Shared with `ds-deps-upgrade` (one implementation).
 - Bind the answer with `python3 $T record <run_dir> --task-id <id> --output <file> --by
   "<fresh-context-id>"`, or mark it unrunnable with `python3 $T unavailable <run_dir> --task-id <id>
   --reason "<why>"`.
-- Run tasks one at a time and verify with `python3 $T gate <run_dir>` before completion. Never self-review
-  in the authoring context in place of an unavailable required review. Report the runner, verdicts and gate
-  result.
+- Distinct review kinds (`code`, `ui-ux`, `accessibility`) on the same frozen candidate and frozen
+  rendered-evidence manifest may run in parallel fresh-context subagents (never duplicate a review of the
+  same `(kind, subject)` and never a voting committee; keep the tree and rendered evidence frozen until
+  every result is recorded), then verify with `python3 $T gate <run_dir>` before completion. Never
+  self-review in the authoring context in place of an unavailable required review. Report the runner,
+  verdicts and gate result.
 
 ## Model and harness neutrality
 
 Planning, review and parallel workers use the current session's harness, model and effort level without
-switching, selecting or enforcing alternatives; implementation, debugging, fixes and verification stay in
-this session. Only when `ds-dev-protocol` is explicitly invoked alongside this skill do its model-routing,
-execution and delivery rules take precedence.
+switching, selecting or enforcing alternatives. Planners and reviewers are strictly read-only; shared
+design-system/token/shell implementation, integration, review-finding fixes, motion and
+rendering-performance review, final polish, and all rendered verification stay in the lead session, while
+disjoint vertical surfaces on large overhauls may use isolated mutating workers under `## Parallel work`.
+Only when `ds-dev-protocol` is explicitly invoked alongside this skill do its model-routing, execution and
+delivery rules take precedence.
 
 ## Context discipline
 
-Do not load every specialist at once. Load sequentially by phase, platform and concrete need; a full run
-may use many specialists over time without putting them all in one context. A responsive web sheet might
+Do not load every specialist at once. Load by phase, platform and concrete need (sequentially in the lead,
+or isolated in specialist Phase 1 read-only audit subagents on large overhauls); a full run may use many
+specialists over time without putting them all in one context. A responsive web sheet might
 read `ds-responsive`, `modern-web-guidance` and `apple-design`; a Tizen TV focus pass `ds-responsive`,
 `lightning-blits-tizen` and `apple-design`; a Rust desktop pass `ds-responsive` and `rust-iced-mpv-desktop`.
 
 ## Parallel work
 
-Parallelize only when the overhaul is large and ownership is non-overlapping: marketing/public surfaces,
-app/workspace flows, responsive/adaptive layout, accessibility, motion, platform-specific shells, and the
-shared design system. Assign one owner per shared file/component and route cross-cutting findings to that
-owner. Every delegated prompt states exact scope, constraints, verification, preservation of unrelated
-work, unchanged session model/harness/effort configuration, and the repository delivery policy. Use
-repository-owned risk/blast-radius validation and the Phase 4 reviews.
+Default to serial. Parallelize mutating implementation only when the overhaul is large and ownership is
+non-overlapping — disjoint vertical surfaces (separate routes/pages, apps or platform shells) — and only
+after shared design-system primitives, tokens and layout/navigation shells land serially and are
+committed. Never split horizontal concerns (`responsive`, `accessibility`, `motion`) across parallel
+workers on the same components, and never parallelize shared design-system work.
+
+Isolation contract for each mutating worker:
+
+- Commit the shared DS/shell foundation first; preserve unrelated user dirty work.
+- One temporary linked worktree per worker, outside the repo, created from the post-shared-DS commit; cap
+  active mutating workers at **2–3** (or a tighter global limit).
+- The brief names: exact vertical scope, owned file/directory list, forbidden files (shared DS, tokens,
+  shells, manifests), base commit, verification commands (separate ports and caches; no AXI Chrome,
+  simulator, emulator or TV capture in workers), unchanged session model/harness/effort, and "no
+  push/merge".
+- The lead integrates worker branches serially (one cherry-pick or merge at a time, then verify), removes
+  clean integrated worker worktrees without `--force` (keeping dirty or unintegrated ones), then runs the
+  serial Phase 3 combined motion/rendering-performance review, final polish and Phase 4 rendered
+  verification.
+
+Serial-only boundaries: shared design-system/token/shell edits, cross-repo shared DS sync, Phase 2 `plan`,
+the Phase 3 combined motion and rendering-performance pass with final polish, lead integration and
+review-finding fixes, and all rendered capture/verification (AXI Chrome, simulators/emulators, TV devices,
+and Lighthouse 13's three serial runs per page and viewport).
 
 ## Related repositories
 

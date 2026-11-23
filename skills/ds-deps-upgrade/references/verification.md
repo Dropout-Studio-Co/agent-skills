@@ -8,6 +8,10 @@
 3. Unit tests touching the changed area (or the full fast suite if cheap).
 
 ## Full gate (before reporting PASS)
+Locked install and codegen/build run serially first; strictly read-only, cache-disjoint checks may
+then run concurrently as separate single-command calls with distinct log files, unless repo policy
+serializes checks (see [workflow.md](workflow.md) §8).
+
 | Check | How | Notes |
 | --- | --- | --- |
 | Deterministic install | locked/immutable install in a clean worktree | prove manifests and lock agree; lockfile must not change |
