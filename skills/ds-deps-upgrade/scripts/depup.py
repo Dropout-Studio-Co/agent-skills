@@ -46,6 +46,7 @@ import shutil
 import socket
 import sys
 import tempfile
+import threading
 import uuid
 
 try:  # TOML configs (cargo) are inspected with the stdlib parser where it exists
@@ -682,8 +683,12 @@ def _registry_view(name, timeout, cwd):
             'deprecated': bool(deprecated)}
 
 
-def _registry_outdated(pkg, project_dir, manager, root, timeout):
-    """Fallback for bun/yarn/unknown: read-only registry lookup of direct deps."""
+def _registry_outdated(pkg, project_dir, manager, root, timeout, semaphore=None):
+    """Fallback for bun/yarn/unknown: read-only registry lookup of direct deps.
+
+    ``semaphore`` caps concurrent ``npm view`` subprocesses across every project when several
+    project queries run in parallel (a per-project pool alone would multiply the fan-out).
+    """
     out = {'command': 'npm view <name> dist-tags deprecated --json (registry fallback)',
            'cwd': os.path.relpath(project_dir, root), 'records': []}
     if not shutil.which('npm'):
@@ -704,7 +709,11 @@ def _registry_outdated(pkg, project_dir, manager, root, timeout):
         meta, _ = read_json(os.path.join(project_dir, 'node_modules', dep['name'], 'package.json'))
         if isinstance(meta, dict):
             installed = meta.get('version')
-        view = _registry_view(dep['name'], timeout, project_dir)
+        if semaphore is None:
+            view = _registry_view(dep['name'], timeout, project_dir)
+        else:
+            with semaphore:
+                view = _registry_view(dep['name'], timeout, project_dir)
         return dep, installed, view
     with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
         for dep, installed, view in pool.map(lookup, deps):
@@ -1005,6 +1014,8 @@ def outdated(root, timeout):
                        if p.get('workspaces')} | {os.path.dirname(os.path.join(root, w['path'])) for w in inv['pnpm_workspaces']}
     by_dir = {os.path.dirname(os.path.join(root, p['path'])): p for p in projects}
     hazards_of = {d: native_query_hazards(d, root, p.get('manager'), p) for d, p in by_dir.items()}
+    registry_sem = threading.Semaphore(6)  # <=6 npm view subprocesses across all parallel projects
+    cargo_lock = threading.Lock()  # cargo serialises on ~/.cargo/.package-cache anyway
 
     def native_root(directory):
         """True when a native recursive query at this workspace root covers its members."""
@@ -1012,6 +1023,7 @@ def outdated(root, timeout):
         manager = (pkg or {}).get('manager')
         return bool(pkg and manager in ('npm', 'pnpm') and shutil.which(manager) and not hazards_of[directory])
 
+    tasks = []  # zero-argument queries, in output order; built serially so shared state stays single-threaded
     for pkg in projects:
         directory = os.path.dirname(os.path.join(root, pkg['path']))
         manager = pkg.get('manager')
@@ -1022,14 +1034,16 @@ def outdated(root, timeout):
             results['skipped'].append('%s: native %s query skipped: %s; used registry fallback'
                                       % (pkg['path'], manager, '; '.join(hazards)))
             results.setdefault('hazards', []).extend(hazards)
-            query = _registry_outdated(pkg, directory, manager or 'unknown', root, timeout)
+            tasks.append(lambda pkg=pkg, directory=directory, manager=manager: _registry_outdated(
+                pkg, directory, manager or 'unknown', root, timeout, registry_sem))
         elif manager in ('npm', 'pnpm') and shutil.which(manager):
-            query = _npm_outdated(directory, manager, root, timeout, directory in workspace_roots)
+            tasks.append(lambda directory=directory, manager=manager: _npm_outdated(
+                directory, manager, root, timeout, directory in workspace_roots))
         else:
             if manager in ('npm', 'pnpm'):
                 results['skipped'].append('%s: %s not installed; using registry fallback' % (pkg['path'], manager))
-            query = _registry_outdated(pkg, directory, manager or 'unknown', root, timeout)
-        results['queries'].append(query)
+            tasks.append(lambda pkg=pkg, directory=directory, manager=manager: _registry_outdated(
+                pkg, directory, manager or 'unknown', root, timeout, registry_sem))
     for manifest in inv['other_manifests']:
         directory = os.path.dirname(os.path.join(root, manifest['path']))
         key = (manifest['ecosystem'], directory)
@@ -1043,27 +1057,41 @@ def outdated(root, timeout):
             hazard = rust_toolchain_hazard(directory, root)
             if hazard:
                 results.setdefault('hazards', []).append(hazard)
-                query = {'cwd': manifest['path'], 'records': [], 'error': 'cargo query skipped: ' + hazard}
+                tasks.append(lambda manifest=manifest, hazard=hazard: {
+                    'cwd': manifest['path'], 'records': [], 'error': 'cargo query skipped: ' + hazard})
             elif shutil.which('cargo'):
-                query = _cargo_outdated(directory, root, timeout)
+                tasks.append(lambda directory=directory: _cargo_serialised(cargo_lock, directory, root, timeout))
             else:
-                query = {'cwd': manifest['path'], 'records': [], 'error': 'cargo not installed'}
+                tasks.append(lambda manifest=manifest: {
+                    'cwd': manifest['path'], 'records': [], 'error': 'cargo not installed'})
         elif eco == 'go':
-            query = _go_outdated(directory, root, timeout) if shutil.which('go') else \
-                {'cwd': manifest['path'], 'records': [], 'error': 'go not installed'}
+            if shutil.which('go'):
+                tasks.append(lambda directory=directory: _go_outdated(directory, root, timeout))
+            else:
+                tasks.append(lambda manifest=manifest: {
+                    'cwd': manifest['path'], 'records': [], 'error': 'go not installed'})
         elif eco == 'python':
-            query = _python_outdated(directory, root, timeout)
+            tasks.append(lambda directory=directory: _python_outdated(directory, root, timeout))
         else:
             continue
-        results['queries'].append(query)
     for eco in inv['unsupported']:
         results['skipped'].append('%s: advisory support only (no automated outdated query)' % eco)
     if results.get('hazards'):
         results['hazards'] = sorted(set(results['hazards']))
+    if len(tasks) > 1:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+            results['queries'] = list(pool.map(lambda task: task(), tasks))  # map preserves input order
+    else:
+        results['queries'] = [task() for task in tasks]
     for query in results['queries']:
         results['records'].extend(query.get('records', []))
     results['errors'] = [{'cwd': q.get('cwd'), 'error': q['error']} for q in results['queries'] if q.get('error')]
     return results
+
+
+def _cargo_serialised(lock, directory, root, timeout):
+    with lock:
+        return _cargo_outdated(directory, root, timeout)
 
 
 # -------------------------------------------------------------------- classify
@@ -1612,7 +1640,23 @@ def cmd_run_worker(args):
             return {'worktree': path, 'branch': branch, 'created': False}
         if git(root, 'rev-parse', '--verify', '--quiet', 'refs/heads/' + branch)['rc'] == 0 or os.path.exists(path):
             raise Refusal('branch %s or path %s already exists and is not owned by this run' % (branch, path))
-        base = args.base or journal.get('worktree_base') or journal['base_commit']
+        if args.base:
+            resolved = git(root, 'rev-parse', '--verify', '--quiet', args.base + '^{commit}')
+            if resolved['rc'] != 0 or not resolved['stdout'].strip():
+                raise Refusal('invalid --base commit: %s' % args.base)
+            base = resolved['stdout'].strip()
+        else:
+            # Default to the integration branch's current HEAD: the lead commits the bumped lockfile/manifest
+            # there, and workers must branch after it rather than from the pre-upgrade worktree base.
+            integration_state = git_state(journal['worktree'])
+            if integration_state.get('operation_in_progress'):
+                raise Refusal('integration worktree has a git operation in progress; finish it before creating '
+                              'a worker')
+            if not integration_state.get('clean'):
+                raise Refusal('integration worktree has uncommitted changes; commit the lockfile/manifest bump '
+                              'before creating a worker (or pass --base explicitly)')
+            base = (integration_state.get('head') or journal.get('worktree_base')
+                    or journal['base_commit'])
         res = git(root, 'worktree', 'add', '-b', branch, path, base, timeout=300)
         if res['rc'] != 0:
             raise Refusal('git worktree add failed: ' + (res['stderr'] or res['error'] or '').strip())
@@ -1635,6 +1679,23 @@ def cmd_run_finish(args):
 
 
 # --------------------------------------------------------------------- rollback
+
+def _branch_rollback_base(root, journal, branch):
+    """Base a branch's rollback count against: its worker base only when that base is already on the
+    integration branch (so commits between the run base and the worker base are preserved there)."""
+    run_base = journal.get('worktree_base') or journal.get('base_commit')
+    integration_branch = journal.get('branch')
+    if not integration_branch:
+        return run_base
+    for worker in journal.get('workers', []):
+        worker_base = worker.get('base')
+        if worker.get('branch') != branch or not worker_base or worker_base == run_base:
+            continue
+        if git(root, 'merge-base', '--is-ancestor', worker_base, 'refs/heads/' + integration_branch)['rc'] == 0:
+            return worker_base
+        return run_base
+    return run_base
+
 
 def _rollback_plan(run_dir, journal):
     """Decide per owned worktree/branch: remove (provably safe) or preserve (with reason)."""
@@ -1673,13 +1734,14 @@ def _rollback_plan(run_dir, journal):
         if branch in blocked_branches:
             preserved.append({'branch': branch, 'reason': 'its worktree is preserved'})
             continue
-        ahead = git(root, 'rev-list', '--count', '%s..%s' % (base, branch))
+        branch_base = _branch_rollback_base(root, journal, branch)
+        ahead = git(root, 'rev-list', '--count', '%s..%s' % (branch_base, branch))
         count = int(ahead['stdout'].strip() or 0) if ahead['rc'] == 0 else None
         if count == 0:
             actions.append({'action': 'git branch -d', 'branch': branch})
         else:
             preserved.append({'branch': branch, 'reason': '%s commit(s) beyond base %s are preserved'
-                              % (count if count is not None else 'unknown', (base or '')[:12])})
+                              % (count if count is not None else 'unknown', (branch_base or '')[:12])})
     for clone in journal['owned'].get('clones', []):
         if not os.path.isdir(clone):
             continue
@@ -1736,8 +1798,8 @@ def cmd_rollback(args):
             else:
                 # -d (never -D); compare against the base explicitly so a moved user HEAD doesn't matter
                 tip = git(root, 'rev-parse', '--verify', '--quiet', 'refs/heads/' + act['branch'])
-                ahead = git(root, 'rev-list', '--count', '%s..%s' % (journal.get('worktree_base') or
-                                                                     journal.get('base_commit'),
+                branch_base = _branch_rollback_base(root, journal, act['branch'])
+                ahead = git(root, 'rev-list', '--count', '%s..%s' % (branch_base,
                                                                      tip['stdout'].strip() or act['branch']))
                 if ahead['rc'] == 0 and ahead['stdout'].strip() == '0' and tip['rc'] == 0:
                     res = git(root, 'update-ref', '-d', 'refs/heads/' + act['branch'], tip['stdout'].strip())
@@ -2338,10 +2400,15 @@ def cmd_planning_unavailable(args):
 # ---------------------------------------------------------------- capabilities
 
 def capabilities():
-    tools = {}
-    for name in ('git', 'node', 'npm', 'pnpm', 'yarn', 'bun', 'deno', 'cargo', 'rustc', 'go', 'uv', 'python3',
-                 'pip3', 'poetry', 'mvn', 'gradle', 'ruby', 'bundle', 'composer', 'php', 'dotnet', 'swift'):
-        tools[name] = tool_version(name, ('version',) if name in ('go',) else ('--version',))
+    names = ('git', 'node', 'npm', 'pnpm', 'yarn', 'bun', 'deno', 'cargo', 'rustc', 'go', 'uv', 'python3',
+             'pip3', 'poetry', 'mvn', 'gradle', 'ruby', 'bundle', 'composer', 'php', 'dotnet', 'swift')
+
+    def probe(name):
+        return tool_version(name, ('version',) if name in ('go',) else ('--version',))
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+        versions = list(pool.map(probe, names))  # map keeps the declared tool order
+    tools = dict(zip(names, versions))
     return {'platform': sys.platform, 'python': sys.version.split()[0], 'tools': tools,
             'state_root': state_root(),
             'note': 'Harness capabilities (subagents, browser, network policy, write access) are declared by the '
@@ -2358,14 +2425,28 @@ def check_network(host='registry.npmjs.org', port=443, timeout=3):
 
 def cmd_preflight(args):
     root, is_git = resolve_repo(args.repo)
+    if is_git:
+        # Independent read-only probes overlap; the values and output order stay identical.
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as pool:
+            git_future = pool.submit(git_state, root)
+            inventory_future = pool.submit(inventory, root)
+            upstream_future = pool.submit(upstream_default, root)
+            config_future = pool.submit(ignored_local_config, root)
+            network_future = pool.submit(check_network) if args.check_network else None
+            git_info, inv = git_future.result(), inventory_future.result()
+            upstream, local_config = upstream_future.result(), config_future.result()
+            network = {'registry.npmjs.org:443': network_future.result()} if network_future else None
+    else:
+        git_info, upstream, local_config, network = None, {}, [], None
+        inv = inventory(root)
+        if args.check_network:
+            network = {'registry.npmjs.org:443': check_network()}
     out = {'root': root, 'is_git': is_git, 'writable': os.access(root, os.W_OK),
-           'state_root': state_root(), 'git': git_state(root) if is_git else None}
-    inv = inventory(root)
+           'state_root': state_root(), 'git': git_info}
     out['inventory_summary'] = inv['summary']
     out['warnings'] = inv['warnings'][:50]
     if args.check_network:
-        out['network'] = {'registry.npmjs.org:443': check_network()}
-    upstream = upstream_default(root) if is_git else {}
+        out['network'] = network
     blockers = []
     if is_git and out['git']['operation_in_progress']:
         # A checkout operation only blocks the upgrade when its HEAD would become the base;
@@ -2388,7 +2469,7 @@ def cmd_preflight(args):
     if is_git:
         out['delivery_facts'] = {'remote': upstream.get('remote'), 'default_branch': upstream.get('branch'),
                                  'gh_available': bool(shutil.which('gh-axi') or shutil.which('gh'))}
-        out['local_only_config'] = ignored_local_config(root)
+        out['local_only_config'] = local_config
     return out
 
 
@@ -2398,17 +2479,22 @@ LOCAL_CONFIG_NAMES = ('.env', '.env.local', '.env.development', '.env.developmen
 
 def ignored_local_config(root):
     """Names (never contents) of Git-ignored local config files the owned worktree will not contain."""
-    found = []
+    candidates = []
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS and not d.startswith('.')]
         if os.path.relpath(dirpath, root).count(os.sep) > 3:
             dirnames[:] = []
         for name in filenames:
             if name in LOCAL_CONFIG_NAMES:
-                rel = os.path.relpath(os.path.join(dirpath, name), root)
-                if git(root, 'check-ignore', '-q', '--', rel)['rc'] == 0:
-                    found.append(rel)
-    return sorted(found)
+                candidates.append(os.path.relpath(os.path.join(dirpath, name), root))
+    if not candidates:
+        return []
+    # One batch query instead of one git process per candidate: exit 0 = some ignored, 1 = none.
+    res = run_cmd(['git', '-C', root, 'check-ignore', '--stdin', '-z'], timeout=60,
+                  env_extra={'GIT_TERMINAL_PROMPT': '0'}, input_text='\0'.join(candidates) + '\0')
+    if res['rc'] != 0:
+        return []
+    return sorted(path for path in res['stdout'].split('\0') if path)
 
 
 # ------------------------------------------------------------------------- main

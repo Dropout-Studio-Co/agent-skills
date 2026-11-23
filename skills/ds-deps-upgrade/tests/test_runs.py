@@ -262,6 +262,44 @@ class ReviewRegressionTests(TempCase):
         self.assertNotIn(w1['branch'], branches)
         self.assertEqual(out['status'], 'rolled-back-partial')
 
+    def test_worker_defaults_to_integration_head_and_rollback_handles_worker_base(self):
+        root = self.make_repo()
+        _, start = self.cli('run', 'start', '--repo', root, '--mode', 'upgrade')
+        ref = start['run_ref']
+        _, wt = self.cli('run', 'worktree', ref)
+        write(os.path.join(wt['worktree'], 'package-lock.json'),
+              {'lockfileVersion': 3, 'integrationBump': True})
+        sh(['git', 'add', '-A'], wt['worktree'])
+        sh(['git', 'commit', '-qm', 'bump lockfile'], wt['worktree'])
+        bump = sh(['git', 'rev-parse', 'HEAD'], wt['worktree']).stdout.strip()
+
+        _, w1 = self.cli('run', 'worker', ref, '--domain', 'w1')
+        self.assertEqual(w1['base'], bump, 'a worker defaults to the integration branch HEAD, not the pre-bump base')
+        with open(os.path.join(w1['worktree'], 'package-lock.json')) as handle:
+            self.assertIn('integrationBump', handle.read(), 'the worker starts with the bumped lockfile')
+
+        write(os.path.join(wt['worktree'], 'uncommitted.txt'), 'x')
+        code, refused = self.cli('run', 'worker', ref, '--domain', 'w3')
+        self.assertEqual(code, 1)
+        self.assertIn('uncommitted changes', refused['error'])
+        os.unlink(os.path.join(wt['worktree'], 'uncommitted.txt'))
+
+        _, w2 = self.cli('run', 'worker', ref, '--domain', 'w2')
+        self.assertEqual(w2['base'], bump)
+        write(os.path.join(w2['worktree'], 'ui.txt'), 'ui work')
+        sh(['git', 'add', '-A'], w2['worktree'])
+        sh(['git', 'commit', '-qm', 'ui'], w2['worktree'])
+
+        _, out = self.cli('rollback', ref, '--apply')
+        self.assertFalse(os.path.exists(w1['worktree']), 'an empty worker worktree is removed')
+        self.assertFalse(os.path.exists(w2['worktree']))
+        branches = sh(['git', 'branch', '--list'], root).stdout
+        self.assertNotIn(w1['branch'], branches, 'an empty worker branch is deleted despite branching post-bump')
+        self.assertIn(w2['branch'], branches, 'a worker commit is preserved')
+        self.assertIn(wt['branch'], branches, 'the integration branch keeps the lockfile bump')
+        self.assertEqual(sh(['git', 'rev-parse', wt['branch']], root).stdout.strip(), bump)
+        self.assertEqual(out['status'], 'rolled-back-partial')
+
     def test_clone_isolation_for_read_only_git(self):
         root = self.make_repo()
         _, start = self.cli('run', 'start', '--repo', root, '--mode', 'upgrade')
@@ -624,6 +662,34 @@ class AutonomyTests(TempCase):
         _, pre = self.cli('preflight', '--repo', root)
         self.assertEqual([r['run_id'] for r in pre['active_runs']], [new['run_ref'].split('/')[1]])
         self.assertTrue(pre['active_runs'][0]['holds_lock'])
+
+    def test_preflight_ignored_local_config_batches_git_check_ignore(self):
+        root = os.path.join(self.tmp, 'batchcfg')
+        write(os.path.join(root, 'package.json'), {'name': 'batchcfg'})
+        write(os.path.join(root, '.gitignore'), '.env\n.env.local\n.dev.vars\n')
+        git_init(root)
+        write(os.path.join(root, '.env'), 'A=1\n')
+        write(os.path.join(root, 'apps', 'web', '.env.local'), 'B=2\n')
+        write(os.path.join(root, 'apps', 'api', '.dev.vars'), 'C=3\n')
+        write(os.path.join(root, 'apps', 'api', 'notes.txt'), 'not local config\n')
+
+        original = depup.run_cmd
+        calls = []
+
+        def counting(argv, **kwargs):
+            if 'check-ignore' in argv:
+                calls.append((argv, kwargs))
+            return original(argv, **kwargs)
+
+        with mock.patch.object(depup, 'run_cmd', side_effect=counting):
+            found = depup.ignored_local_config(root)
+        self.assertEqual(found, ['.env', os.path.join('apps', 'api', '.dev.vars'),
+                                 os.path.join('apps', 'web', '.env.local')])
+        self.assertEqual(len(calls), 1, 'all candidates go through one batched git process')
+        argv, kwargs = calls[0]
+        self.assertIn('--stdin', argv)
+        self.assertIn('-z', argv)
+        self.assertIsNotNone(kwargs.get('input_text'))
 
     def test_preflight_names_ignored_local_config_without_values(self):
         root = os.path.join(self.tmp, 'envapp')

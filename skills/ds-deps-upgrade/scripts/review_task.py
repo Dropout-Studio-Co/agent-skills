@@ -24,6 +24,7 @@ Commands (all print JSON; exit 0 ok, 1 refused/blocked, 2 usage):
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import datetime as _dt
 import hashlib
 import importlib.util
@@ -209,61 +210,77 @@ def write_diff_inputs(repo, base, task_dir):
     return tp.write_diff_bundle(repo, base, task_dir, include_untracked=True)
 
 
+def _inspect_location(path, common):
+    """Read-only facts for one extra worktree/clone (pure; the caller keeps input order)."""
+    if not os.path.isdir(path):
+        return '## location %s\nMISSING (directory does not exist)\n' % path
+    text = ('## location %s\n' % path + git_out(path, 'status', '--porcelain=v1', '--branch',
+                                                '--untracked-files=all') +
+            'uncommitted diff:\n' + git_out(path, 'diff', '--no-color', '--no-ext-diff', 'HEAD'))
+    own = os.path.realpath(os.path.join(path, git_out(path, 'rev-parse', '--git-common-dir').strip()))
+    if own != common:  # a separate clone; linked worktrees share the main repo's refs and stashes
+        text += ('remote: ' + git_out(path, 'remote', '-v') +
+                 'stashes: ' + (git_out(path, 'stash', 'list', '--format=%gd %s') or '(none)\n') +
+                 'local-only commits with patches:\n' + git_out(path, 'log', '--no-color', '--no-ext-diff',
+                                                                 '--stat=80', '-p', '--branches', '--not',
+                                                                 '--remotes') +
+                 'stash contents:\n' + ''.join(git_out(path, 'stash', 'show', '-p', '--include-untracked',
+                                                       '--no-color', '--no-ext-diff', st)
+                                               for st in git_out(path, 'stash', 'list', '--format=%gd').split()))
+    return text
+
+
 def git_inventory(repo, main_ref, locations, with_prs, runner=None):
-    """Deterministic, read-only Git facts (collected by this helper, not claimed by the author)."""
+    """Deterministic, read-only Git facts (collected by this helper, not claimed by the author).
+
+    Remote PR lookup starts first so its latency overlaps local inspection; extra locations are
+    inspected concurrently. Both ``pool.map`` and the explicit section order keep the output
+    byte-for-byte deterministic, because the gate hashes exactly what was reviewed.
+    """
     parts = ['# Git inventory of %s against %s (collected by review_task.py, read-only)\n' % (repo, main_ref)]
-    parts.append('## main\n' + git_out(repo, 'rev-parse', main_ref) + git_out(repo, 'status', '--porcelain=v1',
-                                                                                '--branch', '--untracked-files=all'))
-    parts.append('## worktrees\n' + git_out(repo, 'worktree', 'list', '--porcelain'))
-    parts.append('## branches\n' + git_out(repo, 'branch', '-a', '-vv', '--no-color'))
-    parts.append('## stashes\n' + (git_out(repo, 'stash', 'list', '--format=%gd %H %s') or '(none)\n'))
-    patches, seen = [], set()
-    lines = ['## unmerged work per branch (ahead = commits not in %s; unique = git cherry "+" patches)' % main_ref]
-    refs = git_out(repo, 'for-each-ref', '--format=%(refname)', 'refs/heads', 'refs/remotes').split()
-    main_sha = git_out(repo, 'rev-parse', main_ref).strip()
-    for ref in refs:
-        if ref.endswith('/HEAD') or git_out(repo, 'rev-parse', ref).strip() == main_sha:
-            continue
-        ahead = git_out(repo, 'rev-list', '--count', '%s..%s' % (main_ref, ref)).strip()
-        shas = [l[2:].strip() for l in git_out(repo, 'cherry', main_ref, ref).splitlines() if l.startswith('+')]
-        lines.append('%s ahead=%s unique=%d' % (ref, ahead, len(shas)))
-        for sha in shas:  # once per commit, however many refs carry it
-            if sha not in seen:
-                seen.add(sha)
-                patches.append('### unique patch %s (first seen on %s)\n' % (sha, ref) + git_out(
-                    repo, 'show', '--no-color', '--no-ext-diff', '--stat=80', '-p', sha))
-    parts.append('\n'.join(lines) + '\n')
-    for stash in git_out(repo, 'stash', 'list', '--format=%gd').split():
-        patches.append('### %s contents\n' % stash + git_out(repo, 'stash', 'show', '-p', '--include-untracked',
-                                                             '--no-color', '--no-ext-diff', stash))
-    common = os.path.realpath(os.path.join(repo, git_out(repo, 'rev-parse', '--git-common-dir').strip()))
-    for path in worktree_paths(repo) + list(locations or []):
-        if os.path.realpath(path) == os.path.realpath(repo):
-            continue
-        if not os.path.isdir(path):
-            parts.append('## location %s\nMISSING (directory does not exist)\n' % path)
-            continue
-        text = ('## location %s\n' % path + git_out(path, 'status', '--porcelain=v1', '--branch',
-                                                    '--untracked-files=all') +
-                'uncommitted diff:\n' + git_out(path, 'diff', '--no-color', '--no-ext-diff', 'HEAD'))
-        own = os.path.realpath(os.path.join(path, git_out(path, 'rev-parse', '--git-common-dir').strip()))
-        if own != common:  # a separate clone; linked worktrees share the main repo's refs and stashes
-            text += ('remote: ' + git_out(path, 'remote', '-v') +
-                     'stashes: ' + (git_out(path, 'stash', 'list', '--format=%gd %s') or '(none)\n') +
-                     'local-only commits with patches:\n' + git_out(path, 'log', '--no-color', '--no-ext-diff',
-                                                                     '--stat=80', '-p', '--branches', '--not',
-                                                                     '--remotes') +
-                     'stash contents:\n' + ''.join(git_out(path, 'stash', 'show', '-p', '--include-untracked',
-                                                           '--no-color', '--no-ext-diff', st)
-                                                   for st in git_out(path, 'stash', 'list', '--format=%gd').split()))
-        parts.append(text)
-    if with_prs:
-        res = (runner or tp.run_cmd)(['gh', 'pr', 'list', '--state', 'open', '--limit', '200', '--json',
-                                       'number,title,headRefName,headRefOid,author,url,isDraft'], cwd=repo, timeout=120)
-        parts.append('## open PRs\n' + (res['stdout'] if res['rc'] == 0 else
-                                         '[gh pr list failed rc=%s: %s]\n' % (res['rc'], (res['stderr'] or
-                                                                                         res['error'] or '')[:300])))
-    parts.append('## patch contents of unique commits and stashes\n' + ('\n'.join(patches) or '(none)\n'))
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+        pr_future = pool.submit(
+            runner or tp.run_cmd, ['gh', 'pr', 'list', '--state', 'open', '--limit', '200', '--json',
+                                   'number,title,headRefName,headRefOid,author,url,isDraft'],
+            cwd=repo, timeout=120) if with_prs else None
+        parts.append('## main\n' + git_out(repo, 'rev-parse', main_ref) + git_out(
+            repo, 'status', '--porcelain=v1', '--branch', '--untracked-files=all'))
+        parts.append('## worktrees\n' + git_out(repo, 'worktree', 'list', '--porcelain'))
+        parts.append('## branches\n' + git_out(repo, 'branch', '-a', '-vv', '--no-color'))
+        parts.append('## stashes\n' + (git_out(repo, 'stash', 'list', '--format=%gd %H %s') or '(none)\n'))
+        patches, seen = [], set()
+        lines = ['## unmerged work per branch (ahead = commits not in %s; unique = git cherry "+" patches)'
+                 % main_ref]
+        refs = git_out(repo, 'for-each-ref', '--format=%(refname)', 'refs/heads', 'refs/remotes').split()
+        main_sha = git_out(repo, 'rev-parse', main_ref).strip()
+        for ref in refs:
+            if ref.endswith('/HEAD') or git_out(repo, 'rev-parse', ref).strip() == main_sha:
+                continue
+            ahead = git_out(repo, 'rev-list', '--count', '%s..%s' % (main_ref, ref)).strip()
+            shas = [l[2:].strip() for l in git_out(repo, 'cherry', main_ref, ref).splitlines() if l.startswith('+')]
+            lines.append('%s ahead=%s unique=%d' % (ref, ahead, len(shas)))
+            for sha in shas:  # once per commit, however many refs carry it
+                if sha not in seen:
+                    seen.add(sha)
+                    patches.append('### unique patch %s (first seen on %s)\n' % (sha, ref) + git_out(
+                        repo, 'show', '--no-color', '--no-ext-diff', '--stat=80', '-p', sha))
+        parts.append('\n'.join(lines) + '\n')
+        for stash in git_out(repo, 'stash', 'list', '--format=%gd').split():
+            patches.append('### %s contents\n' % stash + git_out(repo, 'stash', 'show', '-p', '--include-untracked',
+                                                                 '--no-color', '--no-ext-diff', stash))
+        common = os.path.realpath(os.path.join(repo, git_out(repo, 'rev-parse', '--git-common-dir').strip()))
+        targets = [p for p in worktree_paths(repo) + list(locations or [])
+                   if os.path.realpath(p) != os.path.realpath(repo)]
+        if len(targets) > 1:
+            parts.extend(pool.map(lambda p: _inspect_location(p, common), targets))
+        else:
+            parts.extend(_inspect_location(p, common) for p in targets)
+        if with_prs:
+            res = pr_future.result()
+            parts.append('## open PRs\n' + (res['stdout'] if res['rc'] == 0 else
+                                             '[gh pr list failed rc=%s: %s]\n' % (res['rc'], (res['stderr'] or
+                                                                                             res['error'] or '')[:300])))
+        parts.append('## patch contents of unique commits and stashes\n' + ('\n'.join(patches) or '(none)\n'))
     return tp.redact_text('\n'.join(parts))  # never clipped: the gate hashes exactly what was reviewed
 
 
@@ -639,15 +656,38 @@ class GateBlocked(Exception):
     pass
 
 
+def required_dir(run_dir):
+    return os.path.join(run_dir, 'required')
+
+
 def mark_required(run_dir, kind, subject):
-    items = read_required(run_dir)
-    if [kind, subject] not in items:
-        tp.atomic_write(os.path.join(run_dir, 'required.json'), json.dumps(items + [[kind, subject]]) + '\n')
+    """Record one requirement as its own atomic file, so concurrent distinct pairs never clobber."""
+    tp.atomic_write(os.path.join(required_dir(run_dir), '%s-%s.json' % (kind, tp.review_slug(subject))),
+                    json.dumps({'kind': kind, 'subject': subject}) + '\n')
 
 
 def read_required(run_dir):
+    """Deduplicated, deterministically sorted [kind, subject] pairs (legacy required.json + markers)."""
+    items = set()
     data, error = tp.read_json(os.path.join(run_dir, 'required.json'))
-    return [[r[0], r[1]] for r in data if isinstance(r, list) and len(r) >= 2] if not error and isinstance(data, list) else []
+    if not error and isinstance(data, list):  # runs created before per-pair marker files
+        for entry in data:
+            if isinstance(entry, list) and len(entry) >= 2:
+                items.add((str(entry[0]), str(entry[1])))
+    try:
+        names = sorted(os.listdir(required_dir(run_dir)))
+    except OSError:
+        names = []
+    for name in names:
+        if not name.endswith('.json') or name.startswith('.tmp-'):  # atomic_write temp files are not markers
+            continue
+        marker, error = tp.read_json(os.path.join(required_dir(run_dir), name))
+        if error or not isinstance(marker, dict):
+            continue
+        kind, subject = marker.get('kind'), marker.get('subject')
+        if isinstance(kind, str) and isinstance(subject, str):
+            items.add((kind, subject))
+    return [list(item) for item in sorted(items)]
 
 
 def _run_path(run_dir, reference):

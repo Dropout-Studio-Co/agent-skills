@@ -1,5 +1,7 @@
 import hashlib
 import os
+import threading
+import time
 import unittest
 from unittest import mock
 
@@ -105,6 +107,61 @@ class NativeQueryHazardTests(TempCase):
             self.assertFalse(any('package-manager version downloads' in hazard for hazard in hazards), value)
         hazards = self.hazards({'name': 'x', 'packageManager': 'pnpm@9.0.0', 'dependencies': {'a': '1.0.0'}})
         self.assertFalse(any('configDependencies' in hazard for hazard in hazards), hazards)
+
+
+class OutdatedParallelTests(TempCase):
+    def test_outdated_parallel_preserves_order_and_caps_registry_concurrency(self):
+        root = os.path.join(self.tmp, 'parallel')
+        letters = ('a', 'b', 'c', 'd')
+        for index in range(4):
+            write(os.path.join(root, 'project%d' % index, 'package.json'), {
+                'name': 'project%d' % index, 'packageManager': 'bun@1.1.0',
+                'dependencies': {'%s-dep' % letter: '^1.0.0' for letter in letters}})
+
+        active = peak = 0
+        lock = threading.Lock()
+
+        def fake_registry(name, timeout, cwd):
+            nonlocal active, peak
+            with lock:
+                active += 1
+                peak = max(peak, active)
+            time.sleep(0.02)  # hold the slot so overlap is observable
+            with lock:
+                active -= 1
+            return {'latest': '9.9.9', 'deprecated': False}
+
+        with mock.patch.object(depup, '_registry_view', side_effect=fake_registry), \
+                mock.patch.object(depup.shutil, 'which', return_value='/usr/bin/npm'):
+            result = depup.outdated(root, 10)
+
+        expected = [('project%d' % index, '%s-dep' % letter)
+                    for index in range(4) for letter in letters]
+        self.assertEqual([(record['workspace'], record['name']) for record in result['records']], expected,
+                         'records stay in project then dependency order despite parallel queries')
+        self.assertEqual([query['cwd'] for query in result['queries']],
+                         ['project%d' % index for index in range(4)])
+        self.assertLessEqual(peak, 6, 'the shared semaphore caps npm view across all projects')
+        self.assertGreaterEqual(peak, 2, 'project queries must actually overlap')
+
+
+class CapabilitiesTests(TempCase):
+    def test_capabilities_returns_all_tools_in_order(self):
+        expected = ['git', 'node', 'npm', 'pnpm', 'yarn', 'bun', 'deno', 'cargo', 'rustc', 'go', 'uv', 'python3',
+                    'pip3', 'poetry', 'mvn', 'gradle', 'ruby', 'bundle', 'composer', 'php', 'dotnet', 'swift']
+        seen = []
+
+        def fake(name, args=('--version',)):
+            seen.append(name)
+            return {'path': '/fixture/' + name, 'version': args[0]}
+
+        with mock.patch.object(depup, 'tool_version', side_effect=fake):
+            caps = depup.capabilities()
+        self.assertEqual(len(expected), 22)
+        self.assertEqual(list(caps['tools']), expected, 'tool probes keep the declared order')
+        self.assertEqual(sorted(seen), sorted(expected))
+        self.assertEqual(caps['tools']['go'], {'path': '/fixture/go', 'version': 'version'})
+        self.assertEqual(caps['tools']['git'], {'path': '/fixture/git', 'version': '--version'})
 
 
 if __name__ == '__main__':
