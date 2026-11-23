@@ -9,6 +9,8 @@ import json
 import os
 import py_compile
 import re
+import threading
+import time
 import unittest
 
 from tests.support import SKILL_DIR, TempCase, git_init, load, sh, write
@@ -397,6 +399,108 @@ class ReviewGateTests(TaskCase):
                 with self.assertRaises(SystemExit) as raised:
                     rt.main(list(argv))
                 self.assertEqual(raised.exception.code, 2)
+
+
+class RequiredMarkerTests(TaskCase):
+
+    def test_concurrent_mark_required_preserves_all_entries(self):
+        run = self.start('ds-ui-overhaul')
+        kinds = ('code', 'ui-ux', 'accessibility')
+        errors = []
+
+        def mark(kind):
+            try:
+                rt.mark_required(run, kind, 'candidate')
+            except Exception as exc:  # surfaced below; threads must not hide failures
+                errors.append(exc)
+
+        threads = [threading.Thread(target=mark, args=(kind,)) for kind in kinds]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        self.assertEqual(errors, [])
+        self.assertEqual(rt.read_required(run),
+                         [['accessibility', 'candidate'], ['code', 'candidate'], ['ui-ux', 'candidate']],
+                         'distinct concurrent requirements must all survive; sorted for determinism')
+
+        # Gate enforces every marker: all three are missing before any review runs.
+        code, gate = self.rt('gate', run)
+        self.assertEqual(code, 1)
+        joined = ' '.join(gate['problems'])
+        for kind in kinds:
+            self.assertIn('%s:candidate' % kind, joined)
+
+        # Satisfy only the code review; the other two still block.
+        _, prep = self.rt('review', run, '--kind', 'code', '--base', self.base)
+        _, entry = self.complete_task(run, prep, GOOD)
+        self.assertEqual(entry['status'], 'completed')
+        code, gate = self.rt('gate', run)
+        self.assertEqual(code, 1)
+        joined = ' '.join(gate['problems'])
+        self.assertNotIn('code:candidate', joined)
+        self.assertIn('ui-ux:candidate', joined)
+        self.assertIn('accessibility:candidate', joined)
+
+        # Legacy required.json is still read (and deduplicated against marker files) and enforced.
+        legacy_run = self.start('ds-ui-overhaul')
+        write(os.path.join(legacy_run, 'required.json'), [['code', 'candidate'], ['code', 'candidate']])
+        rt.mark_required(legacy_run, 'code', 'candidate')
+        self.assertEqual(rt.read_required(legacy_run), [['code', 'candidate']])
+        code, gate = self.rt('gate', legacy_run)
+        self.assertEqual(code, 1)
+        self.assertIn('code:candidate', ' '.join(gate['problems']))
+
+
+class GitInventoryParallelTests(TaskCase):
+
+    def test_git_inventory_parallel_is_deterministic(self):
+        sh(['git', 'checkout', '-q', '-b', 'feature'], self.repo)
+        self.commit('feature.js', 'UNIQUE-FEATURE-LINE\n', 'feature work')
+        sh(['git', 'checkout', '-q', '-b', 'feature-two'], self.repo)
+        self.commit('feature-two.js', 'UNIQUE-FEATURE-TWO-LINE\n', 'second feature')
+        sh(['git', 'checkout', '-q', 'main'], self.repo)
+        write(os.path.join(self.repo, 'app.js'), 'STASHED-LINE\n')
+        sh(['git', 'stash', 'push', '-q', '-m', 'wip'], self.repo)
+        clone = os.path.join(self.tmp, 'clone')
+        sh(['git', 'clone', '-q', self.repo, clone], self.tmp)
+        write(os.path.join(clone, 'clone-only.js'), 'UNIQUE-CLONE-LINE\n')
+        sh(['git', 'add', '-A'], clone)
+        sh(['git', 'commit', '-qm', 'clone-only'], clone)
+        first_wt = os.path.join(self.tmp, 'wt-one')
+        second_wt = os.path.join(self.tmp, 'wt-two')
+        sh(['git', 'worktree', 'add', '-q', '--detach', first_wt], self.repo)
+        sh(['git', 'worktree', 'add', '-q', '--detach', second_wt], self.repo)
+        write(os.path.join(first_wt, 'app.js'), 'WORKTREE-ONE-EDIT\n')
+        write(os.path.join(second_wt, 'app.js'), 'WORKTREE-TWO-EDIT\n')
+
+        calls = []
+
+        def runner(argv, **kwargs):
+            calls.append(argv)
+            time.sleep(0.01)  # makes the PR lookup overlap local inspection
+            return {'rc': 0, 'stdout': '[]', 'stderr': '', 'error': None}
+
+        first = rt.git_inventory(self.repo, 'main', [clone], True, runner=runner)
+        second = rt.git_inventory(self.repo, 'main', [clone], True, runner=runner)
+        self.assertEqual(first, second, 'concurrent inspection must stay byte-identical')
+        self.assertEqual(len(calls), 2, 'one PR lookup per inventory call')
+        for marker in ('## open PRs', '## location %s' % clone, 'UNIQUE-FEATURE-LINE',
+                       'UNIQUE-FEATURE-TWO-LINE', 'STASHED-LINE', 'UNIQUE-CLONE-LINE',
+                       'WORKTREE-ONE-EDIT', 'WORKTREE-TWO-EDIT',
+                       'refs/heads/feature ahead=1 unique=1'):
+            self.assertIn(marker, first)
+
+        # The gate hashes exactly this inventory; a completed review of the same tree must pass.
+        run = self.start('ds-consolidate')
+        ledger = self.handoff('feature: proven in main\n')
+        code, prep = self.rt('review', run, '--kind', 'reconciliation', '--base', self.base,
+                             '--context', ledger, '--location', clone, '--required')
+        self.assertEqual(code, 0, prep)
+        _, entry = self.complete_task(run, prep, GOOD)
+        self.assertEqual(entry['status'], 'completed')
+        code, gate = self.rt('gate', run)
+        self.assertEqual((code, gate['ok']), (0, True), gate)
 
 
 class SkillSpecificEvidenceTests(TaskCase):
