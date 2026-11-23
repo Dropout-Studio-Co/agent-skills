@@ -25,6 +25,10 @@ override effort, probe providers or invoke an external model CLI.
   fresh-context task fails to return a valid result block, mark the task `unavailable` with the
   reason (`review unavailable` / `planning unavailable` / `review_task.py unavailable`). Never
   fabricate a receipt or merge/deliver past an unavailable required review.
+- **Parallel tasks:** Distinct `(kind, subject)` read-only review tasks on the same frozen candidate,
+  and distinct `--kind architecture` tasks, may run concurrently. Keep the candidate tree frozen
+  until every result is recorded, and never run duplicate-lens committees or concurrent prepares of
+  the same `(kind, subject)`.
 
 ## Dependency-upgrade commands (`scripts/depup.py`)
 
@@ -87,7 +91,7 @@ harness or effort overrides.
 - `unavailable RUN --task-id ID --reason "<why>"` records an unrunnable task without satisfying
   the gate.
 - `gate RUN [--require KIND[:SUBJECT]]...` passes only when every required `(kind, subject)`
-  (including any ever marked `--required` in `required.json`) has a latest `completed` `pass`
+  (including any ever marked `--required` under `required/` or legacy `required.json`) has a latest `completed` `pass`
   entry for the current working-tree fingerprint and run base, with an intact `receipt.json` and
   matching live `git-inventory` SHA-256, and no review of the current candidate failed.
 - Files named by absolute path in a rendered-evidence manifest (safe image/video/PDF extensions

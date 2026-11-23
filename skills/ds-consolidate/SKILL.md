@@ -30,16 +30,19 @@ push `DEFAULT_BRANCH`, do not clean up, and report the blocker with its evidence
 report. Every step below says "BLOCKER" to mean exactly this. Never ask the user.
 
 STEP 1 — AUDIT (read-only):
-- Fetch and prune remotes. Resolve the default branch (`DEFAULT_BRANCH`, typically `main`) and
-  update it to the latest.
-- For every branch/worktree/clone/stash/PR, collect the facts that are NOT already in
-  `DEFAULT_BRANCH`: unmerged commits (`git cherry <default> <ref>`, `git log <default>..<ref>`),
-  uncommitted changes, untracked files, ignored files, and 24-hour activity
-  (`git log -1 --format=%cI`, file mtimes).
-- Start the task run now (`$T`: see FRESH-CONTEXT TASKS), on `DEFAULT_BRANCH` at its
+- Run these serially first: `git fetch --prune`, update the default branch (`DEFAULT_BRANCH`,
+  typically `main`) to the latest, and record the task run on `DEFAULT_BRANCH` at its
   pre-consolidation commit:
   `python3 $T start --skill ds-consolidate --repo . --base <default-branch SHA>` (every review
   compares against this base).
+- Then, for every branch/worktree/clone/stash/PR, collect the facts that are NOT already in
+  `DEFAULT_BRANCH`: unmerged commits (`git cherry <default> <ref>`, `git log <default>..<ref>`),
+  uncommitted changes, untracked files, ignored files, and 24-hour activity
+  (`git log -1 --format=%cI`, file mtimes). Once `DEFAULT_BRANCH` is updated and `start` is recorded,
+  run these read-only inspections (branches and `git cherry`, worktrees, the bounded extra-clone
+  search, stashes, `gh pr list` / `gh api user`, `lsof`) concurrently as parallel read-only shell
+  calls; use read-only audit subagents only for a repo with many diverged branches or clones that
+  need deep diff reading.
 - CLASSIFY every item into exactly one of four evidence classes:
   - **(a) in main (default branch)**: `git cherry <default> <ref>` shows no `+` line, or the tip
     is an ancestor of `DEFAULT_BRANCH` (`git merge-base --is-ancestor <tip> <default>`). For a
@@ -67,7 +70,9 @@ STEP 1 — AUDIT (read-only):
   instructions, constraints, conflict risks) and run ONE fresh-context planning task (see
   FRESH-CONTEXT TASKS). Add `--kind architecture --subject <item>` only for a significant/high-risk
   item (diverged design, big conflict, schema/auth/deploy/signing changes). Skip it when everything
-  is (a) or (b). Check the returned plan against these rules and the repo's instructions; adopt or
+  is (a) or (b). Keep the main `plan` and the batched consult serial; multiple `--kind architecture`
+  tasks for distinct high-risk items may run concurrently before `plan`. Check
+  the returned plan against these rules and the repo's instructions; adopt or
   reject each part with a reason; a part the evidence can neither adopt nor reject gets one
   consult (see CONSULT). The plan never deletes anything. If planning is `unavailable`, apply
   BLOCKER.
@@ -124,11 +129,13 @@ STEP 3 — VERIFY:
   reconciliation review. It joins the cleanup list only when it then meets the (a) or (b) proof.
   If this session verifies it is still-needed, it returns through PLAN, a fresh restore point,
   STEP 2 and STEP 3. Otherwise it is kept as (d).
-- INDEPENDENT REVIEW (always, even when no code changed; before any cleanup): prepare and run
+- INDEPENDENT REVIEW (always, even when no code changed; before any cleanup): prepare
   `review --kind reconciliation --required --context <ledger> --with-prs` plus `--location <path>`
-  for every extra clone (and `--main-ref <branch>` if the default branch is not detected), then
-  bind its output with `record`. If the default branch's code changed, also run a separate
-  `review --kind code --required` and bind its output with `record`. Fix findings here (never in
+  for every extra clone (and `--main-ref <branch>` if the default branch is not detected). If the
+  default branch's code changed, also prepare a separate `review --kind code --required`. When both
+  reviews apply, prepare them serially, run the `reconciliation` and `code` read-only subagents
+  concurrently on the frozen repo/branch/stash/clone/PR state (distinct kinds only), and bind each
+  output serially with `record`. Fix findings here (never in
   the reviewer; if the right fix of a finding is unclear, consult: see CONSULT), re-run affected
   builds/tests, then review the new candidate. Then run `gate --require reconciliation` (add
   `--require code` when default-branch code changed); it fails if a required review is missing,
@@ -215,8 +222,12 @@ FRESH-CONTEXT TASKS (shared with ds-deps-upgrade; one implementation):
 - `reused` means the same candidate was already reviewed/planned: don't repeat it. Never review your
   own work in the authoring context to satisfy a required review; if no fresh independent context
   is available, record `unavailable` and apply BLOCKER.
-- Implementation, merging, conflict resolution, fixes and cleanup stay in this session. Evidence
-  lives in the run dir; put the fresh-context runner, verdicts and the gate result in the report.
+- Implementation, merging, conflict resolution, fixes and cleanup stay in this session. Concurrency
+  boundaries: only the read-only inspections, distinct `--kind architecture` tasks and distinct-kind
+  `reconciliation`/`code` reviews may run concurrently; Step 1 fetch/base-update/`start`, the batched
+  consult and `plan`, Step 2 merges/cherry-picks/hand ports, Restore Points 1 and 2, `gate`, every
+  consult, and STEP 4 cleanup stay serial. Evidence lives in the run dir; put the fresh-context
+  runner, verdicts and the gate result in the report.
 
 Finish with a short report: what was integrated, what was kept (with reasons), what was deleted, the
 restore-point path, every consult (runner, decision), planning/review results (runner, verdicts)

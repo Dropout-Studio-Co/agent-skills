@@ -26,7 +26,10 @@ Choose the mode from whether the invocation includes an argument (or a continuat
 
 ## 2. Capture Verified State (Facts, Not Memory)
 
-Run read-only commands; never write git, PR, or check values from recollection.
+Run read-only commands; never write git, PR, or check values from recollection. Once step 1 has
+settled the session, batch these read-only git and PR/CI checks concurrently across every touched
+repository and worktree; all other steps stay strictly serial with no subagents (never start new work
+and never delegate handoff synthesis).
 
 For every git repository or worktree touched in this session (skip git checks if no repo was touched):
 

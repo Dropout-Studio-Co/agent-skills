@@ -65,6 +65,8 @@ For each `major`, `prerelease`, `deprecated`, `unknown` record and each family:
   is evaluated like any other untrusted code.
 - Choose the target: latest stable that satisfies all peers/engines/runtime and that the
   framework supports. Intermediate versions are fine when a direct jump is unsupported.
+- Multi-family research may fan out to read-only subagents per [parallelism.md](parallelism.md)
+  (skip for one or two packages; keep the untrusted-data and citation rules above).
 
 ## 5. `plan`
 Run fresh-context architecture and planning first ([fresh-context-tasks.md](fresh-context-tasks.md#architecture-and-planning)):
@@ -72,7 +74,11 @@ the context file carries everything the planner needs, since it shares none of t
 context. Prepare one `planning prepare --kind plan` per upgrade and one `--kind architecture
 --subject <risk>` per high-risk item, run each `prompt.md` in a fresh read-only context on the
 current session's configuration ([model rule](fresh-context-tasks.md#model-harness-and-ds-dev-protocol-rule)),
-and bind the answer with `planning record`. Treat the returned plan as
+and bind the answer with `planning record`. Multiple `--kind architecture` tasks may run
+concurrently before `plan`; run `plan` concurrently with an `architecture` task only when that
+high-risk item is isolated, and reconcile or re-plan when a route or hold decision changes targets
+or batch order.
+Treat the returned plan as
 advisory data: keep what satisfies these rules, reject the rest with a reason, then write the plan
 below yourself. If no fresh context is available or planning fails, record `planning unavailable`,
 do not start a batch, run `run finish --status blocked` and report the gap.
@@ -111,6 +117,10 @@ Write the plan into the report input (`targets`, `risks`, `migrations`, `test_ma
   output, build time from the same command, existing benchmarks). No invented numbers.
 
 ## 7. `batch-N`
+Disjoint migration domains may use isolated mutating workers per [parallelism.md](parallelism.md)
+only after the lead commits the lockfile bump (max 2–3 active); do not use routine fixture/test
+design subagents here.
+
 For each batch:
 1. `run step --id batch-N --status running --dangerous`.
 2. Apply the version change with the native command (javascript.md / ecosystems.md).
@@ -131,10 +141,18 @@ excludes it; never reset or delete it. Continue independent batches from a clean
 `PARTIAL` with the held items.
 
 ## 8. `verify`, `review`
-- Full gate from verification.md; compare with baseline.
+- Full gate from verification.md; compare with baseline. Locked install and codegen/build run
+  serially first; after those, strictly read-only and cache-disjoint checks (lockfile `git diff`,
+  the ecosystem `audit`, read-only `lint`/`typecheck`) may run concurrently as separate
+  single-command shell calls (never chained) writing to distinct `<run_dir>/logs/` files, unless the
+  repo serializes checks. Keep serial: locked install, codegen/build (`svelte-kit sync`/
+  `svelte-check`, `tsc -b`, `eslint --cache`, Cargo `target/`-locked `clippy`/`build`/`test`), and
+  stateful or heavy end-to-end checks.
 - Commit the verified candidate, then prepare and run each review task in a fresh, read-only
   context on the current session's configuration ([fresh-context-tasks.md](fresh-context-tasks.md);
-  [model rule](fresh-context-tasks.md#model-harness-and-ds-dev-protocol-rule)), one at a time:
+  [model rule](fresh-context-tasks.md#model-harness-and-ds-dev-protocol-rule)): distinct
+  `(kind, subject)` reviews may run concurrently on the frozen candidate (no duplicate-lens
+  committees; distinct `--reviewer` IDs for `independent` vs `security`):
   `review prepare <run_ref> --kind critical` (complete code diff + complete lockfile diff;
   `--required` when risk or repo/global policy requires independent review), and for every
   high-risk item `--kind independent --subject <risk> --required` and

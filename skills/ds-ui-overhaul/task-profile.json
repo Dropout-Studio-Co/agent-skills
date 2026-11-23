@@ -4,7 +4,7 @@
   "rules": [
     "Authority order: explicit user instruction > repository AGENTS/CLAUDE > accepted product requirements > canonical design system and component contracts > DESIGN.md > existing product identity > this skill > specialist skills > generic conventions.",
     "No unrequested redesign; prefer existing design-system components and primitives; no decorative borders for ordinary separation; visible accessible focus (keyboard/D-pad/assistive); no hover-scale on pointer buttons; respect reduced-motion preferences.",
-    "Planners and reviewers are advisory and read-only; the main session implements every change and runs every check.",
+    "Planners and reviewers are advisory and read-only; they never edit files or run checks. The lead session owns shared primitives, integration, fixes and rendered verification, and may delegate disjoint vertical surfaces only under the skill's worker isolation contract.",
     "Apply platform-appropriate verification and constraints (web, mobile, desktop, TV); never require web-only checks on non-web targets or skip real target-platform checks.",
     "Lighthouse 13 results are required in the rendered evidence for UI changes to horcrux.app, dropoutstudio.co and beyourahi.com: the affected production-build pages at mobile and desktop, performance/accessibility/best-practices/SEO medians of three serial runs per page compared with the repository thresholds (a missing threshold is a reported gap, not a waiver), with report path, scores and URL/viewport."
   ],
