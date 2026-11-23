@@ -13,6 +13,7 @@ Stdlib only. Usage:
                               [--evidence-out PATH]
 """
 import argparse
+import concurrent.futures
 import hashlib
 import json
 import os
@@ -20,6 +21,7 @@ import re
 import sqlite3
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from urllib.parse import quote
@@ -180,6 +182,7 @@ class Repo:
         self.common = None
         self.worktrees = [self.root]
         self._member_cache = {}
+        self._member_lock = threading.Lock()
         common = _common_dir(self.root)
         if common is not None:
             self.common = common
@@ -208,10 +211,12 @@ class Repo:
         return names
 
     def member(self, cwd):
+        """True when cwd belongs to this repository; lookups are cached under a lock."""
         key = cwd if isinstance(cwd, str) else str(cwd)
-        if key not in self._member_cache:
-            self._member_cache[key] = self._member(key)
-        return self._member_cache[key]
+        with self._member_lock:
+            if key not in self._member_cache:
+                self._member_cache[key] = self._member(key)
+            return self._member_cache[key]
 
     def _member(self, cwd):
         if not isinstance(cwd, str) or not cwd.strip():
@@ -227,41 +232,73 @@ class Repo:
         return common is not None and common == self.common
 
 
-def read_json_records(path):
-    """Return (records, total) for a .json, .jsonl or .jsonl.zst transcript."""
+def transcript_lines(path):
+    """Yield decoded lines of a .jsonl or .jsonl.zst transcript, closing the source."""
+    if path.suffix == ".zst":
+        try:
+            proc = subprocess.Popen(["zstd", "-dc", str(path)], stdout=subprocess.PIPE,
+                                    stderr=subprocess.DEVNULL, text=True, encoding="utf-8",
+                                    errors="replace")
+        except (OSError, ValueError):
+            return
+        try:
+            for line in proc.stdout:
+                yield line
+        except OSError:
+            return
+        finally:
+            proc.stdout.close()
+            proc.wait()
+        return
     try:
-        if path.suffix == ".zst":
-            proc = subprocess.run(["zstd", "-dc", str(path)], capture_output=True)
-            raw = proc.stdout.decode("utf-8", "replace")
-        else:
-            raw = path.read_text("utf-8", "replace")
-    except (OSError, ValueError):
-        return [], 0
+        handle = open(str(path), "r", encoding="utf-8", errors="replace")
+    except OSError:
+        return
+    with handle:
+        try:
+            for line in handle:
+                yield line
+        except OSError:
+            return
+
+
+def iter_json_records(path):
+    """Yield one item per counted transcript entry: a dict, or None when it did not parse.
+
+    Yields nothing for an unreadable file, so the item count stays the same total a
+    whole-file read produced. `.jsonl` and `.jsonl.zst` stream line by line; blank lines
+    are not counted. A `.json` object or list is parsed once.
+    """
     if path.suffix == ".json":
+        try:
+            raw = path.read_text("utf-8", "replace")
+        except (OSError, ValueError):
+            return
         try:
             data = json.loads(raw)
         except ValueError:
-            return [], 1
+            yield None
+            return
         if isinstance(data, list):
-            return [item for item in data if isinstance(item, dict)], len(data)
-        if isinstance(data, dict):
+            items = data
+        elif isinstance(data, dict):
             items = data.get("messages") or data.get("history") or [data]
             if not isinstance(items, list):
                 items = [data]
-            return [item for item in items if isinstance(item, dict)], len(items)
-        return [], 1
-    records, total = [], 0
-    for line in raw.splitlines():
+        else:
+            items = [None]
+        for item in items:
+            yield item if isinstance(item, dict) else None
+        return
+    for line in transcript_lines(path):
         if not line.strip():
             continue
-        total += 1
         try:
             record = json.loads(line)
         except ValueError:
+            yield None
             continue
-        if isinstance(record, dict):
-            records.append(record)
-    return records, total
+        yield record if isinstance(record, dict) else None
 
 
 def text_of(content):
@@ -386,16 +423,6 @@ def _is_self_session(text):
     return any(text.startswith(marker) for marker in SELF_SESSION_MARKERS)
 
 
-def has_session_marker(records):
-    for record in records:
-        if record_role(record) not in HUMAN_ROLES:
-            continue
-        if _is_self_session(user_raw_text(record)) or \
-                user_raw_text(record).lstrip().startswith(IMPLEMENTER_OPENING):
-            return True
-    return False
-
-
 def message_id(record, text):
     node, msg = record_parts(record)
     for source in (record, node, msg):
@@ -485,23 +512,27 @@ def make_session(source, label, mtime, headless, human, errors, excluded=False, 
 
 
 def scan_jsonl_session(path, mtime, source, repo):
-    records, total = read_json_records(path)
-    recognized, user_ok = 0, False
-    for record in records:
+    """Scan one transcript in a single streaming pass; the record count is the drift total."""
+    total = recognized = 0
+    user_ok = headless = excluded = False
+    last_cwd, started = None, False
+    human, errors = [], []
+    for record in iter_json_records(path):
+        total += 1
+        if record is None:
+            continue
         ok, is_user = recognized_record(record)
         if ok:
             recognized += 1
         if is_user:
             user_ok = True
-    last_cwd = None
-    started = False
-    human, errors = [], []
-    headless = False
-    for record in records:
+        # A whole-session marker anywhere excludes the session, whatever its cwd.
+        if not excluded and record_role(record) in HUMAN_ROLES:
+            raw = user_raw_text(record)
+            excluded = _is_self_session(raw) or raw.lstrip().startswith(IMPLEMENTER_OPENING)
         found = find_cwd(record)
         if found is not None:
-            last_cwd = found
-            started = True
+            last_cwd, started = found, True
         if not started or last_cwd is None or not repo.member(last_cwd):
             continue
         if is_headless(record):
@@ -511,9 +542,28 @@ def scan_jsonl_session(path, mtime, source, repo):
             human.append({"msg": message_id(record, text), "text": redact(text),
                           "correction": is_correction(text)})
         errors.extend(error_texts(record))
-    session = make_session(source, path.name, mtime, headless, human, errors,
-                           excluded=has_session_marker(records))
+    session = make_session(source, path.name, mtime, headless, human, errors, excluded=excluded)
     return session, {"total": total, "recognized": recognized, "user_ok": user_ok}
+
+
+def scan_targets(targets, source, repo):
+    """Scan (path, mtime) targets; sessions and stats keep the exact input order."""
+    stats = {"total": 0, "recognized": 0, "user_ok": False}
+    if not targets:
+        return [], stats
+    if len(targets) == 1:
+        scanned = [scan_jsonl_session(targets[0][0], targets[0][1], source, repo)]
+    else:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+            scanned = list(pool.map(
+                lambda pair: scan_jsonl_session(pair[0], pair[1], source, repo), targets))
+    sessions = []
+    for session, file_stats in scanned:
+        sessions.append(session)
+        stats["total"] += file_stats["total"]
+        stats["recognized"] += file_stats["recognized"]
+        stats["user_ok"] = stats["user_ok"] or file_stats["user_ok"]
+    return sessions, stats
 
 
 def candidate_project_dirs(claude_home, repo):
@@ -542,11 +592,10 @@ def candidate_project_dirs(claude_home, repo):
 
 def claude_sessions(repo, cutoff):
     claude_home = Path(os.environ.get("CLAUDE_CONFIG_DIR") or (HOME / ".claude"))
-    sessions = []
-    stats = {"total": 0, "recognized": 0, "user_ok": False}
-    for directory in candidate_project_dirs(claude_home, repo):
+    targets = []
+    for directory in sorted(candidate_project_dirs(claude_home, repo)):
         try:
-            files = list(directory.glob("*.jsonl")) + list(directory.glob("*.jsonl.zst"))
+            files = sorted(list(directory.glob("*.jsonl")) + list(directory.glob("*.jsonl.zst")))
         except OSError:
             continue
         for path in files:
@@ -554,19 +603,13 @@ def claude_sessions(repo, cutoff):
                 mtime = path.stat().st_mtime
             except OSError:
                 continue
-            if mtime < cutoff:
-                continue
-            session, file_stats = scan_jsonl_session(path, mtime, "claude-code", repo)
-            sessions.append(session)
-            stats["total"] += file_stats["total"]
-            stats["recognized"] += file_stats["recognized"]
-            stats["user_ok"] = stats["user_ok"] or file_stats["user_ok"]
-    return sessions, stats
+            if mtime >= cutoff:
+                targets.append((path, mtime))
+    return scan_targets(targets, "claude-code", repo)
 
 
 def extra_sessions(repo, extra_dirs, cutoff):
-    sessions = []
-    stats = {"total": 0, "recognized": 0, "user_ok": False}
+    targets = []
     for directory in extra_dirs:
         try:
             files = sorted(Path(directory).expanduser().rglob("*.json*"))
@@ -579,14 +622,14 @@ def extra_sessions(repo, extra_dirs, cutoff):
                 mtime = path.stat().st_mtime
             except OSError:
                 continue
-            if mtime < cutoff:
-                continue
-            session, file_stats = scan_jsonl_session(path, mtime, "extra", repo)
-            sessions.append(session)
-            stats["total"] += file_stats["total"]
-            stats["recognized"] += file_stats["recognized"]
-            stats["user_ok"] = stats["user_ok"] or file_stats["user_ok"]
-    return sessions, stats
+            if mtime >= cutoff:
+                targets.append((path, mtime))
+    return scan_targets(targets, "extra", repo)
+
+
+def filesystem_sessions(repo, extra_dirs, cutoff):
+    """Scan the filesystem stores: Claude Code first, then the extra dirs."""
+    return claude_sessions(repo, cutoff), extra_sessions(repo, extra_dirs, cutoff)
 
 
 def drift_source(source, stats):
@@ -986,11 +1029,12 @@ def main(argv=None):
     repo = Repo(repo_root(args.repo))
     now = time.time()
     cutoff = now - args.days * 86400
-    claude, claude_stats = claude_sessions(repo, cutoff)
-    extra, extra_stats = extra_sessions(repo, args.extra_dir, cutoff)
-    sessions = claude + extra
-    opens, v1_only, opencode_drift = opencode_sessions(repo, cutoff)
-    sessions += opens
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+        stored = pool.submit(filesystem_sessions, repo, args.extra_dir, cutoff)
+        opens_future = pool.submit(opencode_sessions, repo, cutoff)
+        (claude, claude_stats), (extra, extra_stats) = stored.result()
+        opens, v1_only, opencode_drift = opens_future.result()
+    sessions = claude + extra + opens
     drift = [source for source in (drift_source("claude-code", claude_stats),
                                    drift_source("extra", extra_stats),
                                    opencode_drift) if source]

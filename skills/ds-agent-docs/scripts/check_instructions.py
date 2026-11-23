@@ -63,11 +63,11 @@ HYGIENE_PATTERNS = (COLLECT._HOME_PATH, COLLECT._PEM_KEY, COLLECT._JWT,
                     COLLECT._URL_CREDENTIALS) + tuple(COLLECT._SECRETS)
 
 
-def git(args, cwd):
+def git(args, cwd, input_text=None):
     env = {k: v for k, v in os.environ.items() if k not in GIT_STRIP}
     try:
         return subprocess.run(["git"] + list(args), cwd=str(cwd), capture_output=True,
-                              text=True, env=env)
+                              text=True, env=env, input=input_text)
     except (OSError, ValueError):
         return None
 
@@ -464,6 +464,43 @@ def tracked(root):
     return [p for p in proc.stdout.split("\0") if p] if proc and proc.returncode == 0 else []
 
 
+def batch_ignored(root, refs):
+    """Return the subset of refs git ignores, from ONE `check-ignore --stdin -z` call."""
+    wanted = []
+    for ref in dict.fromkeys(refs):
+        if not ref or "\0" in ref or os.path.isabs(ref):
+            continue
+        norm = os.path.normpath(ref)
+        if norm == ".." or norm.startswith("../"):
+            continue
+        wanted.append(ref)
+    if not wanted:
+        return set()
+    proc = git(["check-ignore", "--stdin", "-z"], root, "\0".join(wanted) + "\0")
+    if proc is None:
+        return set()
+    if proc.returncode not in (0, 1):
+        if "not a git repository" in (proc.stderr or "").lower():
+            return set()
+        # A single symlink/pathspec error aborts the whole batch; fall back per-ref so valid ignored refs survive.
+        return {ref for ref in wanted if ignored(root, ref, {})}
+    return {token for token in proc.stdout.split("\0") if token}
+
+
+class IgnoreProbe:
+    """Ignore cache for one pass: it records every ref the classification asks about."""
+
+    def __init__(self):
+        self.refs = {}
+
+    def __contains__(self, ref):
+        self.refs.setdefault(ref, False)
+        return True
+
+    def __getitem__(self, ref):
+        return self.refs[ref]
+
+
 def ignored(root, ref, cache):
     if ref not in cache:
         proc = git(["check-ignore", "-q", "--", ref], root)
@@ -541,7 +578,18 @@ def ref_item(file_rel, line, value, klass):
 
 
 def collect_references(root, items):
-    files, cache, found = tracked(root), {}, []
+    files = tracked(root)
+    probe = IgnoreProbe()
+    found = scan_references(root, files, items, probe)
+    ignored_refs = batch_ignored(root, probe.refs)
+    if ignored_refs:
+        found = scan_references(root, files, items,
+                                {ref: ref in ignored_refs for ref in probe.refs})
+    return found
+
+
+def scan_references(root, files, items, cache):
+    found = []
     for item in items:
         if item.get("link"):
             continue
