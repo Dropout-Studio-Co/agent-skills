@@ -7,6 +7,7 @@ import contextlib
 import io
 import json
 import os
+import py_compile
 import re
 import unittest
 
@@ -79,6 +80,15 @@ class TaskCase(TempCase):
 
 class ProfileAndAgnosticComplianceTests(TaskCase):
 
+    def test_review_task_loads_only_the_shared_protocol(self):
+        with open(rt.__file__, encoding='utf-8') as handle:
+            source = handle.read()
+        self.assertNotIn('depup.py', source, 'review_task.py must not load depup.py')
+        self.assertNotIn('review_task_depup', source)
+        self.assertIs(rt.Refusal, rt.tp.Refusal)
+        for name in ('run_cmd', 'git', 'tree_fingerprint', 'redact_output', 'read_json'):
+            self.assertTrue(hasattr(rt.tp, name), name)
+
     def test_both_sibling_skills_ship_model_agnostic_profiles(self):
         for skill, kinds, plan_kinds in (
             ('ds-consolidate', {'reconciliation', 'code'}, {'plan', 'architecture', 'consult'}),
@@ -148,9 +158,6 @@ class ProfileAndAgnosticComplianceTests(TaskCase):
                         continue
                     full = os.path.join(dirpath, name)
                     rel = os.path.relpath(full, SKILLS)
-                    # check_instructions.py has a regex listing model names to reject user-global lines from AGENTS.md
-                    if rel == 'ds-agent-docs/scripts/check_instructions.py':
-                        continue
                     with open(full, encoding='utf-8') as handle:
                         text = handle.read()
                     match = forbidden_re.search(text)
@@ -394,6 +401,39 @@ class ReviewGateTests(TaskCase):
 
 class SkillSpecificEvidenceTests(TaskCase):
 
+    def test_git_inventory_requests_pr_author_and_head_oid(self):
+        calls = []
+
+        def runner(argv, **kwargs):
+            calls.append(argv)
+            return {'rc': 0, 'stdout': '[]', 'stderr': '', 'error': None}
+
+        inventory = rt.git_inventory(self.repo, 'main', [], True, runner=runner)
+        self.assertIn('## open PRs', inventory)
+        pr_calls = [argv for argv in calls if argv[:3] == ['gh', 'pr', 'list']]
+        self.assertEqual(len(pr_calls), 1)
+        fields = pr_calls[0][pr_calls[0].index('--json') + 1].split(',')
+        self.assertIn('author', fields)
+        self.assertIn('headRefOid', fields)
+
+    def test_non_media_manifest_path_never_affects_reuse(self):
+        run = self.start('ds-ui-overhaul')
+        shot = os.path.join(self.tmp, 'evidence', 'desktop.png')
+        write(shot, 'PNGDATA')
+        secret = os.path.join(self.tmp, 'proj', '.dev.vars')
+        write(secret, 'API_TOKEN=SECRET-TOKEN-VALUE\n')
+        manifest = os.path.join(self.tmp, 'rendered-reuse.md')
+        write(manifest, 'desktop 1440x900: %s\nbuilt with env from %s\n' % (shot, secret))
+        _, prep = self.rt('review', run, '--kind', 'ui-ux', '--base', self.base,
+                          '--rendered-evidence', manifest, '--required')
+        _, entry = self.complete_task(run, prep, GOOD)
+        self.assertEqual(entry['status'], 'completed')
+        write(secret, 'API_TOKEN=ROTATED-TOKEN-VALUE\n')  # a non-media path must not touch the candidate hash
+        _, again = self.rt('review', run, '--kind', 'ui-ux', '--base', self.base,
+                           '--rendered-evidence', manifest)
+        self.assertTrue(again.get('reused'))
+        self.assertEqual(again['status'], 'completed')
+
     def test_frontend_profile_requires_lighthouse_and_rendered_evidence(self):
         rules = rt.load_profile('ds-ui-overhaul')['rules']
         self.assertTrue(any('Lighthouse 13' in rule for rule in rules), rules)
@@ -468,6 +508,73 @@ class SkillSpecificEvidenceTests(TaskCase):
         code, gate = self.rt('gate', run)
         self.assertEqual(code, 1)
         self.assertIn('changed since the review', ' '.join(gate['problems']))
+
+
+class DepsUpgradeSpecTests(TempCase):
+    """Agent Skill spec checks ported from the retired admin validator (no installer code)."""
+
+    SKILL = 'ds-deps-upgrade'
+    SCRIPTS = ('scripts/depup.py', 'scripts/task_protocol.py', 'scripts/review_task.py')
+
+    def skill_dir(self):
+        return os.path.join(SKILLS, self.SKILL)
+
+    def read(self, rel):
+        with open(os.path.join(self.skill_dir(), rel), encoding='utf-8') as handle:
+            return handle.read()
+
+    @staticmethod
+    def frontmatter(text):
+        parts = text.split('---\n', 2)
+        return parts[1] if len(parts) >= 3 and text.startswith('---\n') else None
+
+    def test_frontmatter_license_and_explicit_only(self):
+        text = self.read('SKILL.md')
+        front = self.frontmatter(text)
+        self.assertIsNotNone(front, 'SKILL.md needs YAML frontmatter')
+        self.assertIn('name: %s\n' % self.SKILL, front + '\n')
+        self.assertIn('license: MIT\n', front + '\n')
+        self.assertIn('disable-model-invocation: true\n', front + '\n')
+        self.assertIn('description:', front)
+        description = re.search(r'^description:\s*(.+)$', front, re.M)
+        self.assertIsNotNone(description)
+        self.assertTrue(description.group(1).strip())
+        self.assertLessEqual(len(description.group(1).strip()), 1024)
+
+    def test_body_is_concise(self):
+        text = self.read('SKILL.md')
+        front = self.frontmatter(text)
+        self.assertIsNotNone(front)
+        body = text.split('---\n', 2)[2]
+        self.assertLessEqual(len(body.splitlines()), 500)
+
+    def test_internal_markdown_links_exist_and_do_not_escape(self):
+        root = os.path.realpath(self.skill_dir())
+        for rel in ('SKILL.md', 'README.md', 'references/workflow.md', 'references/safety.md',
+                    'references/verification.md', 'references/report-schema.md',
+                    'references/fresh-context-tasks.md', 'references/parallelism.md',
+                    'references/javascript.md', 'references/ecosystems.md'):
+            text = self.read(rel)
+            for target in re.findall(r'\[[^\]]*\]\(([^)]+)\)', text):
+                target = target.strip().split('#', 1)[0].split('"', 1)[0].strip()
+                if not target or re.match(r'^(?:[a-z][a-z0-9+.-]*:|#)', target, re.I):
+                    continue
+                resolved = os.path.realpath(os.path.join(os.path.dirname(os.path.join(root, rel)), target))
+                self.assertTrue(resolved == root or resolved.startswith(root + os.sep),
+                                '%s escapes the skill: %s' % (rel, target))
+                self.assertTrue(os.path.exists(resolved), '%s has a broken link: %s' % (rel, target))
+
+    def test_no_symlinks_inside_the_skill(self):
+        root = self.skill_dir()
+        for dirpath, dirnames, filenames in os.walk(root):
+            for name in dirnames + filenames:
+                self.assertFalse(os.path.islink(os.path.join(dirpath, name)),
+                                 'symlink inside the skill: %s' % os.path.join(dirpath, name))
+
+    def test_scripts_compile_cleanly(self):
+        for rel in self.SCRIPTS:
+            path = os.path.join(self.skill_dir(), rel)
+            py_compile.compile(path, cfile=os.path.join(self.tmp, os.path.basename(rel) + 'c'), doraise=True)
 
 
 if __name__ == '__main__':

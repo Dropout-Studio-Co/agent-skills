@@ -1,13 +1,13 @@
 ---
 name: ds-deps-upgrade
-description: Autonomously upgrades a repository's dependencies end to end from one invocation across web, mobile, native, desktop, TV, CLI, and backend projects - analyzes, researches compatibility, plans, upgrades in an isolated worktree from the latest upstream default branch, performs required code and config migrations, tests, reviews, fixes, verifies and delivers per the repository's delivery mode, with checkpoints, rollback and evidence. Modes upgrade (default, full pipeline), plan (read-only), verify, resume, rollback, status. Invoke explicitly by name; a casual mention of dependencies is not a request to upgrade.
-license: Proprietary (personal use)
+description: Upgrades dependencies end to end in an isolated worktree: analyze, research, plan, migrate, test, review, verify, deliver, roll back. Modes upgrade, plan, verify, resume, rollback, status. Invoke explicitly by name.
+license: MIT
 compatibility: Needs git and Python 3.9+. JS/TS (npm, pnpm, yarn, bun) fully supported; Cargo, Go and uv adapters; mobile, desktop, TV and other ecosystems advisory guidance. Network needed for registry, changelog research and delivery.
 disable-model-invocation: true
 argument-hint: "[upgrade|plan|verify|resume|rollback|status] [scope...]"
-allowed-tools: Bash(python3:*) Bash(git:*) Bash(npm:*) Bash(npx:*) Bash(pnpm:*) Bash(pnpx:*) Bash(yarn:*) Bash(bun:*) Bash(bunx:*) Bash(corepack:*) Bash(node:*) Bash(cargo:*) Bash(rustc:*) Bash(go:*) Bash(govulncheck:*) Bash(uv:*) Bash(uvx:*) Bash(make:*) Bash(just:*) Bash(gh-axi:*) Bash(gh:*) Bash(trail:*) Bash(ln -s:*) Bash(cd:*) Bash(ls:*) Bash(cat:*) Bash(head:*) Bash(tail:*) Bash(grep:*) Bash(rg:*) Bash(find:*) Bash(wc:*) Bash(diff:*) Bash(sort:*) Bash(jq:*) Bash(mkdir:*) Bash(cp:*) Bash(shasum:*) Bash(sha256sum:*) Bash(echo:*) Bash(printf:*) Bash(test:*) Bash(pwd:*) Bash(date:*) Bash(command -v:*) Bash(which:*) Bash(~/.agents/bin/turn.sh:*) Read(~/.agents/skills/ds-deps-upgrade/**) Read(~/.claude/skills/ds-deps-upgrade/**) Read(~/.local/state/ds-deps-upgrade/**) Read(~/.local/state/dev-evidence/**) Edit(~/.local/state/ds-deps-upgrade/**) Edit(~/.local/state/dev-evidence/**) Write(~/.local/state/ds-deps-upgrade/**) Write(~/.local/state/dev-evidence/**) Glob Grep
+allowed-tools: Bash(python3:*) Bash(git:*) Bash(npm:*) Bash(npx:*) Bash(pnpm:*) Bash(pnpx:*) Bash(yarn:*) Bash(bun:*) Bash(bunx:*) Bash(corepack:*) Bash(node:*) Bash(cargo:*) Bash(rustc:*) Bash(go:*) Bash(govulncheck:*) Bash(uv:*) Bash(uvx:*) Bash(make:*) Bash(just:*) Bash(gh-axi:*) Bash(gh:*) Bash(trail:*) Bash(ln -s:*) Bash(cd:*) Bash(ls:*) Bash(cat:*) Bash(head:*) Bash(tail:*) Bash(grep:*) Bash(rg:*) Bash(find:*) Bash(wc:*) Bash(diff:*) Bash(sort:*) Bash(jq:*) Bash(mkdir:*) Bash(cp:*) Bash(shasum:*) Bash(sha256sum:*) Bash(echo:*) Bash(printf:*) Bash(test:*) Bash(pwd:*) Bash(date:*) Bash(command -v:*) Bash(which:*) Read(~/.agents/skills/ds-deps-upgrade/**) Read(~/.claude/skills/ds-deps-upgrade/**) Read(~/.local/state/ds-deps-upgrade/**) Edit(~/.local/state/ds-deps-upgrade/**) Write(~/.local/state/ds-deps-upgrade/**) Glob Grep
 metadata:
-  version: "2.2.0"
+  version: "2.3.0"
   owner: "~/.agents/skills/ds-deps-upgrade"
 ---
 
@@ -44,8 +44,7 @@ Read the user's words after the skill name.
 **Explicit invocation only.** The full pipeline runs only when the user's message names this
 skill (`/ds-deps-upgrade`, `$ds-deps-upgrade`, `/skill:ds-deps-upgrade`, or the words "ds-deps-upgrade skill"). If the skill was
 loaded any other way (implicit match on "update my dependencies"), run `plan` only and say how to
-invoke it. `doctor`, `update` and `uninstall` are installer maintenance commands
-(`admin/depup-admin.py`); never run them against a project or as part of a mode.
+invoke it.
 
 **Autonomy contract.** One invocation runs the whole pipeline: analyze → research → plan →
 baseline → upgrade + migrate → test → review → fix → verify → deliver → report. Never stop
@@ -89,10 +88,11 @@ everything else.
    dirty; list its uncommitted/untracked files and local-only commits in the report because they
    are not part of the upgrade. The only write to the repository's `.git` is a plain `git fetch`
    (remote-tracking refs) plus the owned worktree/branch.
-2. **No destructive Git:** no `git reset` of any kind, `clean -fd`, `checkout -- .`, force push,
-   `branch -D`, `worktree remove --force`, stash of user work, rewriting published history,
-   admin/bypass merges or disabling branch protection. Pushing the owned `depup/*` branch,
-   opening a PR and merging follow the delivery mode (§5).
+2. **No destructive Git.** Writes follow the [Git safety rules](references/safety.md#git-safety):
+   the owned worktree/branch, the helper's plain `git fetch` of the upstream default branch, and
+   the delivery-mode push/PR/merge (§5). Never `git reset`, force push, `branch -D`,
+   `clean -fd`, `worktree remove --force`, stash user work, rewrite published history, bypass
+   branch protection or discard user work.
 3. **Native package manager only**, at its pinned version (`packageManager`, lockfile,
    `.tool-versions`). Never add a second lockfile, never switch managers, never
    `--force` / `--legacy-peer-deps` / `--no-verify` to hide a conflict.
@@ -110,14 +110,14 @@ everything else.
    accounts, paid services or unofficial endpoints.
 7. **Honest status.** `PASS` only with recorded passing checks, the `baseline`, `verify` and
    `review` journal steps done, and complete high-risk analyses and reviews where applicable (the
-   report command enforces this). Otherwise `PARTIAL`, `BLOCKED` or `FAIL` with reasons. Never
-   claim a check ran when it did not.
+   report command enforces the rules in
+   [references/verification.md](references/verification.md#result-rules)). Otherwise `PARTIAL`,
+   `BLOCKED` or `FAIL` with reasons. Never claim a check ran when it did not.
 8. Project instructions (AGENTS.md, CLAUDE.md, CONTRIBUTING, CI) and the user's global
    policy win over this skill on conflict, including validation gates, shared-resource rules
-   (for example heavy-check turns via `~/.agents/bin/turn.sh`), review requirements and
-   delivery mode. Read them first. When that policy names an evidence location (for example
-   `~/.local/state/dev-evidence/<task>/`), pass it to `report --copy-to <dir>` (copies
-   `report.json`, `summary.md` and `logs/`) and cite those paths.
+   (for example turn scripts that serialize heavy checks), review requirements and
+   delivery mode. Read them first. When that policy names an evidence directory, pass it to
+   `report --copy-to <dir>` (copies `report.json`, `summary.md` and `logs/`) and cite those paths.
 
 ## 3. Capabilities check (degrade, don't pretend)
 
@@ -126,9 +126,9 @@ write access, subagents, browser automation, long-running processes. Then:
 
 - **Model, harness and effort:** Run every step — including fresh-context planning and review
   tasks — using the current session's harness, model and effort level without switching, selecting
-  or enforcing another model, harness or effort. Only when `ds-dev-protocol` is explicitly
-  invoked alongside this skill do its model-routing and execution rules take precedence for the
-  applicable tasks.
+  or enforcing another model, harness or effort. Only when `ds-dev-protocol` is
+  explicitly invoked alongside this skill do its model-routing and execution rules take precedence
+  for the applicable tasks ([rule](references/fresh-context-tasks.md#model-harness-and-ds-dev-protocol-rule)).
 - No network: inventory and local analysis only; mark registry/changelog research as skipped.
   Do not mutate a high-risk item without its required source research. Deliver `local-only`.
 - No write access: `plan` only, and say so.
@@ -164,8 +164,9 @@ using the step IDs below, so `status`/`resume` read the same in every harness.
 7. `plan`: targets (latest *stable, supported, mutually compatible*), ordering (DAG of coupled
    families, toolchain first), risk dossiers, required migrations vs optional improvements,
    test matrix and baseline commands. Architecture and planning run in a fresh, read-only context
-   using the current session's model, harness and effort (in both `plan` and `upgrade` mode; or
-   per `ds-dev-protocol` if explicitly invoked alongside this skill): write a context file in
+   on this session's own harness, model and effort, in both `plan` and `upgrade` mode
+   ([fresh-context-tasks.md](references/fresh-context-tasks.md#model-harness-and-ds-dev-protocol-rule)):
+   write a context file in
    `<run_dir>/scratch` (scope, requirements, constraints and rules that bind, repo instructions,
    inventory/outdated records, research with links, findings), prepare the task with
    `depup.py planning prepare <run_ref> --context <file>` (one task for the whole upgrade; add
@@ -189,8 +190,9 @@ using the step IDs below, so `status`/`resume` read the same in every harness.
 10. `verify`: full gate from [references/verification.md](references/verification.md),
     compared with the baseline.
 11. `review`: prepare each review task with `depup.py review prepare <run_ref>` and run its
-    `prompt.md` in a fresh, read-only context using the current session's harness, model and effort
-    (or per `ds-dev-protocol` when explicitly invoked alongside this skill): `--kind critical`
+    `prompt.md` in a fresh, read-only context on this session's own harness, model and effort
+    ([fresh-context-tasks.md](references/fresh-context-tasks.md#model-harness-and-ds-dev-protocol-rule)):
+    `--kind critical`
     reviews the complete code diff and lockfile diff; each high-risk item adds separate `--kind
     independent --subject <risk> --required` and `--kind security --subject <risk> --required`
     tasks. Add `--required` to the critical review when risk or repo/global policy requires

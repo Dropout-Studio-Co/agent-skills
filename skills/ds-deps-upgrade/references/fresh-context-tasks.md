@@ -36,9 +36,8 @@ override effort, probe providers or invoke an external model CLI.
      `<run_dir>/reviews/<kind>-<subject>-<candidate12>/`.
    - If a completed review already exists for that exact candidate (and `--rerun` is not set),
      returns it with `reused: true`.
-2. **Execute:** Run `prompt.md` in a fresh, read-only context on the current session's harness,
-   model and effort (or per `ds-dev-protocol` when explicitly invoked alongside this skill).
-   Save the full answer to the printed `output_path`.
+2. **Execute:** Run `prompt.md` in a fresh, read-only context on the current session's
+   configuration (see the model rule above). Save the full answer to the printed `output_path`.
 3. **Record:** `depup.py review record <run_ref> --review-id <id> --output <file> --reviewer "<fresh-context-id>"`
    - Verifies the worktree candidate commit did not change since `prepare` (a changed tree discards
      the result and marks the review `unavailable` with `tree_changed: true`).
@@ -58,8 +57,8 @@ override effort, probe providers or invoke an external model CLI.
      high-risk item). Used in both `plan` and `upgrade` mode.
    - Read target: the owned worktree once it exists, else the repository (`plan` mode, read-only).
    - Reuse key: `(kind, subject, target, tree_fingerprint, context_sha256)`.
-2. **Execute:** Run `prompt.md` in a fresh, read-only context using the current session's
-   configuration (or per `ds-dev-protocol` when explicitly invoked alongside this skill).
+2. **Execute:** Run `prompt.md` in a fresh, read-only context on the current session's
+   configuration (see the model rule above).
 3. **Record:** `depup.py planning record <run_ref> --plan-id <id> --output <file> --planner "<fresh-context-id>"`
    - Verifies `tree_fingerprint(target)` did not change during planning (a mutation discards the
      result, sets `tree_changed: true` and makes `report` flag the user checkout as changed).

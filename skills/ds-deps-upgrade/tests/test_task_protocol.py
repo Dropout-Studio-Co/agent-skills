@@ -52,7 +52,10 @@ class TaskProtocolUnitTests(TempCase):
             for node in ast.walk(tree)
             if isinstance(node, ast.ImportFrom) and node.module
         }
-        self.assertNotIn('subprocess', imports)
+        # The shared low-level helpers use stdlib subprocess to run read-only git/gh commands;
+        # that is not model or harness coupling, and no model/harness CLI is referenced anywhere.
+        self.assertIn('subprocess', imports)
+        self.assertIn('json', imports)
         for forbidden in ('claude-opus', 'claude -p', 'opencode', 'deepseek',
                           'ANTHROPIC_API_KEY', 'PREFERRED', 'EFFORTS', 'class Router'):
             self.assertNotIn(forbidden, source, forbidden)

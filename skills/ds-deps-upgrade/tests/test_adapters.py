@@ -66,5 +66,46 @@ class AdapterFixtureTests(TempCase):
         self.assertEqual(after, before)
 
 
+class NativeQueryHazardTests(TempCase):
+    def hazards(self, package_json, manager='pnpm'):
+        root = os.path.join(self.tmp, 'hazards')
+        os.makedirs(root, exist_ok=True)
+        write(os.path.join(root, 'package.json'), package_json)
+        return depup.native_query_hazards(root, root, manager, {'packageManager': package_json.get('packageManager')})
+
+    def test_json_unicode_escaped_pnpm_settings_are_detected(self):
+        hazards = self.hazards({'name': 'x', 'packageManager': 'pnpm@9.0.0',
+                                '\u0063onfigDependencies': {'@scope/plugin': '1.0.0'}})
+        self.assertTrue(any('configDependencies' in hazard for hazard in hazards), hazards)
+
+        hazards = self.hazards({'name': 'x', 'packageManager': 'pnpm@9.0.0',
+                                '\u006danagePackageManagerVersions': True})
+        self.assertTrue(any('package-manager version downloads' in hazard for hazard in hazards), hazards)
+
+        for key in ('global_pnpmfile', 'globalPnpmfile', 'pnpmfile'):
+            hazards = self.hazards({'name': 'x', 'packageManager': 'pnpm@9.0.0', key: './hook.cjs'})
+            self.assertTrue(any('pnpmfile' in hazard for hazard in hazards), (key, hazards))
+
+    def test_invalid_package_json_fails_closed_for_pnpm(self):
+        root = os.path.join(self.tmp, 'badjson')
+        write(os.path.join(root, 'package.json'), '{not json')
+        hazards = depup.native_query_hazards(root, root, 'pnpm', {'packageManager': 'pnpm@9.0.0'})
+        self.assertTrue(any('not valid JSON' in hazard for hazard in hazards), hazards)
+
+    def test_non_object_package_json_fails_closed_for_pnpm(self):
+        root = os.path.join(self.tmp, 'listjson')
+        write(os.path.join(root, 'package.json'), '[]')
+        hazards = depup.native_query_hazards(root, root, 'pnpm', {'packageManager': 'pnpm@9.0.0'})
+        self.assertTrue(any('is not a JSON object' in hazard for hazard in hazards), hazards)
+
+    def test_truthy_false_and_absent_settings_are_not_hazards(self):
+        for value in (False, 'false', 0, None):
+            hazards = self.hazards({'name': 'x', 'packageManager': 'pnpm@9.0.0',
+                                    'managePackageManagerVersions': value})
+            self.assertFalse(any('package-manager version downloads' in hazard for hazard in hazards), value)
+        hazards = self.hazards({'name': 'x', 'packageManager': 'pnpm@9.0.0', 'dependencies': {'a': '1.0.0'}})
+        self.assertFalse(any('configDependencies' in hazard for hazard in hazards), hazards)
+
+
 if __name__ == '__main__':
     unittest.main()

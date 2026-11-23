@@ -39,7 +39,8 @@ NOISE_PREFIXES = (
     "# Handoff:",
 )
 PASTED = re.compile(r"<pasted_content[^>]*>.*?(?:</pasted_content>|\Z)", re.S)
-SELF_SESSION_MARKER = "<!-- backpass:self-session -->"
+SELF_SESSION_MARKERS = ("<!-- ds-agent-docs:self-session -->",
+                        "<!-- backpass:self-session -->")
 IMPLEMENTER_OPENING = "You are the implementer for one step of a plan"
 HUMAN_ROLES = ("user", "human", "user_message")
 
@@ -380,12 +381,17 @@ def human_text(record):
     return text
 
 
+def _is_self_session(text):
+    text = text.lstrip()
+    return any(text.startswith(marker) for marker in SELF_SESSION_MARKERS)
+
+
 def has_session_marker(records):
     for record in records:
         if record_role(record) not in HUMAN_ROLES:
             continue
-        text = user_raw_text(record).lstrip()
-        if text.startswith(SELF_SESSION_MARKER) or text.startswith(IMPLEMENTER_OPENING):
+        if _is_self_session(user_raw_text(record)) or \
+                user_raw_text(record).lstrip().startswith(IMPLEMENTER_OPENING):
             return True
     return False
 
@@ -760,7 +766,7 @@ def opencode_sessions(repo, cutoff):
                     user_ok = True
                     raw = data.get("text")
                     stripped = raw.lstrip()
-                    if stripped.startswith(SELF_SESSION_MARKER) or \
+                    if _is_self_session(raw) or \
                             stripped.startswith(IMPLEMENTER_OPENING):
                         excluded = True
                     text = opencode_human_text(raw)
@@ -993,8 +999,7 @@ def main(argv=None):
                                                now, drift)
     if args.evidence_out:
         evidence = build_evidence(repo, sessions, args.days, now, drift, v1_only)
-        evidence["counts"]["shown"] = shown
-        evidence["date_range"] = {"start": _range[0], "end": _range[1]}
+        evidence["counts"]["digest_shown"] = shown
         status = write_evidence(args.evidence_out, evidence)
         if status:
             return status

@@ -636,6 +636,35 @@ class AutonomyTests(TempCase):
         self.assertEqual(pre['local_only_config'], ['.env', os.path.join('apps', 'web', '.dev.vars')])
         self.assertNotIn('SUPER-SECRET-VALUE', json.dumps(pre))
 
+    def test_preflight_checkout_operation_is_a_warning_when_upstream_base_exists(self):
+        checkout, _ = self.origin_and_checkout()
+        git_dir = sh(['git', 'rev-parse', '--absolute-git-dir'], checkout).stdout.strip()
+        write(os.path.join(git_dir, 'MERGE_HEAD'), '0' * 40)
+        _, pre = self.cli('preflight', '--repo', checkout)
+        self.assertEqual(pre['delivery_facts']['default_branch'], 'main')
+        self.assertEqual(pre['upgrade_blockers'], [],
+                         'a reachable upstream default branch is the base; the checkout HEAD is not')
+        self.assertTrue(any('operation in progress' in warning for warning in pre['warnings']), pre['warnings'])
+
+    def test_preflight_checkout_operation_blocks_without_upstream_base(self):
+        root = os.path.join(self.tmp, 'noupstream')
+        write(os.path.join(root, 'package.json'), {'name': 'noupstream'})
+        git_init(root)
+        git_dir = sh(['git', 'rev-parse', '--absolute-git-dir'], root).stdout.strip()
+        write(os.path.join(git_dir, 'MERGE_HEAD'), '0' * 40)
+        _, pre = self.cli('preflight', '--repo', root)
+        self.assertTrue(any('git operation in progress' in blocker for blocker in pre['upgrade_blockers']),
+                        pre['upgrade_blockers'])
+
+    def test_preflight_dirty_policy_names_the_upstream_default_branch(self):
+        root = os.path.join(self.tmp, 'dirtypolicy')
+        write(os.path.join(root, 'package.json'), {'name': 'dirtypolicy'})
+        git_init(root)
+        write(os.path.join(root, 'package.json'), {'name': 'dirtypolicy', 'userEdit': True})
+        _, pre = self.cli('preflight', '--repo', root)
+        self.assertIn('freshly fetched upstream default branch', pre['dirty_policy'])
+        self.assertNotIn('from HEAD', pre['dirty_policy'])
+
 
 class StatePathTests(unittest.TestCase):
     def test_state_root_resolution(self):

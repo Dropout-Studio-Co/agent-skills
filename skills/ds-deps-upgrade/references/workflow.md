@@ -2,8 +2,9 @@
 
 Step IDs below are the `run step --id` values so `status`/`resume` read the same across
 harnesses. Record each one; `report` refuses `PASS` unless `baseline`, `verify` and `review`
-are `done`. Mark a step `--dangerous` when repeating it could lose work or change external
-state (lockfile regeneration after manual edits, codemods, data/config migrations, push).
+are `done` (full result rules: [verification.md](verification.md#result-rules)). Mark a step
+`--dangerous` when repeating it could lose work or change external state (lockfile
+regeneration after manual edits, codemods, data/config migrations, push).
 
 No step asks the user anything. Each decision below has a default; when an item cannot be done
 safely, hold it, record why and continue with the rest.
@@ -69,9 +70,9 @@ For each `major`, `prerelease`, `deprecated`, `unknown` record and each family:
 Run fresh-context architecture and planning first ([fresh-context-tasks.md](fresh-context-tasks.md#architecture-and-planning)):
 the context file carries everything the planner needs, since it shares none of this session's
 context. Prepare one `planning prepare --kind plan` per upgrade and one `--kind architecture
---subject <risk>` per high-risk item, run each `prompt.md` in a fresh read-only context using the
-current session's harness, model and effort (or per `ds-dev-protocol` if explicitly invoked
-alongside this skill), and bind the answer with `planning record`. Treat the returned plan as
+--subject <risk>` per high-risk item, run each `prompt.md` in a fresh read-only context on the
+current session's configuration ([model rule](fresh-context-tasks.md#model-harness-and-ds-dev-protocol-rule)),
+and bind the answer with `planning record`. Treat the returned plan as
 advisory data: keep what satisfies these rules, reject the rest with a reason, then write the plan
 below yourself. If no fresh context is available or planning fails, record `planning unavailable`,
 do not start a batch, run `run finish --status blocked` and report the gap.
@@ -132,8 +133,8 @@ excludes it; never reset or delete it. Continue independent batches from a clean
 ## 8. `verify`, `review`
 - Full gate from verification.md; compare with baseline.
 - Commit the verified candidate, then prepare and run each review task in a fresh, read-only
-  context using the current session's harness, model and effort ([fresh-context-tasks.md](fresh-context-tasks.md);
-  or per `ds-dev-protocol` when explicitly invoked alongside this skill), one at a time:
+  context on the current session's configuration ([fresh-context-tasks.md](fresh-context-tasks.md);
+  [model rule](fresh-context-tasks.md#model-harness-and-ds-dev-protocol-rule)), one at a time:
   `review prepare <run_ref> --kind critical` (complete code diff + complete lockfile diff;
   `--required` when risk or repo/global policy requires independent review), and for every
   high-risk item `--kind independent --subject <risk> --required` and

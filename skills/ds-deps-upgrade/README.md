@@ -1,15 +1,15 @@
-# ds-deps-upgrade (global Agent Skill)
+# ds-deps-upgrade (Agent Skill)
 
 Runs a complete, safe dependency upgrade from one invocation (analyze, research, plan,
 upgrade, migrate, test, review, fix, verify, deliver) in any repository, from any supported
-coding harness. One canonical copy:
-`~/.agents/skills/ds-deps-upgrade/`.
+coding harness. This directory is the source of truth; `~/.agents/skills/ds-deps-upgrade/`
+is the installed copy kept in sync from the repository (see [Repository workflow](#repository-workflow)).
 
 ## Invoke
 
 | Harness | How it finds the skill | Explicit invocation |
 | --- | --- | --- |
-| Claude Code | `~/.claude/skills/ds-deps-upgrade` → relative symlink to the canonical dir | `/ds-deps-upgrade` |
+| Claude Code | `~/.claude/skills/ds-deps-upgrade` → relative symlink to the installed skill | `/ds-deps-upgrade` |
 | OpenCode | native `~/.agents/skills` (also reads `~/.claude/skills`; same target, loaded once) | ask: "use the ds-deps-upgrade skill" |
 
 Modes: `upgrade` (default: the full pipeline, no further input), `plan` (read-only), `verify`,
@@ -32,11 +32,12 @@ SKILL.md                entry workflow (progressive disclosure)
 references/             workflow, safety, javascript, ecosystems, parallelism,
                         verification, report-schema, fresh-context-tasks
 scripts/depup.py        deterministic helper (stdlib, Python 3.9+), JSON output
-scripts/task_protocol.py provider-neutral prompt builders and strict JSON result parsers
-scripts/review_task.py  shared fresh-context task helper for sibling skills (ds-consolidate,
+scripts/task_protocol.py shared low-level protocol: refusals, atomic writes, redaction,
+                        repository/Git state, diff bundles, provider-neutral prompts and
+                        strict JSON result parsers
+scripts/review_task.py  fresh-context task helper for sibling skills (ds-consolidate,
                         ds-ui-overhaul): run dirs, profiles (<skill>/task-profile.json),
                         candidate binding and review gate
-admin/depup-admin.py    installer maintenance: doctor / install / update / uninstall
 tests/                  unit, integration and offline end-to-end tests
 ```
 
@@ -56,42 +57,22 @@ external model CLI. Only when `ds-dev-protocol` is explicitly invoked alongside 
 Planning returns an advisory plan; implementation stays in the main session. Details:
 `references/fresh-context-tasks.md`.
 
-## Maintenance
+## Repository workflow
 
-```sh
-python3 ~/.agents/skills/ds-deps-upgrade/admin/depup-admin.py doctor [--run-tests]
-python3 ~/.agents/skills/ds-deps-upgrade/admin/depup-admin.py install   # idempotent
-python3 ~/.agents/skills/ds-deps-upgrade/admin/depup-admin.py update    # install + doctor
-python3 ~/.agents/skills/ds-deps-upgrade/admin/depup-admin.py uninstall [--remove-canonical]
-python3 -m unittest discover -s ~/.agents/skills/ds-deps-upgrade/tests -t ~/.agents/skills/ds-deps-upgrade
-```
+Install the skill through the repository root `README.md`; that is the only supported install
+path. Never edit `~/.agents/skills/ds-deps-upgrade` directly: the automatic sync pushes local
+edits there straight to `main` without review.
 
-- Edit the canonical files directly; there is no second copy to sync. `update`
-  re-validates the skill, repairs the Claude link if it is missing, and refreshes the
-  machine's `universal-skills` catalogue (`reconcile` + `check`).
-- `install` records only what it creates in
-  `~/.local/state/ds-deps-upgrade/install-manifest.json`. It refuses (exit 3) if a
-  different `ds-deps-upgrade` already occupies the Claude path.
-- `uninstall` removes only manifest-owned links that still point where the installer
-  left them; pre-existing or user-changed links stay. `--remove-canonical` moves the skill
-  folder to the Trash (reversible).
-- No shell profile, harness config, policy file or global toolchain is modified.
+Make every change in the repository on a branch and open a pull request:
 
-## Adding a harness (adapter contract)
+1. Edit this directory in the repository.
+2. Run the tests from the repository root and make them pass:
+   `python3 -m unittest discover -s skills/ds-deps-upgrade/tests -t skills/ds-deps-upgrade`
+   (also run it with `/usr/bin/python3` when the code must support the oldest interpreter).
+3. Open the pull request; after the merge the installed copy updates from `main` on the next
+   sync (or immediately with `~/.agents/bin/agent-skills-sync`).
 
-1. Find the harness's documented global skill roots. If it reads `~/.agents/skills` (or
-   `~/.claude/skills`), no adapter is needed.
-2. Otherwise add one per-skill relative symlink in its root (never link a whole skills
-   directory), record it in the install manifest, and add the root to
-   `~/.agents/integrations.json` `skill_roots` so `doctor` and `agent-parity` see it.
-3. Onboarding test (all must hold before claiming support):
-   - `doctor` shows `<harness> discovery (static)` PASS and no conflicting definition.
-   - In a disposable fixture repo with a local bare `origin`, an explicit invocation with no
-     mode runs the whole pipeline: owned worktree from `origin`'s default branch, migrated and
-     verified commit, delivery per the fixture's stated mode, a report in the state dir, and
-     `git status` in the fixture unchanged.
-   - Invoke without naming the skill ("update my dependencies"): the harness must not
-     start an upgrade.
+No shell profile, harness config, policy file or global toolchain is modified by this skill.
 
 ## Safety summary
 
