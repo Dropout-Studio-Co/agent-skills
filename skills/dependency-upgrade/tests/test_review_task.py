@@ -127,7 +127,7 @@ class ProfileAndAgnosticComplianceTests(TaskCase):
             r'claude auth|claude agents|claude attach|review_router\.py|routed_task\.py|'
             r'routing\.json|--effort|\bxhigh\b|deepseek', re.I)
         non_exception = ('consolidate', 'dependency-upgrade', 'frontend-ui-ux-overhaul',
-                         'intrinsic-responsive-ui', 'review-loop', 'safe-switch', 'sync-agent-instructions')
+                         'intrinsic-responsive-ui', 'safe-switch', 'sync-agent-instructions')
         for skill in non_exception:
             skill_dir = os.path.join(SKILLS, skill)
             for dirpath, dirnames, filenames in os.walk(skill_dir):
@@ -151,7 +151,7 @@ class ProfileAndAgnosticComplianceTests(TaskCase):
                 text = handle.read()
             self.assertIn('execution-protocol', text, skill)
             self.assertIn('explicitly invoked', text, skill)
-        for skill in ('review-loop', 'safe-switch'):
+        for skill in ('safe-switch',):
             skill_md = os.path.join(SKILLS, skill, 'SKILL.md')
             if os.path.isfile(skill_md):
                 with open(skill_md, encoding='utf-8') as handle:

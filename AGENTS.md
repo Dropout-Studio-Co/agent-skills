@@ -70,7 +70,6 @@ skills/execution-protocol/        SKILL.md, reference.md, opus-gate-brief.md, im
                                   implement_lib.py, premerge-and-merge.sh), tests/ (smoke.sh, implement-smoke.sh)
 skills/frontend-ui-ux-overhaul/   SKILL.md, task-profile.json
 skills/intrinsic-responsive-ui/   SKILL.md
-skills/review-loop/               SKILL.md
 skills/safe-switch/               SKILL.md
 skills/sync-agent-instructions/   SKILL.md, references/ (audit-rubric.md, agent-surfaces.md),
                                   scripts/ (collect_sessions.py, check_instructions.py),

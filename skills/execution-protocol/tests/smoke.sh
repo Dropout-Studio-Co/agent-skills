@@ -102,11 +102,6 @@ never use API-key accounts, extra usage or new spend
 never configure OpenCode's Anthropic provider with subscription OAuth
 KEEP
 chk "operative sentences kept inline" bash -c "while IFS= read -r l; do grep -qF -- \"\$l\" '$ROOT/SKILL.md' || exit 1; done < '$T/inline.txt'"
-if [ -f "$ROOT/../review-loop/SKILL.md" ]; then
-  chk "review-loop defers to protocol routing" bash -c "f='$ROOT/../review-loop/SKILL.md'; ! grep -qE 'DeepSeek V4.1 Flash High for the Low|Flash Max|documented fallback' \"\$f\" && grep -q 'steps 1 and 7' \"\$f\""
-else
-  printf 'ok   %s\n' "review-loop defers to protocol routing (skipped: review-loop not installed)"
-fi
 chk "reference.md holds internals" bash -c "r='$ROOT/reference.md'; test -f \"\$r\" && grep -qF modelUsage \"\$r\" && grep -qF -- --match-head-commit \"\$r\" && grep -qF 'no sandbox (Rahi 2026-11-14)' \"\$r\" && grep -qF 'Gate eval set' \"\$r\" && grep -qF reference.md '$ROOT/SKILL.md' && ! grep -qF 'is deprecated (a failure makes DeepSeek unavailable' '$ROOT/SKILL.md'"
 SBXPAT='sandbox-exec|implementer\.sb|sandbox_check|IMPL_SANDBOX|IMPL-SANDBOX|failIfUnavailable|"sandbox"'
 chk "no sandbox left" bash -c "test ! -e '$ROOT/scripts/implementer.sb' && ! grep -rqE \"\$1\" '$ROOT/scripts' '$ROOT/opencode' '$ROOT/SKILL.md' '$ROOT/reference.md' '$ROOT/implementer-brief.md' && grep -qF '**No sandbox (Rahi 2026-11-14):**' '$ROOT/SKILL.md'" _ "$SBXPAT"
