@@ -29,19 +29,21 @@ printf 'feat\n' > "$R/g.txt"; git -C "$R" add g.txt
 GIT_AUTHOR_DATE=2026-11-20T00:00:00Z GIT_COMMITTER_DATE=2026-11-20T00:00:00Z git -C "$R" commit -qm feat
 H=$(git -C "$R" rev-parse HEAD); B=$(git -C "$R" merge-base origin/main "$H"); TS=2026-11-11T00:00:00Z
 new_ev() { E=$T/$1; rm -rf "$E"; mkdir -p "$E"; }
-# gf EV GATE KEY [VERDICT] [FINDINGS] [TIER]: write a gate.sh-shaped JSON file and print its basename.
+# gf EV GATE KEY [VERDICT] [FINDINGS] [TIER] [NONCE]: write a gate.sh-shaped JSON file and print its basename.
+# NONCE changes the file bytes only, so a re-plan can overwrite plan-<key>.json with different provenance.
 gf() { python3 - "$@" <<'PY'
 import json, os, sys
 ev, gate, key = sys.argv[1:4]
 verdict = sys.argv[4] if len(sys.argv) > 4 else "pass"
 findings = json.loads(sys.argv[5]) if len(sys.argv) > 5 else []
 tier = sys.argv[6] if len(sys.argv) > 6 else "medium"
+nonce = sys.argv[7] if len(sys.argv) > 7 else ""
 if gate == "plan":
     out = {"gate": "plan", "tier": tier, "acceptance_criteria": ["a"], "design": "d", "files": ["g.txt"], "tests": ["t"], "risks": [], "rollback": "r"}
 else:
     out = {"gate": gate, "head_sha": key, "verdict": verdict, "summary": "ok", "findings": findings}
 name = "%s-%s.json" % (gate, key)
-json.dump({"structured_output": out, "provenance": {}}, open(os.path.join(ev, name), "w"), indent=1, sort_keys=True)
+json.dump({"structured_output": out, "provenance": ({"nonce": nonce} if nonce else {})}, open(os.path.join(ev, name), "w"), indent=1, sort_keys=True)
 print(name)
 PY
 }
@@ -182,9 +184,11 @@ replan_ev() { E=$T/$1; rm -rf "$E"; mkdir -p "$E"; local fs f t
   f=$(gf "$E" plan "$fs" pass '[]' medium); row "$E" plan "$fs" medium ok pass "$f" "facts_sha256=$fs" "ts=2026-11-05T00:00:00Z"
   printf '{"ts": "2026-11-20T12:00:00Z", "route": "deepseek", "model": "opencode-go/deepseek-v4.1-flash", "effort": "high", "status": "done", "step": "s", "round": 1}\n' > "$E/impl.log"
   for t in 21 22 23; do f=$(gf "$E" review "$H" pass '[]' medium); rowb "$E" review "$H" medium ok pass "$f" "ts=2026-11-${t}T00:00:00Z"; done
-  f=$(gf "$E" plan "$fs" pass '[]' medium); row "$E" plan "$fs" medium ok pass "$f" "facts_sha256=$fs" "ts=2026-11-24T00:00:00Z"
+  f=$(gf "$E" plan "$fs" pass '[]' medium replan); row "$E" plan "$fs" medium ok pass "$f" "facts_sha256=$fs" "ts=2026-11-24T00:00:00Z"
   f=$(gf "$E" review "$H" pass '[]' medium); rowb "$E" review "$H" medium ok pass "$f" "ts=2026-11-25T00:00:00Z"; }
-replan_ev r-replan; pm_reset; pmrun "$E" "$R" 1
+replan_ev r-replan
+chk "re-plan overwrote plan-<key>.json (plan 1 sha is stale)" bash -c "python3 -c 'import json,sys; p=[d for d in (json.loads(l) for l in open(sys.argv[1])) if d[\"gate\"]==\"plan\"]; sys.exit(0 if len(p)==2 and p[0][\"file_sha256\"]!=p[1][\"file_sha256\"] else 1)' '$E/gates.log'"
+pm_reset; pmrun "$E" "$R" 1
 chk "re-plan after 3 rounds passes code before plan" bash -c "[ $PRC = 0 ] && ! grep -q 'code before plan' '$T/pm.out'"
 epoch_replan() { E=$T/$1; rm -rf "$E"; mkdir -p "$E"; local fs f
   printf 'facts\n' > "$E/facts.md"; fs=$(shasum -a 256 "$E/facts.md" | awk '{print $1}')
@@ -192,11 +196,20 @@ epoch_replan() { E=$T/$1; rm -rf "$E"; mkdir -p "$E"; local fs f
   f=$(gf "$E" plan "$fs" pass '[]' high); row "$E" plan "$fs" high ok pass "$f" "facts_sha256=$fs" "ts=2026-11-05T00:00:00Z"
   printf '{"ts": "2026-11-20T12:00:00Z", "route": "deepseek", "model": "opencode-go/deepseek-v4.1-flash", "effort": "high", "status": "done", "step": "s", "round": 1}\n' > "$E/impl.log"
   f=$(gf "$E" epoch a pass '[]' high); row "$E" epoch a high ok pass "$f" "ts=2026-11-21T00:00:00Z"
-  f=$(gf "$E" plan "$fs" pass '[]' high); row "$E" plan "$fs" high ok pass "$f" "facts_sha256=$fs" "ts=2026-11-22T00:00:00Z"
+  f=$(gf "$E" plan "$fs" pass '[]' high replan); row "$E" plan "$fs" high ok pass "$f" "facts_sha256=$fs" "ts=2026-11-22T00:00:00Z"
   f=$(gf "$E" review "$H" pass '[]' high); rowb "$E" review "$H" high ok pass "$f" "ts=2026-11-23T00:00:00Z"
   f=$(gf "$E" security "$H" pass '[]' high); rowb "$E" security "$H" high ok pass "$f" "ts=2026-11-24T00:00:00Z"; }
 epoch_replan r-epochreplan; pm_reset; pmrun "$E" "$R" 1
 chk "post-epoch re-plan passes code before plan" bash -c "[ $PRC = 0 ] && ! grep -q 'code before plan' '$T/pm.out'"
+# --- a file-less ok plan row with full T3 provenance never sets the chronology start ---
+fileless_ev() { E=$T/$1; rm -rf "$E"; mkdir -p "$E"; local fs f
+  printf 'facts\n' > "$E/facts.md"; fs=$(shasum -a 256 "$E/facts.md" | awk '{print $1}')
+  printf 'Tier: medium\n' > "$E/PLAN.md"; printf 'Tier: medium\n' > "$E/tier-recheck-$H.md"
+  row "$E" plan "$fs" medium ok pass "" "ts=2026-10-01T00:00:00Z"
+  f=$(gf "$E" plan "$fs" pass '[]' medium); row "$E" plan "$fs" medium ok pass "$f" "facts_sha256=$fs" "ts=2026-11-21T00:00:00Z"
+  f=$(gf "$E" review "$H" pass '[]' medium); rowb "$E" review "$H" medium ok pass "$f" "ts=2026-11-22T00:00:00Z"; }
+fileless_ev r-fileless; pm_reset; pmrun "$E" "$R" 1
+chk "refuse:file-less T3-verified plan row never sets the chronology" bash -c "[ $PRC = 1 ] && grep -q 'code before plan' '$T/pm.out' && [ \$(grep -cE 'pr (edit|merge)' '$T/calls.log') = 0 ]"
 # --- PR state and CI: head mismatch, failing checks, --no-ci three ways ---
 base_ev r-headneq medium "$H"; pm_reset; echo deadbeef > "$T/gh.head"; pmrun "$E" "$R" 1
 chk "refuse:PR head mismatch" bash -c "[ $PRC = 1 ] && grep -q 'is not OPEN at' '$T/pm.out' && ! grep -qE 'pr (edit|merge)' '$T/calls.log'"
