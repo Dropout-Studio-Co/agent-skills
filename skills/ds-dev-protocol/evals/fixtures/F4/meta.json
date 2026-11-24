@@ -1,0 +1,9 @@
+{
+  "expect": "clean",
+  "gate": "review",
+  "id": "F4",
+  "key": "1eeda8623c148d3475ec9902f5c2e6458362aae5a02f6af948acc654f4d477f5",
+  "kind": "review",
+  "summary": "parse_port rejects non-ASCII digits and every claimed edge; any important finding is false",
+  "tier": "medium"
+}

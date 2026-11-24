@@ -70,6 +70,25 @@ chk "gate_lib.py defines log_metrics" grep -qF 'def log_metrics' "$SCRIPT/gate_l
 chk "gate-smoke drives the real ACP node path" bash -c "grep -qF 'T3_ACP_MCP_NODE' '$TESTS/gate-smoke.sh' && grep -qF 'acp-mcp-call' '$TESTS/gate-smoke.sh'"
 chk "implement.sh is DeepSeek-only" bash -c "grep -qF 'opencode-go/deepseek-v4.1-flash' '$SCRIPT/implement.sh' && ! grep -qE 'claude -p|claude-sonnet|--model claude|cswap|sonnetcfg|snclass|SNM' '$SCRIPT/implement.sh' '$SCRIPT/implement_lib.py'"
 chk "no home paths in the skill" bash -c "! grep -rqE '/Use[r]s/' '$ROOT' --exclude-dir=__pycache__ --exclude-dir=graft"
+# --- behaviour eval set: fixtures, scripts and tests (off the gate path) ---
+EVALS=$ROOT/evals
+chk "evals line limits" bash -c "for pair in build_fixtures.py:180 fixture-check.sh:90 run.sh:140 score.py:200; do n=\${pair%%:*}; l=\${pair##*:}; [ \$(wc -l < '$EVALS'/\$n) -le \$l ] || exit 1; done"
+chk "evals scripts executable" bash -c "[ -x '$EVALS/run.sh' ] && [ -x '$EVALS/fixture-check.sh' ] && [ -x '$EVALS/score.py' ]"
+for f in "$EVALS"/*.sh; do chk "bash -n ${f#$ROOT/}" bash -n "$f"; done
+if [ -x /usr/bin/python3 ]; then for f in "$EVALS"/*.py; do n=$(basename "$f")
+  chk "py_compile evals/$n (system /usr/bin/python3)" bash -c "rm -rf '$T/py'; mkdir -p '$T/py'; cp '$f' '$T/py/$n' && /usr/bin/python3 -I -m py_compile '$T/py/$n'"
+done; fi
+for f in "$EVALS"/*.py; do n=$(basename "$f")
+  chk "py_compile evals/$n (python3)" bash -c "rm -rf '$T/py'; mkdir -p '$T/py'; cp '$f' '$T/py/$n' && python3 -I -m py_compile '$T/py/$n'"
+done
+chk "evals help (bash)" bash -c "bash '$EVALS/run.sh' --help >/dev/null"
+if command -v zsh >/dev/null; then chk "evals help (zsh)" bash -c "zsh '$EVALS/run.sh' --help >/dev/null"; fi
+chk "build_fixtures --check" bash -c "cd '$EVALS' && python3 -I -B build_fixtures.py --check >/dev/null"
+chk "evals inputs.sha256" bash -c "cd '$EVALS' && shasum -a 256 -c inputs.sha256 >/dev/null"
+chk "tests/test_evals.py" bash -c "python3 -I -B -m unittest discover -s '$TESTS' -p 'test_evals.py' >/dev/null 2>&1"
+if [ -x /usr/bin/python3 ]; then chk "tests/test_evals.py (system /usr/bin/python3)" bash -c "/usr/bin/python3 -I -B -m unittest discover -s '$TESTS' -p 'test_evals.py' >/dev/null 2>&1"; fi
+chk "evals/fixture-check.sh" bash "$EVALS/fixture-check.sh"
+chk "zero __pycache__ under evals/" bash -c "[ -z \"\$(find '$EVALS' -name __pycache__ -print -quit)\" ]"
 # --- split suites ---
 printf '\n'
 for s in gate-smoke.sh premerge-smoke.sh implement-smoke.sh; do

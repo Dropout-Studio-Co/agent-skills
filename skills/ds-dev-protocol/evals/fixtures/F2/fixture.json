@@ -1,0 +1,13 @@
+{
+  "id": "F2",
+  "kind": "review",
+  "tier": "medium",
+  "expect": "important",
+  "summary": "the regression test uses a single-spaced title and passes against the unfixed slug.py",
+  "request": "Fix bug #212: titles with repeated spaces produce slugs with double hyphens (\"Hello  World\" becomes \"hello--world\"). Add a regression test.",
+  "ac": [
+    "slugify collapses any run of whitespace into a single hyphen.",
+    "A regression test covers the reported bug.",
+    "Existing behavior for single-spaced titles is unchanged."
+  ]
+}

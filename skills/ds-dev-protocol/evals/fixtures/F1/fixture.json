@@ -1,0 +1,13 @@
+{
+  "id": "F1",
+  "kind": "review",
+  "tier": "medium",
+  "expect": "important",
+  "summary": "profile_summary of a just-signed-up user divides by an empty score list",
+  "request": "Show each user's average quiz score on their profile page.",
+  "ac": [
+    "profile_summary(user) returns the user's name, number of quizzes taken and average score.",
+    "The average is rounded to the nearest whole point.",
+    "Unit tests cover the summary for a user with several scores."
+  ]
+}

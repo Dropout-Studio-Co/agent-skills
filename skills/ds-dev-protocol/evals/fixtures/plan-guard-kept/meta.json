@@ -1,0 +1,9 @@
+{
+  "expect": "plan",
+  "gate": "plan",
+  "id": "plan-guard-kept",
+  "key": "f3f1dedde40e56dab107db6d4bfc04acaeb0a285da17f31db3ac4bfe2b1b4e9c",
+  "kind": "plan",
+  "summary": "nested tenant exports; the plan must keep the realpath/commonpath traversal and symlink guard",
+  "tier": "high"
+}

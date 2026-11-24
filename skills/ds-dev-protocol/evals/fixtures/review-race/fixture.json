@@ -1,0 +1,13 @@
+{
+  "id": "review-race",
+  "kind": "review",
+  "tier": "high",
+  "expect": "important",
+  "summary": "redeem() checks then inserts without a lock or unique constraint; two threads both redeem",
+  "request": "Let a user redeem a coupon code once; a second redeem for the same user must be refused.",
+  "ac": [
+    "redeem(conn, code, user) returns True on the first redemption for that user.",
+    "A later redeem of the same code by the same user returns False.",
+    "Two redemptions of one code by different users both succeed."
+  ]
+}

@@ -1,0 +1,24 @@
+--- a/slug.py
++++ b/slug.py
+@@ -1,5 +1,6 @@
+ """URL slugs for article titles."""
++import re
+ 
+ 
+ def slugify(title):
+-    return title.strip().lower().replace(" ", "-")
++    return re.sub(r"\s+", "-", title.strip().lower())
+--- a/test_slug.py
++++ b/test_slug.py
+@@ -7,6 +7,11 @@
+     def test_basic(self):
+         self.assertEqual(slugify("Hello World"), "hello-world")
+ 
++    def test_bug_212_repeated_spaces(self):
++        title = "Release Notes 2026"
++        expected = "-".join(title.lower().split())
++        self.assertEqual(slugify(title), expected)
++
+ 
+ if __name__ == "__main__":
+     unittest.main()

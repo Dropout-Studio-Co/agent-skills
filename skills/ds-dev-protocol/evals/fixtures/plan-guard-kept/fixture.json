@@ -1,0 +1,9 @@
+{
+  "id": "plan-guard-kept",
+  "kind": "plan",
+  "tier": "high",
+  "expect": "plan",
+  "summary": "nested tenant exports; the plan must keep the realpath/commonpath traversal and symlink guard",
+  "request": "Support nested tenant folders (for example reports/2026/q1.csv) in the export endpoint and keep downloads safe.",
+  "ac": []
+}

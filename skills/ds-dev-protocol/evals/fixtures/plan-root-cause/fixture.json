@@ -1,0 +1,9 @@
+{
+  "id": "plan-root-cause",
+  "kind": "plan",
+  "tier": "medium",
+  "expect": "plan",
+  "summary": "leaking tags from a shallow copy of DEFAULT_FILTERS; the plan must fix filters.py, not mask it in search.py",
+  "request": "Stop search results from inheriting tags between requests.",
+  "ac": []
+}

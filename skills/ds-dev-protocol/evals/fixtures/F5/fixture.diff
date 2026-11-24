@@ -1,0 +1,57 @@
+--- a/storage.py
++++ b/storage.py
+@@ -1,9 +1,11 @@
+ import os
++
++from units import format_bytes
+ 
+ 
+ def listing(paths):
+     rows = []
+     for path in paths:
+         n = os.stat(path).st_size
+-        rows.append((os.path.basename(path), n))
++        rows.append((os.path.basename(path), format_bytes(n)))
+     return rows
+--- /dev/null
++++ b/test_units.py
+@@ -0,0 +1,22 @@
++import unittest
++
++from units import format_bytes
++
++
++class UnitsTest(unittest.TestCase):
++    def test_bytes(self):
++        self.assertEqual(format_bytes(0), "0 B")
++        self.assertEqual(format_bytes(1023), "1023 B")
++
++    def test_kb_boundary(self):
++        self.assertEqual(format_bytes(1024), "1.0 KB")
++
++    def test_larger(self):
++        self.assertEqual(format_bytes(1536), "1.5 KB")
++        self.assertEqual(format_bytes(1024 ** 2 - 1), "1.0 MB")
++        self.assertEqual(format_bytes(5 * 1024 ** 2), "5.0 MB")
++        self.assertEqual(format_bytes(3 * 1024 ** 3), "3.0 GB")
++
++
++if __name__ == "__main__":
++    unittest.main()
+--- /dev/null
++++ b/units.py
+@@ -0,0 +1,14 @@
++"""Human-readable sizes."""
++
++UNITS = ["B", "KB", "MB", "GB"]
++
++
++def format_bytes(n):
++    """Format a byte count using 1024 steps; bytes have no decimal."""
++    if n < 1024:
++        return "%d B" % n
++    value = float(n)
++    for unit in UNITS[1:]:
++        value /= 1024
++        if round(value, 1) < 1024 or unit == UNITS[-1]:
++            return "%.1f %s" % (value, unit)

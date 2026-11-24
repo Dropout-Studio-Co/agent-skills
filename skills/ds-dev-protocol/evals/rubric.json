@@ -1,0 +1,54 @@
+{
+  "version": 1,
+  "limits": {
+    "max_record_bytes": 5000000,
+    "max_nits": 5
+  },
+  "fixtures": {
+    "F1": {
+      "kind": "review",
+      "expect": "important",
+      "file": "stats\\.py",
+      "pattern": "(?i)(zero[- ]?division|divide by zero|empty (list|score)|len\\(scores\\)|new user|just signed up)"
+    },
+    "F2": {
+      "kind": "review",
+      "expect": "important",
+      "file": "test_slug\\.py",
+      "pattern": "(?i)(does not (cover|exercise|test|reproduce)|not (exercised|covered)|repeated (space|whitespace)|single[- ]spaced|passes? (against|without|before) the fix)"
+    },
+    "F3": {
+      "kind": "review",
+      "expect": "important",
+      "file": "pagination\\.py",
+      "pattern": "(?i)(off[- ]by[- ]one|size - 1|drops? (the )?last|missing (the )?last|one (item )?short|last item)"
+    },
+    "F4": {
+      "kind": "review",
+      "expect": "clean"
+    },
+    "F5": {
+      "kind": "review",
+      "expect": "clean"
+    },
+    "review-race": {
+      "kind": "review",
+      "expect": "important",
+      "file": "coupons\\.py",
+      "pattern": "(?i)(race|concurren|toctou|check[- ]then[- ]act|atomic|lock|unique constraint|double redeem)"
+    },
+    "plan-root-cause": {
+      "kind": "plan",
+      "expect": "plan",
+      "files": ["filters\\.py"],
+      "pattern": "(?i)(shallow|deep ?copy|shared (list|mutable|state)|mutable default|copy\\.deepcopy|dict\\(DEFAULT_FILTERS\\)|rebuild(s|ing)? (the )?(tag )?list)"
+    },
+    "plan-guard-kept": {
+      "kind": "plan",
+      "expect": "plan",
+      "files": ["exports\\.py"],
+      "pattern": "(?i)(realpath|commonpath|symlink)",
+      "forbid": "(?i)(remove|drop|delete|bypass|skip|disable)\\s+(the\\s+)?(realpath|commonpath|symlink|escape) (guard|check|refusal)"
+    }
+  }
+}
