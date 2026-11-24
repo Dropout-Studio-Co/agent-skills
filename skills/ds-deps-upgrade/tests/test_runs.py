@@ -275,6 +275,12 @@ class ReviewRegressionTests(TempCase):
 
         _, w1 = self.cli('run', 'worker', ref, '--domain', 'w1')
         self.assertEqual(w1['base'], bump, 'a worker defaults to the integration branch HEAD, not the pre-bump base')
+        _, w1_again = self.cli('run', 'worker', ref, '--domain', 'w1')
+        self.assertFalse(w1_again['created'])
+        self.assertEqual(w1_again['base'], bump, 'idempotent run worker must return the recorded worker base')
+        _, status = self.cli('run', 'status', ref)
+        self.assertEqual([(w['domain'], w['base']) for w in status['workers']], [('w1', bump)],
+                         'run status must include workers and their recorded bases')
         with open(os.path.join(w1['worktree'], 'package-lock.json')) as handle:
             self.assertIn('integrationBump', handle.read(), 'the worker starts with the bumped lockfile')
 
@@ -522,6 +528,26 @@ class ReviewRegressionTests(TempCase):
         self.assertEqual(data['candidate_commit'], candidate)
         self.assertEqual(data['rollback']['run_ref'], ref)
 
+    def test_report_collects_multiple_pass_blockers_in_one_pass(self):
+        root = self.make_repo()
+        _, start = self.cli('run', 'start', '--repo', root, '--mode', 'upgrade')
+        ref = start['run_ref']
+        self.cli('run', 'worktree', ref)
+        self.cli('run', 'step', ref, '--id', 'batch-1', '--status', 'failed')
+        path = os.path.join(self.tmp, 'multi-fail.json')
+        write(path, {
+            'status': 'PASS',
+            'verification': [],
+            'upgrades': [{'name': 'db', 'impact_tier': 'high', 'status': 'held'}],
+            'skipped_checks': [{'check': 'e2e', 'required': True}],
+        })
+        _, rep = self.cli('report', ref, '--input', path)
+        self.assertEqual(rep['status'], 'PARTIAL')
+        joined = '\n'.join(rep['corrections'])
+        for expected in ('recorded verification results', 'no open steps', 'completed journal steps',
+                         'high-impact upgrade', 'skipped required check', 'held/blocked/failed'):
+            self.assertIn(expected, joined, 'all PASS blockers must be reported in one pass')
+
 
 class AutonomyTests(TempCase):
     """Zero-touch execution: stale state, upstream base and delivery facts (2026-11-03)."""
@@ -563,6 +589,14 @@ class AutonomyTests(TempCase):
         self.assertIn('push origin ' + wt['branch'], wt['push_with'])
         self.assertEqual(sh(['git', 'rev-parse', 'HEAD', 'feature'], checkout).stdout, before,
                          'fetch never moves the user branches')
+        _, rep = self.cli('report', start['run_ref'])
+        with open(rep['report'], encoding='utf-8') as handle:
+            rep_data = json.load(handle)
+        self.assertEqual(rep_data['worktree_base'], tip)
+        self.assertEqual(rep_data['base_source'], 'fetched origin/main')
+        with open(rep['summary'], encoding='utf-8') as handle:
+            summary = handle.read()
+        self.assertIn('Worktree base: `%s` (fetched origin/main)' % tip[:12], summary)
         _, legacy = self.cli('run', 'start', '--repo', checkout, '--mode', 'upgrade')
         self.assertTrue(legacy.get('refused'), 'first run still holds the lock')
         self.cli('run', 'finish', start['run_ref'])

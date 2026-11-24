@@ -383,6 +383,44 @@ class ReviewIntegrationTests(DepupTaskCase):
         _, rep = self.cli('report', ref, '--input', path)
         self.assertEqual(rep['status'], 'PARTIAL', 'required review on C1 must not vanish on C2')
 
+    def test_review_prepare_context_change_invalidates_reuse(self):
+        start, _ = self.upgrade_run()
+        ref = start['run_ref']
+        ctx1 = self.handoff('dossier v1: initial analysis\n')
+        _, prep = self.cli('review', 'prepare', ref, '--kind', 'security', '--subject', 'db',
+                           '--context', ctx1, '--required')
+        out_file = self.write_out(prep['output_path'], GOOD)
+        _, rec = self.cli('review', 'record', ref, '--review-id', prep['id'],
+                          '--output', out_file, '--reviewer', 'sec-1')
+        self.assertEqual((rec['status'], rec['verdict']), ('completed', 'pass'))
+        _, same = self.cli('review', 'prepare', ref, '--kind', 'security', '--subject', 'db',
+                           '--context', ctx1)
+        self.assertTrue(same.get('reused'), 'identical context should reuse completed review')
+        ctx2 = self.handoff('dossier v2: updated risk controls\n')
+        _, changed = self.cli('review', 'prepare', ref, '--kind', 'security', '--subject', 'db',
+                              '--context', ctx2)
+        self.assertFalse(changed.get('reused'), 'updated context must invalidate stale review reuse')
+        self.assertEqual(changed['status'], 'pending')
+
+    def test_report_auto_populates_disk_reviews_even_on_partial(self):
+        start, _ = self.upgrade_run()
+        ref = start['run_ref']
+        _, prep = self.cli('review', 'prepare', ref, '--kind', 'critical', '--required')
+        out_file = self.write_out(prep['output_path'], GOOD)
+        self.cli('review', 'record', ref, '--review-id', prep['id'],
+                 '--output', out_file, '--reviewer', 'fresh-crit-1')
+        path = os.path.join(self.tmp, 'partial.json')
+        write(path, {'status': 'PARTIAL'})
+        _, rep = self.cli('report', ref, '--input', path)
+        self.assertEqual(rep['status'], 'PARTIAL')
+        with open(rep['report'], encoding='utf-8') as handle:
+            report = json.load(handle)
+        self.assertEqual([(r['kind'], r['verdict']) for r in report['reviews']], [('critical', 'pass')])
+        with open(rep['summary'], encoding='utf-8') as handle:
+            summary = handle.read()
+        self.assertIn('## Reviews', summary)
+        self.assertIn('fresh-crit-1', summary)
+
 
 class PlanningIntegrationTests(DepupTaskCase):
 

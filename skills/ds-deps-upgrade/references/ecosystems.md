@@ -46,7 +46,9 @@ and a held item, never a global install.
   pip-tools `pip-compile --upgrade-package <pkg>` if used.
 - Respect `requires-python`, `.python-version`. Verify lock consistency with `uv sync --locked`;
   `uv sync --frozen` is only for intentionally testing strictly from a possibly stale lockfile.
-  Run the repo's pytest/mypy/ruff and `pip-audit` if installed.
+  For `uv` projects, run checks via `uv run pytest`, `uv run mypy`, `uv run ruff` (matching
+  `allowed-tools` `Bash(uv:*)`), and `uv run pip-audit` (or `pip-audit`) if installed; for other
+  Python managers, run the repo's venv pytest/mypy/ruff and `pip-audit`.
   [uv locking and syncing](https://docs.astral.sh/uv/concepts/projects/sync/)
 
 ## Java (advisory)

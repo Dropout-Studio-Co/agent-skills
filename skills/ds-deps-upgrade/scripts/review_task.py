@@ -121,9 +121,9 @@ def plan_prompt(profile, kind, subject, repo, head, context_path):
         'You are a fresh-context, read-only architect and planner for the %s skill (%s).'
         % (profile['skill'], profile.get('role', '')),
         COMMON_RULES,
-        'You produce decisions and a plan only. The main session validates them against its policies and does '
-        'all implementation itself; your plan authorizes nothing (no implementation, destructive operation, '
-        'approval bypass or policy change).',
+        'You produce decisions and a plan only. The lead session validates them against its policies and owns '
+        'implementation (and any isolated worker delegation permitted by the skill); your plan authorizes nothing '
+        '(no implementation, destructive operation, approval bypass or policy change).',
         '',
         'Task: %s' % kind,
         'Subject: %s' % subject,
@@ -458,7 +458,7 @@ def cmd_review(args):
     root = meta['repo_root']
     if spec.get('rendered_evidence') == 'required':
         if bool(args.rendered_evidence) == bool(args.no_rendered_evidence):
-            raise Refusal('a %s review needs exactly one of --rendered-evidence <manifest> (real browser '
+            raise Refusal('a %s review needs exactly one of --rendered-evidence <manifest> (real rendered '
                           'screenshots/checks) or --no-rendered-evidence "<why rendering was impossible>"' % args.kind)
         if args.rendered_evidence and not (tp.read_text(args.rendered_evidence) or '').strip():
             raise Refusal('--rendered-evidence must name a non-empty manifest')
