@@ -27,12 +27,18 @@ def record():
     d = json.load(open(p))
     if isinstance(d, dict) and isinstance(d.get("structured_output"), dict): return d["structured_output"]
     return d
+def submit(item, rec): return {"type": "dynamic_tool", "itemId": item, "status": "completed", "text": json.dumps({"toolName": "t3_submit_output", "input": {"json": json.dumps(rec)}})}
 def items():
     rec, mode = record(), E("FAKE_MODE", "assistant")
     if rec is None: return []
+    if mode == "twostep":
+        first = dict(rec); first["design"] = "old-plan"
+        return [{"type": "assistant_message", "itemId": "it-1", "text": json.dumps(first)}, submit("it-2", rec)]
+    if mode == "twosubmit":
+        second = dict(rec); second["verdict"] = "fail"
+        return [submit("it-1", rec), submit("it-2", second)]
     if mode == "tool":
-        return [{"type": "dynamic_tool", "itemId": "it-1", "status": "completed",
-                 "text": json.dumps({"toolName": "t3_submit_output", "input": {"json": json.dumps(rec)}})}]
+        return [submit("it-1", rec)]
     if mode == "trunc":
         text = json.dumps(rec); half = len(text) // 2
         return [{"type": "assistant_message", "itemId": "it-1", "text": text[:half], "textTruncated": True, "nextTextOffset": half}]
@@ -59,17 +65,17 @@ if tool == "t3_thread_read":
            "model": E("FAKE_RUN_MODEL", E("FAKE_MODEL", "claude-opus-5-5"))}
     if E("FAKE_EXECUTED"): run["executedModel"] = E("FAKE_EXECUTED")
     th = {"threadId": req.get("threadId", "child-1"), "status": E("FAKE_STATUS", "completed"), "latestRunId": "run-1",
-          "providerInstanceId": E("FAKE_INSTANCE", "claudeAgent"), "model": E("FAKE_MODEL", "claude-opus-5-5")}
+          "providerInstanceId": E("FAKE_INSTANCE", "claudeAgent"), "model": E("FAKE_THREAD_MODEL", E("FAKE_MODEL", "claude-opus-5-5"))}
     if E("FAKE_NO_PARENT") != "1": th["parentThreadId"] = E("FAKE_PARENT", "p1")
     if E("FAKE_ERR"): th.update(json.loads(E("FAKE_ERR")))
     if E("FAKE_RUNS"): emit({"thread": dict(th, latestRunId="run-2"), "recentRuns": json.loads(E("FAKE_RUNS")), "items": its})
     emit({"thread": th, "recentRuns": [run], "items": its})
 emit({})
 FAKE
-chmod +x "$T/bin/acp-node"; export T3_ACP_MCP_NODE="$T/bin/acp-node" T3_ACP_MCP_ENTRYPOINT=""
+chmod +x "$T/bin/acp-node"; NODE=$T/bin/acp-node; export T3_ACP_MCP_NODE="$NODE" T3_ACP_MCP_ENTRYPOINT=""
 : > "$T/t3.calls"; : > "$T/cid"
 fresh() { : > "$T/t3.calls"; unset FAKE_STATUS FAKE_PARENT FAKE_NO_PARENT FAKE_INSTANCE FAKE_MODEL FAKE_OPTION FAKE_EFFORT \
-  FAKE_RECORD FAKE_ERR FAKE_EXECUTED FAKE_MODE FAKE_NOTICE FAKE_ISERROR FAKE_RUN_STATUS FAKE_RUN_MODEL FAKE_RUN_INSTANCE FAKE_RUNS; }
+  FAKE_RECORD FAKE_ERR FAKE_EXECUTED FAKE_MODE FAKE_NOTICE FAKE_ISERROR FAKE_RUN_STATUS FAKE_RUN_MODEL FAKE_RUN_INSTANCE FAKE_RUNS FAKE_THREAD_MODEL; }
 nextid() { local v=$(( $(cat "$T/cid") + 1 )); echo "$v" > "$T/cid"; printf 'c%s' "$v"; }
 unset GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM; export GIT_CONFIG_NOSYSTEM=1
 git config --global user.email smoke@example.com; git config --global user.name Smoke; git config --global init.defaultBranch main
@@ -78,8 +84,8 @@ git -C "$R" remote add origin "$T/origin.git"; git -C "$R" push -q origin main; 
 printf 'feat\n' > "$R/g.txt"; git -C "$R" add g.txt; git -C "$R" commit -qm feat
 H=$(git -C "$R" rev-parse HEAD); B=$(git -C "$R" merge-base origin/main "$H")
 new_ev() { E=$T/$1; rm -rf "$E"; mkdir -p "$E"; }
-# pkt GATE KEY [BASE]: packet with the gate, key, optional merge-base and the exact source body.
-pkt() { { printf 'Gate: %s\nkey: %s\n' "$1" "$2"; [ -z "${3:-}" ] || printf 'base: %s\n' "$3"
+# pkt GATE KEY [BASE]: packet with the gate, tier, key, HEAD, optional merge-base and the exact source body.
+pkt() { { printf 'Gate: %s\nkey: %s\nhead: %s\nTier: low\nTier: medium\nTier: high\n' "$1" "$2" "$H"; [ -z "${3:-}" ] || printf 'base: %s\n' "$3"
   if [ "$1" = plan ]; then cat "$E/facts.md"; elif [ "$1" = epoch ]; then cat "$E/epoch.md"; else git -C "$R" diff --no-color "$3" HEAD; fi; } > "$E/packet-$1.md"; }
 rec_review() { printf '{"gate":"%s","head_sha":"%s","verdict":"%s","summary":"ok","findings":%s}\n' "$1" "$2" "$3" "${4:-[]}" > "$E/rec.json"; }
 rec_plan() { printf '{"gate":"plan","tier":"%s","acceptance_criteria":["a"],"design":"d","files":["f"],"tests":["t"],"risks":[],"rollback":"r"}\n' "$1" > "$E/rec.json"; }
@@ -191,14 +197,15 @@ for b in main HEAD~1; do fresh; opusenv medium; export FAKE_RECORD=$E/rec.json; 
 fresh; new_ev cy; pkt review "$H" "$B"; rec_review review "$H" pass; opusenv medium; export FAKE_RECORD=$E/rec.json FAKE_ERR='{"stop_reason": "refusal"}'
 g "$E" review medium --record "$E/rec.json"
 chk "[cyber] refusal exit3 blocked cyber refusal" bash -c "[ $GRC = 3 ] && tail -1 '$E/gates.log' | grep -q '\"status\": \"blocked\"' && tail -1 '$E/gates.log' | grep -q '\"reason\": \"cyber refusal\"' && ! ls '$E'/review-*.json 2>/dev/null"
-fresh; opusenv medium; export FAKE_RECORD=$E/rec.json FAKE_ERR='{"error": "usage_limit"}'; g "$E" review medium --record "$E/rec.json"
-chk "usage_limit exit3 invalid" bash -c "[ $GRC = 3 ] && tail -1 '$E/gates.log' | grep -q '\"status\": \"invalid\"' && tail -1 '$E/gates.log' | grep -q '\"reason\": \"usage_limit\"'"
 fresh; new_ev prose; pkt review "$H" "$B"; rec_review review "$H" pass; opusenv medium; export FAKE_MODE=prose FAKE_RECORD=$E/rec.json
 g "$E" review medium --record "$E/rec.json"
 chk "normal text mentioning 'cyber' does not false-positive on review" bash -c "[ $GRC = 0 ] && test -s '$E/review-$H.json'"
 fresh; new_ev prosep; printf 'facts body\n' > "$E/facts.md"; K=$(shasum -a 256 "$E/facts.md" | awk '{print $1}'); pkt plan "$K"; rec_plan medium; planenv high; export FAKE_MODE=prose FAKE_RECORD=$E/rec.json
 g "$E" plan medium --record "$E/rec.json"
 chk "normal text mentioning 'cyber' does not false-positive on plan" bash -c "[ $GRC = 0 ] && test -s '$E/plan-$K.json'"
+fresh; new_ev dn; pkt review "$H" "$B"; rec_review review "$H" pass; opusenv medium; export FAKE_RECORD=$E/rec.json FAKE_NOTICE='tool permission declined'
+g "$E" review medium --record "$E/rec.json"
+chk "Claude notice with 'declined' is not a cyber refusal" bash -c "[ $GRC = 0 ] && test -s '$E/review-$H.json'"
 # --- verdict integrity: pass with an Important finding ---
 fresh; new_ev vp; pkt review "$H" "$B"; rec_review review "$H" pass '[{"severity":"important","location":"g.txt:1","failure_scenario":"s","evidence":"e"}]'
 opusenv medium; export FAKE_RECORD=$E/rec.json; g "$E" review medium --record "$E/rec.json"
@@ -220,7 +227,7 @@ seed review:medium:ok:pass: review:medium:ok:pass: review:medium:ok:pass: plan:m
 g "$E" review medium --record "$E/rec.json"
 chk "6-round epoch cap exit3 blocked" bash -c "[ $GRC = 3 ] && tail -1 '$E/gates.log' | grep -q '\"status\": \"blocked\"' && tail -1 '$E/gates.log' | grep -q 'round cap after re-plan' && [ ! -s '$T/t3.calls' ]"
 # --- epoch: needs a block, tier, pass/fail/ceiling ---
-epk() { printf 'request %s\n' "$1" > "$E/epoch.md"; K=$(shasum -a 256 "$E/epoch.md" | awk '{print $1}'); { printf 'Gate: epoch\nkey: %s\n' "$K"; cat "$E/epoch.md"; } > "$E/packet-epoch.md"; }
+epk() { printf 'request %s\n' "$1" > "$E/epoch.md"; K=$(shasum -a 256 "$E/epoch.md" | awk '{print $1}'); { printf 'Gate: epoch\nkey: %s\nhead: %s\nTier: low\nTier: medium\nTier: high\n' "$K" "$H"; cat "$E/epoch.md"; } > "$E/packet-epoch.md"; }
 blk() { seed review:"$1":ok:pass: review:"$1":ok:pass: review:"$1":ok:pass: plan:"$1":ok:pass: review:"$1":ok:pass: review:"$1":ok:pass: review:"$1":ok:pass: "review:$1:blocked::round cap after re-plan"; }
 fresh; new_ev e0; epk a; rec_review epoch "$K" pass; opusenv high; export FAKE_RECORD=$E/rec.json; g "$E" epoch high --record "$E/rec.json"
 chk "epoch without round-cap block exit2" bash -c "[ $GRC = 2 ] && tail -1 '$E/gates.log' | grep -q '\"status\": \"invalid\"' && [ ! -s '$T/t3.calls' ]"
@@ -239,6 +246,10 @@ chk "epoch ceiling exit3" bash -c "[ $GRC = 3 ] && tail -1 '$E/gates.log' | grep
 fresh; new_ev e6; seed_epoch e-a high; pkt review "$H" "$B"; rec_review review "$H" pass; opusenv medium; export FAKE_RECORD=$E/rec.json
 g "$E" review medium --record "$E/rec.json"
 chk "review after a passing epoch needs a fresh plan (exit2)" bash -c "[ $GRC = 2 ] && tail -1 '$E/gates.log' | grep -q 'requires a fresh plan' && [ ! -s '$T/t3.calls' ]"
+fresh; new_ev e7; blk high; seed_epoch ghost high; rm -f "$E/epoch-ghost.json"; pkt review "$H" "$B"; rec_review review "$H" pass; opusenv high; export FAKE_RECORD=$E/rec.json
+g "$E" review high --record "$E/rec.json"; rc1=$GRC
+epk a; rec_review epoch "$K" pass; opusenv high; export FAKE_RECORD=$E/rec.json; g "$E" epoch high --record "$E/rec.json"
+chk "forged epoch resets nothing, then a real epoch passes" bash -c "[ $rc1 = 3 ] && [ $GRC = 0 ]"
 # --- repo-controlled changes, binary hidden as text ---
 newrepo() { local n=$1; shift; R=$T/$n; rm -rf "$R"; git clone -q "$T/origin.git" "$R"; for f; do mkdir -p "$R/$(dirname "$f")"; printf '%s\n' "$f" > "$R/$f"; git -C "$R" add "$f"; git -C "$R" commit -qm "$f"; done; H=$(git -C "$R" rev-parse HEAD); B=$(git -C "$R" merge-base origin/main "$H"); }
 fresh; new_ev cfg; newrepo cfgrepo .opencode/agent/plan.md; pkt review "$H" "$B"; rec_review review "$H" pass; opusenv medium; export FAKE_RECORD=$E/rec.json
@@ -249,5 +260,95 @@ chk "agent config change at Medium accepted" test "$GRC" = 0
 fresh; new_ev hid; newrepo hidrepo x.txt; printf 'x.txt -diff\n' > "$R/.gitattributes"; printf 'secret\n' >> "$R/x.txt"; git -C "$R" add -A; git -C "$R" commit -qm ga; H=$(git -C "$R" rev-parse HEAD); B=$(git -C "$R" merge-base origin/main "$H")
 pkt review "$H" "$B"; rec_review review "$H" pass; opusenv medium; export FAKE_RECORD=$E/rec.json; g "$E" review medium --record "$E/rec.json"
 chk "text hidden as binary exit2" bash -c "[ $GRC = 2 ] && grep -q 'Binary files differ' '$T/out' && [ ! -s '$T/t3.calls' ]"
+# --- review findings: final submission, all-runs agreement, usage failover, invalid output, refuse rows, plan refusals ---
+newrepo myrepo z.txt
+fresh; new_ev fin; printf 'facts body\n' > "$E/facts.md"; K=$(shasum -a 256 "$E/facts.md" | awk '{print $1}'); pkt plan "$K"; rec_plan medium; planenv high
+export FAKE_MODE=twostep FAKE_RECORD=$E/rec.json; g "$E" plan medium --record "$E/rec.json"
+chk "final submission: t3_submit_output wins over earlier assistant JSON" bash -c "[ $GRC = 0 ] && test -s '$E/plan-$K.json' && grep -q '\"design\": \"d\"' '$E/plan-$K.json' && ! grep -q 'old-plan' '$E/plan-$K.json'"
+fresh; new_ev fin2; printf 'facts body\n' > "$E/facts.md"; K=$(shasum -a 256 "$E/facts.md" | awk '{print $1}'); pkt plan "$K"; rec_plan medium
+printf '{"gate":"plan","tier":"medium","acceptance_criteria":["a"],"design":"old-plan","files":["f"],"tests":["t"],"risks":[],"rollback":"r"}\n' > "$E/old.json"
+planenv high; export FAKE_MODE=twostep FAKE_RECORD=$E/rec.json; g "$E" plan medium --record "$E/old.json"
+chk "earlier assistant JSON is not accepted as the record" bash -c "[ $GRC = 2 ] && tail -1 '$E/gates.log' | grep -q 'does not match the child thread output' && ! ls '$E'/plan-*.json 2>/dev/null"
+fresh; new_ev fp; pkt review "$H" "$B"; rec_review review "$H" pass; opusenv medium
+export FAKE_MODE=twosubmit FAKE_RECORD=$E/rec.json; g "$E" review medium --record "$E/rec.json"
+chk "earlier t3_submit_output pass ignored when the final submission fails" bash -c "[ $GRC = 2 ] && tail -1 '$E/gates.log' | grep -q 'does not match the child thread output' && ! ls '$E'/review-*.json 2>/dev/null"
+fresh; new_ev oldrun; pkt review "$H" "$B"; rec_review review "$H" pass; opusenv medium
+export FAKE_RECORD=$E/rec.json FAKE_RUNS='[{"runId":"run-2","status":"completed","executedModel":"claude-opus-5-5"},{"runId":"run-1","status":"completed","executedModel":"claude-opus-4-8"}]'
+g "$E" review medium --record "$E/rec.json"
+chk "older recentRuns downgrade still exit2" bash -c "[ $GRC = 2 ] && tail -1 '$E/gates.log' | grep -q 'executed model is'"
+fresh; new_ev modelconf; pkt review "$H" "$B"; rec_review review "$H" pass; opusenv medium
+export FAKE_RECORD=$E/rec.json FAKE_THREAD_MODEL=claude-opus-4-8; g "$E" review medium --record "$E/rec.json"
+chk "thread model conflicting with modelSelection exit2" bash -c "[ $GRC = 2 ] && grep -q 'observed model is' '$E/gates.log'"
+fresh; new_ev effconf; pkt review "$H" "$B"; rec_review review "$H" pass; opusenv medium
+export FAKE_RECORD=$E/rec.json FAKE_RUNS='[{"runId":"run-2","status":"completed","options":{"effort":"low"}}]'; g "$E" review medium --record "$E/rec.json"
+chk "run effort conflict exit2" bash -c "[ $GRC = 2 ] && grep -q 'observed effort is' '$E/gates.log'"
+fresh; new_ev uf; pkt review "$H" "$B"; rec_review review "$H" pass; export FAKE_RECORD=$E/rec.json FAKE_ERR='{"error":"usage_limit"}'
+opusenv medium claude-opus-5-5 claudeAgent; g "$E" review medium --record "$E/rec.json"; rc1=$GRC; cp "$T/out" "$T/o1"
+opusenv medium claude-opus-5-5 claudeAgent_2; g "$E" review medium --record "$E/rec.json"; rc2=$GRC; cp "$T/out" "$T/o2"
+opusenv medium claude-opus-5-5 claudeAgent_3; g "$E" review medium --record "$E/rec.json"
+chk "usage row carries observed account" bash -c "grep -q '\"reason\": \"usage_limit\"' '$E/gates.log' && grep -q '\"account\": \"claudeAgent_2\"' '$E/gates.log'"
+chk "usage failover claude: 2,2,3 then blocked" bash -c "[ $rc1 = 2 ] && [ $rc2 = 2 ] && [ $GRC = 3 ] && grep -q 'claudeAgent_2' '$T/o1' && grep -q 'claudeAgent_3' '$T/o2' && tail -1 '$E/gates.log' | grep -q 'claude-opus-5-5 quota exhausted on every instance' && tail -1 '$E/gates.log' | grep -q '\"status\": \"blocked\"'"
+fresh; new_ev ufp; printf 'facts body\n' > "$E/facts.md"; K=$(shasum -a 256 "$E/facts.md" | awk '{print $1}'); pkt plan "$K"; rec_plan medium; planenv high
+export FAKE_RECORD=$E/rec.json FAKE_ERR='{"stop_reason":"usage_limit"}'; export FAKE_INSTANCE=antigravity
+g "$E" plan medium --record "$E/rec.json"; p1=$GRC; cp "$T/out" "$T/p1"
+export FAKE_INSTANCE=antigravity_2; g "$E" plan medium --record "$E/rec.json"
+chk "usage failover plan: antigravity then blocked" bash -c "[ $p1 = 2 ] && [ $GRC = 3 ] && grep -q 'antigravity_2' '$T/p1' && tail -1 '$E/gates.log' | grep -q 'gemini-4-neon quota exhausted on every instance'"
+fresh; new_ev io; printf 'facts body\n' > "$E/facts.md"; K=$(shasum -a 256 "$E/facts.md" | awk '{print $1}'); pkt plan "$K"; planenv high
+printf '[1,2,3]\n' > "$E/list.json"; export FAKE_RECORD=$E/list.json; g "$E" plan medium --record "$E/list.json"
+chk "JSON list payload exit2 invalid output no traceback" bash -c "[ $GRC = 2 ] && tail -1 '$E/gates.log' | grep -q 'invalid output' && grep -q 'not a JSON object' '$E/gates.log' && ! grep -q 'Traceback' '$T/out'"
+printf '"text"\n' > "$E/str.json"; export FAKE_RECORD=$E/str.json; g "$E" plan medium --record "$E/str.json"
+chk "second invalid output becomes blocked retry exit3" bash -c "[ $GRC = 3 ] && tail -1 '$E/gates.log' | grep -q '\"status\": \"blocked\"' && tail -1 '$E/gates.log' | grep -q 'invalid output after retry'"
+fresh; new_ev sch; printf 'facts body\n' > "$E/facts.md"; K=$(shasum -a 256 "$E/facts.md" | awk '{print $1}'); pkt plan "$K"; planenv high
+printf '{"gate":"plan","tier":"medium"}\n' > "$E/bad.json"; export FAKE_RECORD=$E/bad.json; g "$E" plan medium --record "$E/bad.json"
+chk "schema mismatch uses invalid output prefix exit2" bash -c "[ $GRC = 2 ] && tail -1 '$E/gates.log' | grep -q '\"reason\": \"invalid output: '"
+fresh; new_ev rf; pkt review "$H" "$B"; rec_review review "$H" pass; opusenv medium; export FAKE_RECORD=$E/rec.json
+rm -f "$E/packet-review.md"; g "$E" review medium --record "$E/rec.json"; n=$(wc -l < "$E/gates.log" | tr -d ' ')
+chk "missing packet logs one invalid row exit2" bash -c "[ $GRC = 2 ] && [ '$n' = 1 ] && tail -1 '$E/gates.log' | grep -q 'missing'"
+fresh; new_ev dr; pkt review "$H" "$B"; rec_review review "$H" pass; opusenv medium; export FAKE_RECORD=$E/rec.json
+printf 'b\n' >> "$R/z.txt"; g "$E" review medium --record "$E/rec.json"; n=$(wc -l < "$E/gates.log" | tr -d ' '); git -C "$R" checkout -q -- z.txt
+chk "dirty tree logs one invalid row exit2" bash -c "[ $GRC = 2 ] && [ '$n' = 1 ] && tail -1 '$E/gates.log' | grep -q 'dirty'"
+fresh; new_ev rk; pkt review "$H" "$B"; rec_review review "$H" pass; opusenv medium; export FAKE_RECORD=$E/rec.json
+g "$E" review medium --record "$E/rec.json" --base origin/nope; n=$(wc -l < "$E/gates.log" | tr -d ' ')
+chk "refusal after the key logs one invalid row exit2" bash -c "[ $GRC = 2 ] && [ '$n' = 1 ] && tail -1 '$E/gates.log' | grep -q '\"status\": \"invalid\"' && grep -q 'no merge-base' '$E/gates.log'"
+fresh; new_ev br; pkt review "$H" "$B"; rec_review review "$H" pass; opusenv medium; export FAKE_RECORD=$E/rec.json
+g "$E" review medium --record "$E/rec.json" --base main; n=$(wc -l < "$E/gates.log" | tr -d ' ')
+chk "--base non-origin logs one invalid row exit2" bash -c "[ $GRC = 2 ] && [ '$n' = 1 ] && tail -1 '$E/gates.log' | grep -q 'origin/'"
+fresh; new_ev pd; printf 'facts body\n' > "$E/facts.md"; K=$(shasum -a 256 "$E/facts.md" | awk '{print $1}'); pkt plan "$K"; rec_plan medium; planenv high; export FAKE_RECORD=$E/rec.json
+g "$E" plan medium --record "$E/rec.json" --diff "$E/facts.md"
+chk "plan --diff exit2" bash -c "[ $GRC = 2 ] && [ ! -s '$T/t3.calls' ] && grep -q 'no --diff or --base' '$T/out'"
+fresh; g "$E" plan medium --record "$E/rec.json" --base origin/main
+chk "plan --base exit2" bash -c "[ $GRC = 2 ] && [ ! -s '$T/t3.calls' ]"
+cp "$E/rec.json" "$E/review-out.json"; g "$E" plan medium --record "$E/review-out.json"
+chk "--record naming a gate output exit2" bash -c "[ $GRC = 2 ] && grep -q 'must not be a gate output file' '$T/out'"
+fresh; new_ev nt; pkt review "$H" "$B"; rec_review review "$H" pass; opusenv medium; export FAKE_RECORD=$E/rec.json
+grep -v '^Tier: ' "$E/packet-review.md" > "$T/p.md"; cp "$T/p.md" "$E/packet-review.md"; g "$E" review medium --record "$E/rec.json"
+chk "packet without Tier line exit2" bash -c "[ $GRC = 2 ] && grep -q 'Tier:' '$T/out' && [ ! -s '$T/t3.calls' ]"
+fresh; new_ev nh; printf 'facts body\n' > "$E/facts.md"; K=$(shasum -a 256 "$E/facts.md" | awk '{print $1}'); pkt plan "$K"; grep -v "^head: " "$E/packet-plan.md" > "$E/p2"; mv "$E/p2" "$E/packet-plan.md"; rec_plan medium; planenv high; export FAKE_RECORD=$E/rec.json
+g "$E" plan medium --record "$E/rec.json"
+chk "plan packet without HEAD exit2" bash -c "[ $GRC = 2 ] && [ ! -s '$T/t3.calls' ]"
+# --- HEAD regressions: agent-config paths, real binary, model output, T3 node ---
+fresh; new_ev gbin; newrepo binrepo x.txt; printf 'a\000b' > "$T/real.bin"; cp "$T/real.bin" "$R/real.bin"; git -C "$R" add real.bin; git -C "$R" commit -qm bin; H=$(git -C "$R" rev-parse HEAD); B=$(git -C "$R" merge-base origin/main "$H")
+pkt review "$H" "$B"; rec_review review "$H" pass; opusenv medium; export FAKE_RECORD=$E/rec.json; g "$E" review low --record "$E/rec.json"
+chk "real binary is still gated" bash -c "[ $GRC = 0 ] && test -s '$E/review-$H.json'"
+for spec in "oc4:.opencode/plugin/\303\244.ts:non-ascii" "oc7:.OpenCode/p.ts:mixed-case" "oc5:docs/AGENTS.md:AGENTS.md" "oc6:docs/agents.md:lower-case agents.md"; do
+  n=${spec%%:*}; rest=${spec#*:}; f=${rest%:*}; label=${rest##*:}; fresh; new_ev "ac-$n"; newrepo "ar-$n" "$f"; pkt review "$H" "$B"; rec_review review "$H" pass; opusenv medium; export FAKE_RECORD=$E/rec.json
+  g "$E" review low --record "$E/rec.json"
+  chk "$label agent config at Low exit2" bash -c "[ $GRC = 2 ] && grep -q 'agent config changed' '$T/out'"
+done
+fresh; new_ev many; newrepo manyrepo seed.txt; mkdir -p "$R/z" "$R/.opencode"
+for i in $(seq 1 400); do printf 'x\n' > "$R/z/$(printf '%0200d' "$i").txt"; done; printf 'x\n' > "$R/.opencode/a.md"
+git -C "$R" add -A; git -C "$R" commit -qm many; H=$(git -C "$R" rev-parse HEAD); B=$(git -C "$R" merge-base origin/main "$H")
+pkt review "$H" "$B"; rec_review review "$H" pass; opusenv medium; export FAKE_RECORD=$E/rec.json; g "$E" review low --record "$E/rec.json"
+chk "400+-file diff still finds agent config at Low" bash -c "[ $GRC = 2 ] && grep -q 'agent config changed' '$T/out'"
+fresh; new_ev ev; pkt review "$H" "$B"; printf '{"gate":"review","head_sha":"%s","verdict":"pass","summary":"$(touch %s/pwned)","findings":[]}\n' "$H" "$T" > "$E/eval.json"
+opusenv medium; export FAKE_RECORD=$E/eval.json; g "$E" review medium --record "$E/eval.json"
+chk "model output is never evaluated by a shell; gates.log stays JSON" bash -c "[ ! -e '$T/pwned' ] && python3 -c 'import json,sys;[json.loads(l) for l in open(sys.argv[1])]' '$E/gates.log'"
+fresh; new_ev tn; pkt review "$H" "$B"; rec_review review "$H" pass; opusenv medium; export FAKE_RECORD=$E/rec.json
+unset T3_ACP_MCP_NODE; g "$E" review medium --record "$E/rec.json"
+chk "T3_ACP_MCP_NODE unset exits 2 with no traceback" bash -c "[ $GRC = 2 ] && tail -1 '$E/gates.log' | grep -q 'T3 MCP verification unavailable' && ! grep -q Traceback '$T/out'"
+printf '#!/bin/sh\necho not-json\n' > "$T/bin/badnode"; chmod +x "$T/bin/badnode"; export T3_ACP_MCP_NODE="$T/bin/badnode"
+g "$E" review medium --record "$E/rec.json"
+chk "non-JSON T3 node exits 2 with no traceback" bash -c "[ $GRC = 2 ] && tail -1 '$E/gates.log' | grep -q 'T3 MCP verification unavailable' && ! grep -q Traceback '$T/out'"
+export T3_ACP_MCP_NODE="$NODE"
 printf '\n%s\n' "$([ $FAILED = 0 ] && echo 'GATE TESTS PASSED' || echo 'GATE TESTS FAILED')"
 exit $FAILED

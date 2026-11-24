@@ -1,4 +1,4 @@
-# Execution protocol: reference
+# ds-dev-protocol: reference
 
 Script internals and accepted-risk documentation that `SKILL.md` refers to; every rule the conductor acts on stays in `SKILL.md`.
 
@@ -10,12 +10,14 @@ Every gate is produced by a T3 Code `delegate_task` child thread; `gate.sh <gate
 - **Model pinning.** `plan` needs `gemini-4-neon`; `review`, `security` and `epoch` need `claude-opus-5-5`. A silent downgrade (for example `claude-opus-4-8`) is `invalid`, never accepted.
 - **Payload match.** The recorded JSON must equal the child's final `t3_submit_output` payload and validate against `plan-schema.json` or `review-schema.json`; `facts_sha256` must match `EVID/facts.md` for `plan`, and the packet must carry the exact diff, merge-base and `HEAD` for `review` and `security`.
 - **Tree integrity.** Because `delegate_task` cannot strip write or shell tools, the worktree must be clean (`git status --porcelain --untracked-files=all` empty) and `HEAD` unchanged before and after the child; dirty or mutated state is `exit 2`, never a pass.
+- **Accepted risks.** `T3_ACP_MCP_NODE` (and `T3_ACP_MCP_ENTRYPOINT`) is the trust root: a substituted node binary or entrypoint can forge `t3_thread_read`/`t3_thread_configure` output, and with it the thread state, provider, model, effort and account this file verifies, so it is guarded like a credential and never overridden per run. The tree check reads only this worktree's tracked and untracked status, so a child that writes outside the worktree (another checkout, `~`, a temp dir, the common git dir) or rewrites ignored files is not detected; the conductor reads the diff and checks the branch itself before merge.
+- **Limit and malformed-output failover.** A `usage_limit` child logs `invalid` with `reason: "usage_limit"` and exits 2, naming the next enabled instance of the same provider, model and effort to dispatch; once every instance is tried it logs `blocked` with `reason: "<model> quota exhausted on every instance"` and exits 3. An `invalid output` run (unparsable or non-matching submission) exits 2 and is re-dispatched as a fresh child; a second invalid output for the same gate key logs `blocked` with `reason: "invalid output after retry"` and exits 3.
 - **Refusal fail-closed.** A Claude run reporting a refusal (`stop_reason == "refusal"`, Anthropic `[cyber]` classifier, or `[cyber]` in the error or notice) logs `status: "blocked"`, `reason: "cyber refusal"`, `account: <providerInstanceId>` and exits 3. It is never retried as invalid JSON, never logged `pass`, never counted as model unavailability.
 - **Metrics preserved.** `review` and `security` rows keep `log_metrics` writing every finding to `~/.local/state/review-metrics/findings.jsonl`, unchanged.
 - **Log row.** One JSON line per run in `EVID/gates.log`: `provenance_mode: "t3-verified"`, `engine`, `provider`, `route`, `model`, `effort`, `task_id`, `gate`, `tier`, `round`, `key`, `facts_sha256`, `base_ref`, `base_sha`, `diff_sha256`, `head_sha`, `file`, `file_sha256`, `session_id`, `parent_thread_id`, `account`, `input_tokens`, `output_tokens`, `cost_usd`, `ts`, `status`, `verdict`, `reason`.
 - **Exit codes.** 0 pass or a valid plan; 1 `fail`; 2 usage, precondition, or provenance and tree mismatch; 3 blocked; 4 round cap, re-plan.
 
-## Step 6 implementer: documented sandboxed mechanical runner
+## Step 6 implementer: documented mechanical runner, no OS sandbox
 
 `scripts/implement.sh` is the sole implementation path: `opencode run --standalone`, pinned to `opencode-go/deepseek-v4.1-flash#high`, with `OPENCODE_DISABLE_CLAUDE_CODE=1`, `OPENCODE_DISABLE_FREE_MODELS=1` and `opencode/opencode.json` tool scoping (no git mutation, `gh`, web, subagents or `.env`). No other model, variant, account or conductor run substitutes for it.
 

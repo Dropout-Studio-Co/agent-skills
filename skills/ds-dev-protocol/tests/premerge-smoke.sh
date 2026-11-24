@@ -70,9 +70,9 @@ if p and os.path.isfile(p): d["file_sha256"] = sha(p)
 open(os.path.join(ev, "gates.log"), "a").write(json.dumps(d) + "\n")
 PY
 }
-rowb() { local ev=$1 gate=$2 key=$3 tier=$4 status=$5 verdict=$6 file=$7 bs ds
+rowb() { local ev=$1 gate=$2 key=$3 tier=$4 status=$5 verdict=$6 file=$7 bs ds; shift 7
   bs=$(git -C "$R" merge-base origin/main "$key"); ds=$(git -C "$R" diff --no-color --full-index "$bs" "$key" | shasum -a 256 | awk '{print $1}')
-  row "$ev" "$gate" "$key" "$tier" "$status" "$verdict" "$file" "base_ref=origin/main" "base_sha=$bs" "diff_sha256=$ds"; }
+  row "$ev" "$gate" "$key" "$tier" "$status" "$verdict" "$file" "base_ref=origin/main" "base_sha=$bs" "diff_sha256=$ds" "$@"; }
 setrow() { python3 - "$E/gates.log" "$1" "$2" "$3" <<'PY'
 import json, sys
 p, gate, field, value = sys.argv[1:5]
@@ -105,8 +105,8 @@ pmrun() { ( cd "$2" && EVID="$1" bash "$PM" "${@:3}" >"$T/pm.out" 2>&1 ); PRC=$?
 merged() { ! grep -qE 'pr (edit|merge)' "$T/calls.log"; }
 # --- happy paths: Low, Medium, High, --diff, --no-ci
 for tier in low medium high; do base_ev "happy-$tier" "$tier" "$H"; pm_reset; pmrun "$E" "$R" 1
-  chk "happy $tier exit0+merge+block" bash -c "[ $PRC = 0 ] && grep -q 'pr merge 1 --squash --match-head-commit $H' '$T/calls.log' && grep -q '<!-- premerge:start -->' '$T/body.txt' && grep -q '$H' '$T/body.txt'"
-  chk "happy $tier wrote premerge txt" test -s "$E/premerge-$H.txt"; done
+  chk "happy $tier exit0+merge+block" bash -c "[ $PRC = 0 ] && grep -q 'pr merge 1 --squash --match-head-commit $H' '$T/calls.log' && ! grep -qE -- '--admin|--auto|--delete-branch' '$T/calls.log' && grep -q '<!-- premerge:start -->' '$T/body.txt' && grep -q '$H' '$T/body.txt'"
+  chk "happy $tier wrote txt + merged row" bash -c "test -s '$E/premerge-$H.txt' && grep -q '\"status\": \"merged\"' '$E/gates.log'"; done
 base_ev happy-medium medium "$H"; pm_reset; export FAKE_CHECKS_EXIT=1 FAKE_CHECKS_MSG="no checks reported on the 'b' branch"; pmrun "$E" "$R" 1 --no-ci
 chk "--no-ci passes on a repo with no CI" bash -c "[ $PRC = 0 ] && grep -q 'CI: none (--no-ci)' '$T/body.txt'"; unset FAKE_CHECKS_EXIT FAKE_CHECKS_MSG
 printf 'outside diff\n' > "$T/out.diff"; OK=$(shasum -a 256 "$T/out.diff" | awk '{print $1}'); new_ev outside
@@ -115,6 +115,15 @@ f=$(gf "$E" plan "$FS" pass '[]' low); row "$E" plan "$FS" low ok pass "$f" "fac
 f=$(gf "$E" review "$OK" pass '[]' low); row "$E" review "$OK" low ok pass "$f"
 : > "$T/calls.log"; pmrun "$E" "$R" --diff "$T/out.diff"
 chk "--diff exit0 and no gh" bash -c "[ $PRC = 0 ] && [ ! -s '$T/calls.log' ] && test -s '$E/premerge-$OK.txt'"
+# --- tier floor: PLAN.md and the re-check each need a Tier line; headings parse; lower fails
+base_ev t-heading high "$H"; printf '# PLAN (x) - Tier: High\n' > "$E/PLAN.md"; printf 'Tier: High\n' > "$E/tier-recheck-$H.md"; pm_reset; pmrun "$E" "$R" 1
+chk "Tier: High in a heading parses" test "$PRC" = 0
+base_ev t-noplan medium "$H"; printf '# PLAN\n' > "$E/PLAN.md"; pm_reset; pmrun "$E" "$R" 1
+chk "PLAN.md without a Tier line fails" bash -c "[ $PRC = 1 ] && grep -q 'each need a Tier line' '$T/pm.out'"
+base_ev t-norecheck medium "$H"; printf '# recheck\n' > "$E/tier-recheck-$H.md"; pm_reset; pmrun "$E" "$R" 1
+chk "tier re-check without a Tier line fails" bash -c "[ $PRC = 1 ] && grep -q 'each need a Tier line' '$T/pm.out'"
+base_ev t-lowrecheck medium "$H"; printf 'Tier: low\n' > "$E/tier-recheck-$H.md"; pm_reset; pmrun "$E" "$R" 1
+chk "lower re-check tier fails" bash -c "[ $PRC = 1 ] && grep -q 'lower than PLAN.md' '$T/pm.out'"
 # --- rejections: facts and every provenance field, all tiers
 refuse() { local n=$1 tier=$2 mut=$3 want=$4; base_ev "r-$n" "$tier" "$H"; pm_reset; eval "$mut"; pmrun "$E" "$R" 1
   chk "refuse:$n" bash -c "[ $PRC = 1 ] && grep -q '$want' '$T/pm.out' && [ \$(grep -cE 'pr (edit|merge)' '$T/calls.log') = 0 ]"; }
@@ -147,6 +156,48 @@ chk "refuse:empty parent_thread_id" bash -c "[ $PRC = 1 ] && grep -q 'is not a c
 # --- a later fail at the same head beats an earlier pass on that head ---
 base_ev r-flip medium "$H"; f=$(gf "$E" review "$H" fail '[]' medium); rowb "$E" review "$H" medium ok fail "$f"; pm_reset; pmrun "$E" "$R" 1
 chk "refuse:later fail after an earlier pass on HEAD" bash -c "[ $PRC = 1 ] && grep -q 'is missing, failing, or has an important finding' '$T/pm.out' && [ \$(grep -cE 'pr (edit|merge)' '$T/calls.log') = 0 ]"
+# --- rounds and last-status: 3 since plan, 6 total, a blocked gate never merges ---
+base_ev r-rounds3 medium "$H"; for i in 1 2 3; do f=$(gf "$E" review "$H" pass '[]' medium); rowb "$E" review "$H" medium ok pass "$f"; done; pm_reset; pmrun "$E" "$R" 1
+chk "refuse:4 ok rounds since the plan" bash -c "[ $PRC = 1 ] && grep -q 'too many ok rounds' '$T/pm.out'"
+base_ev r-rounds6 medium "$H"; for i in 1 2 3 4 5 6; do f=$(gf "$E" review "$H" pass '[]' medium); rowb "$E" review "$H" medium ok pass "$f"; done; pm_reset; pmrun "$E" "$R" 1
+chk "refuse:7 ok rounds total" bash -c "[ $PRC = 1 ] && grep -q 'too many ok rounds' '$T/pm.out'"
+base_ev r-blocked medium "$H"; row "$E" review "$H" medium blocked "" ""; pm_reset; pmrun "$E" "$R" 1
+chk "refuse:last status blocked" bash -c "[ $PRC = 1 ] && grep -q 'blocked gate is logged' '$T/pm.out'"
+# --- re-plan and epoch: chronology uses the first plan, so later plans still merge ---
+replan_ev() { E=$T/$1; rm -rf "$E"; mkdir -p "$E"; local fs f t
+  printf 'facts\n' > "$E/facts.md"; fs=$(shasum -a 256 "$E/facts.md" | awk '{print $1}')
+  printf 'Tier: medium\n' > "$E/PLAN.md"; printf 'Tier: medium\n' > "$E/tier-recheck-$H.md"
+  f=$(gf "$E" plan "$fs" pass '[]' medium); row "$E" plan "$fs" medium ok pass "$f" "facts_sha256=$fs" "ts=2026-11-05T00:00:00Z"
+  printf '{"ts": "2026-11-20T12:00:00Z", "route": "deepseek", "model": "opencode-go/deepseek-v4.1-flash", "effort": "high", "status": "done", "step": "s", "round": 1}\n' > "$E/impl.log"
+  for t in 21 22 23; do f=$(gf "$E" review "$H" pass '[]' medium); rowb "$E" review "$H" medium ok pass "$f" "ts=2026-11-${t}T00:00:00Z"; done
+  f=$(gf "$E" plan "$fs" pass '[]' medium); row "$E" plan "$fs" medium ok pass "$f" "facts_sha256=$fs" "ts=2026-11-24T00:00:00Z"
+  f=$(gf "$E" review "$H" pass '[]' medium); rowb "$E" review "$H" medium ok pass "$f" "ts=2026-11-25T00:00:00Z"; }
+replan_ev r-replan; pm_reset; pmrun "$E" "$R" 1
+chk "re-plan after 3 rounds passes code before plan" bash -c "[ $PRC = 0 ] && ! grep -q 'code before plan' '$T/pm.out'"
+epoch_replan() { E=$T/$1; rm -rf "$E"; mkdir -p "$E"; local fs f
+  printf 'facts\n' > "$E/facts.md"; fs=$(shasum -a 256 "$E/facts.md" | awk '{print $1}')
+  printf 'Tier: high\n' > "$E/PLAN.md"; printf 'Tier: high\n' > "$E/tier-recheck-$H.md"
+  f=$(gf "$E" plan "$fs" pass '[]' high); row "$E" plan "$fs" high ok pass "$f" "facts_sha256=$fs" "ts=2026-11-05T00:00:00Z"
+  printf '{"ts": "2026-11-20T12:00:00Z", "route": "deepseek", "model": "opencode-go/deepseek-v4.1-flash", "effort": "high", "status": "done", "step": "s", "round": 1}\n' > "$E/impl.log"
+  f=$(gf "$E" epoch a pass '[]' high); row "$E" epoch a high ok pass "$f" "ts=2026-11-21T00:00:00Z"
+  f=$(gf "$E" plan "$fs" pass '[]' high); row "$E" plan "$fs" high ok pass "$f" "facts_sha256=$fs" "ts=2026-11-22T00:00:00Z"
+  f=$(gf "$E" review "$H" pass '[]' high); rowb "$E" review "$H" high ok pass "$f" "ts=2026-11-23T00:00:00Z"
+  f=$(gf "$E" security "$H" pass '[]' high); rowb "$E" security "$H" high ok pass "$f" "ts=2026-11-24T00:00:00Z"; }
+epoch_replan r-epochreplan; pm_reset; pmrun "$E" "$R" 1
+chk "post-epoch re-plan passes code before plan" bash -c "[ $PRC = 0 ] && ! grep -q 'code before plan' '$T/pm.out'"
+# --- PR state and CI: head mismatch, failing checks, --no-ci three ways ---
+base_ev r-headneq medium "$H"; pm_reset; echo deadbeef > "$T/gh.head"; pmrun "$E" "$R" 1
+chk "refuse:PR head mismatch" bash -c "[ $PRC = 1 ] && grep -q 'is not OPEN at' '$T/pm.out' && ! grep -qE 'pr (edit|merge)' '$T/calls.log'"
+base_ev r-checksfail medium "$H"; pm_reset; export FAKE_CHECKS_EXIT=1 FAKE_CHECKS_MSG="ci failed"; pmrun "$E" "$R" 1; unset FAKE_CHECKS_EXIT FAKE_CHECKS_MSG
+chk "refuse:gh pr checks failing" bash -c "[ $PRC = 1 ] && grep -q 'gh pr checks not green' '$T/pm.out' && ! grep -qE 'pr (edit|merge)' '$T/calls.log'"
+base_ev r-nociml medium "$H"; pm_reset; ML=$(printf "ci failed\nno checks reported on the 'b' branch"); export FAKE_CHECKS_EXIT=1 FAKE_CHECKS_MSG="$ML"; pmrun "$E" "$R" 1 --no-ci; unset FAKE_CHECKS_EXIT FAKE_CHECKS_MSG
+chk "refuse:--no-ci multi-line message" bash -c "[ $PRC = 1 ] && ! grep -qE 'pr (edit|merge)' '$T/calls.log'"
+O=$T/ci; git clone -q "$T/origin.git" "$O"; mkdir -p "$O/.github/workflows"; echo x > "$O/.github/workflows/ci.yml"; git -C "$O" add -A; git -C "$O" commit -qm ci; git -C "$O" push -q origin main
+base_ev r-nocisub medium "$H"; mkdir -p "$R/sub"; pm_reset; export FAKE_CHECKS_EXIT=1 FAKE_CHECKS_MSG="no checks reported on the 'b' branch"; pmrun "$E" "$R/sub" 1 --no-ci; unset FAKE_CHECKS_EXIT FAKE_CHECKS_MSG
+chk "refuse:--no-ci from a subdir sees origin workflows" bash -c "[ $PRC = 1 ] && ! grep -qE 'pr (edit|merge)' '$T/calls.log'"
+git -C "$O" rm -rq .github; git -C "$O" commit -qm noci; git -C "$O" push -q origin main; rm -rf "$O"
+base_ev r-nociwf medium "$H"; mkdir -p "$R/.github/workflows"; pm_reset; export FAKE_CHECKS_EXIT=1 FAKE_CHECKS_MSG="no checks reported"; pmrun "$E" "$R" 1 --no-ci; unset FAKE_CHECKS_EXIT FAKE_CHECKS_MSG
+chk "refuse:--no-ci in a worktree with workflows" bash -c "[ $PRC = 1 ] && ! grep -qE 'pr (edit|merge)' '$T/calls.log'"; rm -rf "$R/.github"
 # --- raised from Low: pass with the logged Low plan+review, fail without the Low review
 R0=$R H0=$H; R=$T/raised; git clone -q "$T/origin.git" "$R"; printf 'r\n' > "$R/pr.txt"; git -C "$R" add pr.txt
 GIT_AUTHOR_DATE=2026-11-01T00:00:00Z GIT_COMMITTER_DATE=2026-11-01T00:00:00Z git -C "$R" commit -qm pr
@@ -220,24 +271,35 @@ base_ev r-badts medium "$H"; printf '{"ts": "not-a-date", "route": "deepseek", "
 chk "refuse:unparseable done ts in impl.log" bash -c "[ $PRC = 1 ] && grep -q 'done implementation row has no parseable ts' '$T/pm.out'"
 base_ev r-fallback medium "$H"; setrow review route provisional; pm_reset; pmrun "$E" "$R" 1
 chk "refuse:legacy fallback/provisional route" bash -c "[ $PRC = 1 ] && grep -q 'review provenance' '$T/pm.out'"
-# --- carry-forward: identical PR diff at a newer head carries; a content change never does
+# --- carry-forward: identical PR diff at a newer head carries; any diff change never does
 advance_main() { git -C "$T/other" fetch -q origin main; git -C "$T/other" reset -q --hard origin/main; printf 'm\n' > "$T/other/$1"
   git -C "$T/other" add "$1"; git -C "$T/other" commit -qm "main $1"; git -C "$T/other" push -q origin main; }
 git clone -q "$T/origin.git" "$T/other"
-carry_case() { local n=$1; D=$T/$n; rm -rf "$D"; git clone -q "$T/origin.git" "$D"; printf 'pr\n' > "$D/pr.txt"
-  git -C "$D" add pr.txt; git -C "$D" commit -qm pr; local x=$(git -C "$D" rev-parse HEAD)
+carry_case() { local n=$1 kind=${2:-} D=$T/$1 br=origin/main bs ds f fs x h; rm -rf "$D"; git clone -q "$T/origin.git" "$D"; printf 'pr\n' > "$D/pr.txt"
+  git -C "$D" add pr.txt; git -C "$D" commit -qm pr; x=$(git -C "$D" rev-parse HEAD)
+  if [ "$kind" = partial ]; then printf 'p0\n' > "$D/p0.txt"; git -C "$D" add p0.txt; git -C "$D" commit -qm p0; git -C "$D" update-ref refs/remotes/origin/tmp HEAD; br=origin/tmp; fi
+  [ "$kind" = bin ] && printf 'a\000b' > "$D/bin.dat" && git -C "$D" add bin.dat && git -C "$D" commit -qm bin
   advance_main "$n.txt"; git -C "$D" fetch -q origin main; git -C "$D" merge -q -m merge origin/main
-  local h=$(git -C "$D" rev-parse HEAD); E=$T/$n-ev; rm -rf "$E"; mkdir -p "$E"; local fs f
+  h=$(git -C "$D" rev-parse HEAD); E=$T/$n-ev; rm -rf "$E"; mkdir -p "$E"
   printf 'facts\n' > "$E/facts.md"; fs=$(shasum -a 256 "$E/facts.md" | awk '{print $1}')
   printf 'Tier: medium\n' > "$E/PLAN.md"; printf 'Tier: medium\n' > "$E/tier-recheck-$h.md"
   f=$(gf "$E" plan "$fs" pass '[]' medium); row "$E" plan "$fs" medium ok pass "$f" "facts_sha256=$fs"
-  f=$(gf "$E" review "$x" pass '[]' medium); R=$D; rowb "$E" review "$x" medium ok pass "$f"; R=$T/repo
-  CASE_E=$E CASE_D=$D CASE_X=$x CASE_H=$h FS=$fs; }
+  bs=$(git -C "$D" merge-base "$br" "$x"); ds=$(git -C "$D" diff --no-color --full-index "$bs" "$x" | shasum -a 256 | awk '{print $1}')
+  f=$(gf "$E" review "$x" pass '[]' medium); row "$E" review "$x" medium ok pass "$f" "base_ref=$br" "base_sha=$bs" "diff_sha256=$ds"
+  CASE_E=$E CASE_D=$D CASE_X=$x CASE_H=$h; }
 carry_case carry; : > "$T/calls.log"; echo "$CASE_H" > "$T/gh.head"; pmrun "$CASE_E" "$CASE_D" 1
 chk "carry exits 0, prints CARRY, logs carry" bash -c "[ $PRC = 0 ] && grep -q 'CARRY review $CASE_X -> $CASE_H' '$T/pm.out' && grep -q '\"status\": \"carry\"' '$CASE_E/gates.log' && [ ! -e '$CASE_E/review-$CASE_H.json' ]"
 carry_case carry-change; D=$CASE_D; printf 'changed\n' > "$D/pr.txt"; git -C "$D" commit -qam ch; h=$(git -C "$D" rev-parse HEAD)
 printf 'Tier: medium\n' > "$CASE_E/tier-recheck-$h.md"; echo "$h" > "$T/gh.head"; : > "$T/calls.log"; pmrun "$CASE_E" "$D" 1
 chk "carry refused after a content change" bash -c "[ $PRC = 1 ] && ! grep -q CARRY '$T/pm.out' && [ \$(grep -cE 'pr (edit|merge)' '$T/calls.log') = 0 ]"
+carry_case carry-ws; D=$CASE_D; printf 'pr  \n' > "$D/pr.txt"; git -C "$D" commit -qam ws; h=$(git -C "$D" rev-parse HEAD)
+printf 'Tier: medium\n' > "$CASE_E/tier-recheck-$h.md"; echo "$h" > "$T/gh.head"; : > "$T/calls.log"; pmrun "$CASE_E" "$D" 1
+chk "carry refused after a whitespace-only change" bash -c "[ $PRC = 1 ] && ! grep -q CARRY '$T/pm.out'"
+carry_case carry-bin bin; D=$CASE_D; printf 'a\000c' > "$D/bin.dat"; git -C "$D" commit -qam bin; h=$(git -C "$D" rev-parse HEAD)
+printf 'Tier: medium\n' > "$CASE_E/tier-recheck-$h.md"; echo "$h" > "$T/gh.head"; : > "$T/calls.log"; pmrun "$CASE_E" "$D" 1
+chk "carry refused after a binary change" bash -c "[ $PRC = 1 ] && ! grep -q CARRY '$T/pm.out'"
+carry_case carry-part partial; : > "$T/calls.log"; echo "$CASE_H" > "$T/gh.head"; pmrun "$CASE_E" "$CASE_D" 1
+chk "carry refused for a partial-base source" bash -c "[ $PRC = 1 ] && ! grep -q CARRY '$T/pm.out' && [ \$(grep -cE 'pr (edit|merge)' '$T/calls.log') = 0 ]"
 carry_case carry-fail; f=$(gf "$CASE_E" review "$CASE_X" fail '[]' medium); sh=$(shasum -a 256 "$CASE_E/$f" | awk '{print $1}')
 setrow review verdict fail; setrow review file_sha256 "$sh"; echo "$CASE_H" > "$T/gh.head"; : > "$T/calls.log"; pmrun "$CASE_E" "$CASE_D" 1
 chk "fail on the same diff blocks carry" bash -c "[ $PRC = 1 ] && grep -q 'failed on this exact diff' '$T/pm.out' && ! grep -q CARRY '$T/pm.out'"

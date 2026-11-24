@@ -3,7 +3,7 @@
 set -uo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd -P); IM=$ROOT/scripts/implement.sh
 T=$(mktemp -d "${TMPDIR:-/tmp}/impl-smoke.XXXXXX"); T=$(cd "$T" && pwd -P); FAILED=0 OUTSIDE=0
-trap 'kill "$OUTSIDE" 2>/dev/null; rm -rf "$T"' EXIT
+trap '[ "$OUTSIDE" = 0 ] || kill "$OUTSIDE" 2>/dev/null; rm -rf "$T"' EXIT
 ok() { printf 'ok   impl: %s\n' "$1"; }; bad() { printf 'FAIL impl: %s\n' "$1"; FAILED=1; }
 chk() { local d=$1; shift; if "$@" >/dev/null 2>&1; then ok "$d"; else bad "$d"; fi; }
 export T HOME=$T/home; EVR=$HOME/.local/state/dev-evidence; E=$EVR/task
@@ -71,7 +71,7 @@ im() { local p="$T/bin:$T/sys:/usr/bin:/bin:/usr/sbin:/sbin"; [ -n "${NOOC:-}" ]
 nmodel() { grep -cE '^(opencode|claude) ' "$T/calls.log"; }
 runs() { grep -c '^opencode run ' "$T/calls.log"; }
 clean() { [ -z "$(git -C "$W" status --porcelain --untracked-files=all)" ]; }
-RES='printf "{\"status\": \"done\", \"tests_run\": [\"t\"], \"not_checked\": []}" > .impl/result.json'
+RES='printf "{\"status\": \"done\", \"tests_run\": [\"t\"], \"not_checked\": []}" > .impl/result.json'; SK=it.sk
 # --- preconditions: exit 2, no opencode call ---
 pre() { local d=$1; shift; im "$@"; if [ "$IRC" = 2 ] && [ "$(nmodel)" = 0 ]; then ok "pre: $d"; else bad "pre: $d (rc $IRC, $(nmodel) calls)"; fi; }
 fresh; NOEV=1 pre "EVID unset" medium --bootstrap none
@@ -95,6 +95,8 @@ badplan "effort xhigh rejected" effort=xhigh
 badplan "effort empty rejected" effort=
 badplan "provenance_mode must be t3-verified" provenance_mode=provisional
 badplan "engine must be t3-delegate" engine=claude-delegate
+badplan "account must be antigravity" account=claudeAgent
+badplan "missing account rejected" account=
 # --- happy DeepSeek run ---
 fresh; mkdir -p "$T/xc" "$T/xs" "$T/tmpx"; FAKE_ACTION="echo b > src/a.txt; echo x > ignored.txt; $RES" IMPL_MODEL=x OPENCODE_MODEL=y XDG_CACHE_HOME=$T/xc XDG_STATE_HOME=$T/xs TMPDIR=$T/tmpx im medium --bootstrap none
 chk "happy: exit 0" test "$IRC" = 0
@@ -104,8 +106,7 @@ MR=$(grep -- '--agent implementer ' "$T/calls.log")
 chk "happy: env inherited (XDG/TMPDIR not redirected)" bash -c "printf '%s' \"\$1\" | grep -qF -- 'cfg=$ROOT/opencode free=1 cc=1 xdg=$T/xc state=$T/xs tmp=$T/tmpx'" _ "$MR"
 chk "happy: export cwd is not the worktree" bash -c "! grep '^opencode session export' '$T/calls.log' | grep -q 'pwd=$W\$'"
 chk "happy: log start then deepseek done" bash -c "head -1 '$E/impl.log' | grep -q '\"status\": \"start\"' && tail -1 '$E/impl.log' | grep -q '\"route\": \"deepseek\", \"model\": \"opencode-go/deepseek-v4.1-flash\", \"effort\": \"high\", \"status\": \"done\"'"
-chk "happy: result in EVID, .impl gone, ignored gone, change kept" bash -c "ls '$E'/impl-main-r1-*-result.json && test ! -e '$W/.impl' && test ! -e '$W/ignored.txt' && grep -q b '$W/src/a.txt'"
-chk "no other DeepSeek variant in the scripts" bash -c "! grep -qE '#(medium|low|max)' '$IM' '$ROOT/scripts/implement_lib.py'"
+chk "happy: result in EVID, .impl gone, ignored gone, change kept" bash -c "ls '$E'/impl-main-r1-*-result.json && test ! -e '$W/.impl' && test ! -e '$W/ignored.txt' && grep -q b '$W/src/a.txt'"; chk "no other DeepSeek variant in the scripts" bash -c "! grep -qE '#(medium|low|max)' '$IM' '$ROOT/scripts/implement_lib.py'"
 # --- DeepSeek High only: unavailability exits 3 with zero claude calls ---
 unavail() { local d=$1; shift; im medium --bootstrap none; if [ "$IRC" = 3 ] && ! grep -q '^claude' "$T/calls.log" && tail -1 "$E/impl.log" | grep -q '"route": "deepseek".*"model": "opencode-go/deepseek-v4.1-flash".*"effort": "high".*"status": "unavailable"'; then ok "unavailable: $d"; else bad "unavailable: $d (rc $IRC)"; fi; }
 fresh; NOOC=1 unavail "opencode not on PATH"
@@ -144,7 +145,7 @@ fcase "FIFO package.json" "rm package.json; mkfifo package.json; $RES"
 fcase "lockfile change" "echo y >> bun.lock; $RES"
 fcase "new devDependency" "printf '{\"devDependencies\": {\"left-pad\": \"1\"}}\n' > package.json; $RES"
 fcase "deleted test file" "rm tests/a.test.js; $RES"
-fcase "added skip marker" "echo \"it.skip('y', () => {})\" >> tests/a.test.js; $RES"
+fcase "added skip marker" "echo \"${SK}ip('y', () => {})\" >> tests/a.test.js; $RES"
 fcase "result.json is a symlink" "echo '{\"status\": \"done\"}' > '$T/res.json'; ln -s '$T/res.json' .impl/result.json"
 fresh; H0=$(git -C "$W" rev-parse HEAD); FAKE_ACTION="echo c > src/a.txt; git -c user.name=t -c user.email=t@e commit -qam x; $RES" im medium --bootstrap none
 chk "HEAD moved: failed, HEAD restored, clean, patch saved" bash -c "[ $IRC = 1 ] && tail -1 '$E/impl.log' | grep -q '\"status\": \"failed\", \"reason\": \"HEAD moved' && [ \"\$(git -C '$W' rev-parse HEAD)\" = '$H0' ] && [ -z \"\$(git -C '$W' status --porcelain --untracked-files=all)\" ] && grep -q src/a.txt '$E'/impl-*-discarded.patch"
@@ -166,15 +167,14 @@ fresh; echo '{"status": "start", "step": "main"}' >> "$E/impl.log"; echo junk > 
 chk "survivor on --discard: exit 6, no reset, no bootstrap" bash -c "[ $IRC = 6 ] && test -e '$W/junk.txt' && test ! -e '$T/boot4'"
 # --- rounds, discard, check ---
 fresh; PS=$(shasum -a 256 "$E/plan-p1.json" | awk '{print $1}'); for i in 1 2 3; do printf '{"step": "main", "round": %s, "plan_sha256": "%s", "route": "deepseek", "status": "failed"}\n' "$i" "$PS" >> "$E/impl.log"; done
-im medium --bootstrap none; chk "round cap: exit 4, no model call" bash -c "[ $IRC = 4 ] && [ \$(grep -cE '^(opencode|claude) ' '$T/calls.log') = 0 ]"
+im medium --bootstrap none; chk "round cap: exit 4, no model call, no do-it-yourself" bash -c "[ $IRC = 4 ] && [ \$(grep -cE '^(opencode|claude) ' '$T/calls.log') = 0 ] && ! grep -q 'implement the step yourself' '$IM'"
 mkplan p2; FAKE_ACTION="$RES" im medium --bootstrap none; chk "a new plan restarts the rounds" test "$IRC" = 0
 fresh; echo '{"status": "start", "step": "main"}' >> "$E/impl.log"; echo junk > "$W/junk.txt"; im --discard --bootstrap "touch $T/boot2"
 chk "--discard: reset, bootstrap, discarded row" bash -c "[ $IRC = 0 ] && [ -z \"\$(git -C '$W' status --porcelain --untracked-files=all)\" ] && test -e '$T/boot2' && tail -1 '$E/impl.log' | grep -q '\"status\": \"discarded\"'"
 fresh; git -C "$R" -c user.name=t -c user.email=t@e commit -q --allow-empty -m other; H0=$(git -C "$W" rev-parse HEAD); BASE=$(git -C "$R" rev-parse HEAD) im --discard --bootstrap none
 chk "--discard ignores BASE from the environment" bash -c "[ $IRC = 0 ] && [ \"\$(git -C '$W' rev-parse HEAD)\" = '$H0' ]"
 FAKE_ACTION="$RES" im medium --bootstrap none; chk "after --discard the next call runs" test "$IRC" = 0
-DOK='{"route": "deepseek", "model": "opencode-go/deepseek-v4.1-flash", "effort": "high", "status": "done", "step": "s", "round": 1}'
-DUN='{"route": "deepseek", "model": "opencode-go/deepseek-v4.1-flash", "effort": "high", "status": "unavailable", "step": "s", "round": 2}'
+DOK='{"route": "deepseek", "model": "opencode-go/deepseek-v4.1-flash", "effort": "high", "status": "done", "step": "s", "round": 1}'; DUN='{"route": "deepseek", "model": "opencode-go/deepseek-v4.1-flash", "effort": "high", "status": "unavailable", "step": "s", "round": 2}'
 ck() { local d=$1 want=$2 rc; shift 2; rm -f "$E/impl.log"; for r in "$@"; do echo "$r" >> "$E/impl.log"; done
   ( EVID=$E bash "$IM" --check ) >/dev/null 2>&1; rc=$?; if [ "$rc" = "$want" ]; then ok "check: $d"; else bad "check: $d (rc $rc)"; fi; }
 ck "no log passes" 0; ck "valid log passes" 0 '{"route": "", "status": "start", "step": "s"}' "$DOK" "$DUN" '{"route": "", "status": "discarded"}'

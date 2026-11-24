@@ -18,7 +18,10 @@ if [ "${1:-}" = --help ]; then usage; exit 0; fi
 [ -n "${EVID:-}" ] && [ -d "$EVID" ] || die "EVID must name an existing directory"
 [ $# -ge 2 ] || { usage >&2; exit 2; }
 SKILL=${SKILL:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}
+LIB=$SKILL/scripts/gate_lib.py
 gate=$1; tier=$2; shift 2
+key=""
+refuse() { python3 -I "$LIB" --log-invalid --evid "$EVID" --gate "$gate" --tier "$tier" --key "${key:-}" --reason "$*" >/dev/null 2>&1 || true; die "$*"; }
 record=""; child=""; parent=""; trigger=0; diff=""; base=""
 while [ $# -gt 0 ]; do case $1 in
   --record|--child-thread|--parent-thread|--diff|--base)
@@ -32,10 +35,12 @@ case $gate in plan|review|security|epoch) ;; *) die "bad gate: $gate" ;; esac
 case $tier in low|medium|high) ;; *) die "bad tier: $tier" ;; esac
 [ -n "$record" ] || die "--record is required"
 [ -f "$record" ] || die "missing record file: $record"
+if printf '%s' "$(basename "$record")" | grep -Eq '^(plan|review|security|epoch)-.*\.json$'; then die "--record must not be a gate output file: $(basename "$record")"; fi
 [ -n "$child" ] || die "--child-thread is required"
 [ -n "$parent" ] || die "--parent-thread is required"
 if [ "$tier" = low ] && { [ "$gate" = security ] || [ "$gate" = epoch ]; }; then die "low tier is not valid with $gate"; fi
 if [ "$gate" = security ] && [ "$tier" != high ]; then die "security gate requires tier high"; fi
+if [ "$gate" = plan ] && [ -n "$diff${base:-}" ]; then die "plan reads EVID/facts.md; no --diff or --base"; fi
 if [ "$gate" = epoch ] && [ -n "$diff${base:-}" ]; then die "epoch reads EVID/epoch.md; no --diff or --base"; fi
 repo=0; git rev-parse --git-dir >/dev/null 2>&1 && repo=1 || true
 reponame=outside; head=""; base_ref=""; mb=""; dsha=""; repocheck=0
@@ -50,15 +55,15 @@ else
   [ "$repo" = 1 ] || die "not a git worktree"
   key=$(git rev-parse HEAD)
   base_ref=${base:-$(git symbolic-ref -q --short refs/remotes/origin/HEAD || echo origin/main)}
-  printf '%s' "$base_ref" | grep -Eq '^origin/[A-Za-z0-9._/-]+$' || die "--base must be an origin/<branch> ref: $base_ref"
-  mb=$(git merge-base "$base_ref" HEAD) || die "no merge-base with $base_ref"
-  git diff --no-color "$mb" HEAD > "$want"; [ -s "$want" ] || die "empty diff against $base_ref"
+  printf '%s' "$base_ref" | grep -Eq '^origin/[A-Za-z0-9._/-]+$' || refuse "--base must be an origin/<branch> ref: $base_ref"
+  mb=$(git merge-base "$base_ref" HEAD) || refuse "no merge-base with $base_ref"
+  git diff --no-color "$mb" HEAD > "$want"; [ -s "$want" ] || refuse "empty diff against $base_ref"
   dsha=$(git diff --no-color --full-index "$mb" HEAD | shasum -a 256 | awk '{print $1}')
   git -c core.quotePath=false diff --name-only -z "$mb" HEAD | tr '\0' '\n' > "$tmpd/names"
   if grep -Eiq '(^|/)(opencode\.jsonc?$|\.opencode/|\.claude/|\.agents/|AGENTS\.md$|CLAUDE\.md$)' "$tmpd/names"; then
-    [ "$tier" = low ] && die "agent config changed: tier must be at least medium"
+    [ "$tier" = low ] && refuse "agent config changed: tier must be at least medium"
   fi
-  python3 -I - "$mb" <<'PY' || die "a text file reads as 'Binary files differ' (.gitattributes -diff/binary); drop the attribute before gating"
+  python3 -I - "$mb" <<'PY' || refuse "a text file reads as 'Binary files differ' (.gitattributes -diff/binary); drop the attribute before gating"
 import subprocess, sys
 def blob(rev, path):
     out = subprocess.run(["git", "cat-file", "blob", rev + ":" + path], capture_output=True)
@@ -77,18 +82,20 @@ if [ "$repocheck" = 1 ]; then
   reponame=$(basename "$(git rev-parse --show-toplevel)")
   head=$(git rev-parse HEAD)
   if [ "$gate" = review ] || [ "$gate" = security ]; then head=$key; fi
-  [ -z "$(git status --porcelain --untracked-files=all)" ] || die "worktree is dirty or has untracked files; a gate must run on a clean tree"
+  [ -z "$(git status --porcelain --untracked-files=all)" ] || refuse "worktree is dirty or has untracked files; a gate must run on a clean tree"
 fi
 packet=$EVID/packet-$gate.md
-[ -s "$packet" ] || die "missing $packet"
-python3 -I - "$packet" "$gate" "$key" "$want" "$mb" <<'PY' || die "packet must bind the key, 'Gate: $gate', the merge-base and the exact gate source"
+[ -s "$packet" ] || refuse "missing $packet"
+python3 -I - "$packet" "$gate" "$key" "$want" "$mb" "$tier" "$head" <<'PY' || refuse "packet must bind the key, 'Gate: $gate', 'Tier: $tier', the merge-base, the HEAD and the exact gate source"
 import sys
-path, gate, key, source, base = sys.argv[1:6]
+path, gate, key, source, base, tier, head = sys.argv[1:8]
 text = open(path, encoding="utf-8", errors="replace").read()
 body = open(source, encoding="utf-8", errors="replace").read().strip()
-ok = bool(body) and key in text and "Gate: " + gate in text and body in text
+ok = bool(body) and key in text and "Gate: " + gate in text and "Tier: " + tier in text and body in text
 if gate in ("review", "security") and base:
     ok = ok and base in text
+if gate in ("plan", "epoch") and len(head) == 40:
+    ok = ok and head in text
 sys.exit(0 if ok else 1)
 PY
 fsha=""

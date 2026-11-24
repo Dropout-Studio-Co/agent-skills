@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # implement.sh - run one ds-dev-protocol implementer round from the last logged Neon plan. The route is locked to
 # opencode-go/deepseek-v4.1-flash at variant high, always, with cost 0: it is the sole implementer, with no model fallback.
-# It runs through `opencode run --standalone`, the documented sandboxed mechanical runner: the role limits in
+# It runs through `opencode run --standalone`, the documented mechanical runner (no OS sandbox): the role limits in
 # opencode/opencode.json, the OPENCODE_DISABLE_* pins, process reaping, the cost check and one bounded delimiter-leak
 # auto-resume all apply. Every attempt is logged to EVID/impl.log.
 set -uo pipefail
@@ -70,7 +70,7 @@ if [ "$mode" = discard ]; then discard; brc=$?; py row "$EVID" "$step" 0 "" "" "
 if py laststart "$EVID"; then die "the last impl.log row is start: a run was killed; run implement.sh --discard --bootstrap <cmd|none> first"; fi
 pinfo=$(py plan "$EVID" "$step") || die "no logged Neon plan in $EVID/gates.log with a matching file (run gate.sh plan first)"
 IFS=$'\t' read -r pf ps round counted <<< "$pinfo"
-if [ "$counted" -ge 3 ]; then printf 'implement.sh: 3 rounds for step %s on this plan; re-plan through gate.sh plan or implement the step yourself\n' "$step" >&2; exit 4; fi
+if [ "$counted" -ge 3 ]; then printf 'implement.sh: 3 rounds for step %s on this plan; re-plan through gate.sh plan\n' "$step" >&2; exit 4; fi
 tag=$step-r$round-${ps:0:8}; BASE=$(git rev-parse HEAD)
 # Trusted state stays in this process and EVID; the brief and its result live under .impl/ in the worktree.
 py row "$EVID" "$step" "$round" "$ps" "$tier" "" "" "" start "" "" 0 0 0

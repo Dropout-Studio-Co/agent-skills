@@ -29,7 +29,7 @@ def tiers(plan, recheck):
         try: return [x.lower() for x in re.findall(r"\bTier:\s*\**\s*(low|medium|high)\b", open(p, errors="replace").read(), re.I)]
         except Exception: return []
     pl, rc = t(plan), t(recheck); pt = max(pl, key=lambda x: RANK[x]) if pl else ""; rt = rc[-1] if rc else ""
-    f = max([x for x in (pt, rt) if x], key=lambda x: RANK[x]) if (pt or rt) else "none"
+    f = max(pt, rt, key=lambda x: RANK[x]) if (pt and rt) else "none"
     print(f, rt or "none", pt or "none", 1 if rt and pt and RANK[rt] < RANK[pt] else 0)
 
 def evidence(ev, key, tier, base, mode):
@@ -105,7 +105,7 @@ def evidence(ev, key, tier, base, mode):
         else: auth.append((i, d))
     E = auth[-1][0] if auth else -1
     plans = [(i, d) for i, d in R if d.get("gate") == "plan" and d.get("status") == "ok"]
-    pd = plans[-1][1] if plans else None; P2 = next((i for i, d in plans if i > E), None); pt = ep(pd) if pd else None
+    pd = plans[-1][1] if plans else None; P2 = next((i for i, d in plans if i > E), None); pt = ep(pd) if pd else None; p0 = min([t for t in (ep(d) for _, d in plans) if t is not None], default=None)
     live = lambda i: E < 0 or (P2 is not None and i > P2)
     if E >= 0 and P2 is None: F("epoch reset at row %d has no fresh plan after it" % (E + 1))
     if not pd: F("no logged plan row")
@@ -155,18 +155,18 @@ def evidence(ev, key, tier, base, mode):
     if mode == "repo" and base:
         nums = [int(x) for x in subprocess.run(["git", "log", "--format=%at", "origin/%s..%s" % (base, key)], capture_output=True).stdout.decode().split() if x.isdigit()]
         fc = min(nums) if nums else None
-    bad = []
-    t0 = ep(CS[0]) if CS else None
+    t0 = ep(CS[0]) if CS else None; bad = []
     if CS and t0 is None: F("the first implementation row has no parseable ts")
-    elif t0 is not None and pt is not None and pt > t0: bad.append(("the first implementation row", t0))
-    if fc is not None and pt is not None and pt > fc: bad.append(("the branch's first commit", fc))
+    elif t0 is not None and p0 is not None and p0 > t0: bad.append(("the first implementation row", t0))
+    if fc is not None and p0 is not None and p0 > fc: bad.append(("the branch's first commit", fc))
     DN = [d for d in IL if d.get("status") == "done"]
     if any(ep(d) is None for d in DN): F("a done implementation row has no parseable ts")
-    low = lambda g: [(ep(d), d) for i, d in R if d.get("gate") == g and d.get("status") == "ok" and d.get("tier") == "low" and ep(d) is not None and live(i) and not prov(d, g, "low")]
-    ft = min((t for _, t in bad), default=0); lp = [x for x in low("plan") if x[0] <= ft]
-    exc = bool(bad and tier != "low" and pt is not None and pd and pd.get("tier") == tier and lp) and any(ft <= x[0] <= pt for x in low("review")) and all(r[0] is not None and pt <= r[0] for r in res.values())
-    if bad and exc: P("code predates the plan: raised from Low, fresh %s plan before review" % tier)
-    elif bad: F("code before plan: %s predates the plan row" % ", ".join(x for x, _ in bad))
+    low = lambda g: [(ep(d), d) for i, d in R if d.get("gate") == g and d.get("status") == "ok" and d.get("tier") == "low" and ep(d) is not None and live(i)]
+    ft = min([t for t in (t0, fc) if t is not None], default=0)
+    laid = bool(tier != "low" and pt is not None and ft < pt and pd and pd.get("tier") == tier and any(t <= ft for t, _ in low("plan")))
+    exc = laid and any(t <= ft and not prov(d, "plan", "low") for t, d in low("plan")) and any(ft <= x[0] <= pt and not prov(x[1], "review", "low") for x in low("review")) and all(r[0] is not None and pt <= r[0] for r in res.values())
+    if exc: P("code predates the plan: raised from Low, fresh %s plan before review" % tier)
+    elif bad or laid: F("code before plan: %s predates the plan row" % ", ".join(x for x, _ in bad or [("the first code", ft)]))
     else: P("plan precedes code")
     done = [ep(d) for d in DN if ep(d) is not None]
     late = [g for g, r in res.items() if r[0] is None or (done and max(done) > r[0])]

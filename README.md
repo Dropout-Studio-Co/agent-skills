@@ -27,7 +27,7 @@ Once installed, type the phrase in the right column whenever you want to use a s
 
 | Skill | What it does | What to type |
 | --- | --- | --- |
-| [`ds-dev-protocol`](skills/ds-dev-protocol/) | Runs a strict step-by-step plan, build, review, and merge workflow for coding tasks using Claude Code and OpenCode. | Runs automatically |
+| [`ds-dev-protocol`](skills/ds-dev-protocol/) | Runs a strict step-by-step plan, build, review, and merge workflow for coding tasks in T3 Code, with OpenCode for the implementer. | Runs automatically |
 | [`ds-handoff`](skills/ds-handoff/) | Produces a copyable session handoff (no args) or hands off and continues in a fresh session with a next-step directive (with args). | `/ds-handoff` or `/ds-handoff <next task>` (or `Safe Switch` when routed) |
 | [`ds-consolidate`](skills/ds-consolidate/) | Gathers unfinished work from all branches, copies, worktrees, stashes, and pull requests into the default branch, verifies everything is safe, and cleans up leftovers. | `consolidate` or `/ds-consolidate` |
 
@@ -48,7 +48,7 @@ Once installed, type the phrase in the right column whenever you want to use a s
 ### Good to Know
 
 - **Updating packages:** `ds-deps-upgrade` only makes changes when you ask for it by name (`/ds-deps-upgrade`). If you casually ask to "update my dependencies," it will only show you a plan. You can also run `/ds-deps-upgrade plan` anytime to preview changes first.
-- **Using `ds-dev-protocol`:** All other skills work with whichever AI assistant you already use. `ds-dev-protocol` is the only one that needs extra tools signed in on your computer: Claude Code (`claude`), GitHub CLI (`gh`), and OpenCode (`opencode`). If you don't use those, you can ignore or remove the `ds-dev-protocol` folder.
+- **Using `ds-dev-protocol`:** All other skills work with whichever AI assistant you already use. `ds-dev-protocol` is the only one that needs extra tools signed in on your computer: T3 Code (gates run as T3 `delegate_task` children), GitHub CLI (`gh`) for pull requests and checks, and OpenCode (`opencode`) for the implementer route. If you don't use those, you can ignore or remove the `ds-dev-protocol` folder.
 
 ## License
 

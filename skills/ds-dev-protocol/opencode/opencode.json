@@ -4,7 +4,7 @@
  "snapshot": false,
  "agents": {
   "implementer": {
-   "description": "Execution-protocol implementer: edits and runs commands inside one worktree from a logged plan. No git mutation, gh, web, subagents, skills or questions.",
+   "description": "ds-dev-protocol implementer: edits and runs commands inside one worktree from a logged plan. No git mutation, gh, web, subagents, skills or questions.",
    "mode": "primary",
    "permissions": [
     {
@@ -200,7 +200,7 @@
    ]
   },
   "implementer-probe": {
-   "description": "Execution-protocol model probe: no tools.",
+   "description": "ds-dev-protocol model probe: no tools.",
    "mode": "primary",
    "permissions": [
     {

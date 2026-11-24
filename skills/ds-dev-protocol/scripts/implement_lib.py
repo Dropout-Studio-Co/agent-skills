@@ -47,8 +47,8 @@ if cmd == "plan":
     ev, step = a[1:3]; pl = [d for d in rows(os.path.join(ev, "gates.log")) if isinstance(d, dict) and d.get("gate") == "plan" and d.get("status") == "ok"]
     if not pl: sys.exit(1)
     p = pl[-1]
-    if (p.get("route") != "neon" or p.get("model") != "gemini-4-neon" or p.get("effort") not in ("medium", "high")
-            or p.get("provenance_mode") != "t3-verified" or p.get("engine") != "t3-delegate"): sys.exit(1)
+    if (p.get("route") != "neon" or p.get("model") != "gemini-4-neon" or p.get("account") not in ("antigravity", "antigravity_2")
+            or p.get("effort") not in ("medium", "high") or p.get("provenance_mode") != "t3-verified" or p.get("engine") != "t3-delegate"): sys.exit(1)
     f = os.path.join(ev, os.path.basename(str(p.get("file") or "-")))
     if not os.path.isfile(f) or sha(f) != p.get("file_sha256"): sys.exit(1)
     try: plan(f)
