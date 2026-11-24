@@ -1,7 +1,8 @@
 # implement_lib.py - helpers for scripts/implement.sh (run as: python3 -I implement_lib.py <command> ...); stdlib only.
 import fnmatch, hashlib, json, os, re, shutil, stat, subprocess, sys, time
 a = sys.argv[1:]; cmd = a[0]
-DS, DSID, SN = "opencode-go/deepseek-v4.1-flash", "deepseek-v4.1-flash", "claude-sonnet-5-5"
+DS, DSID = "opencode-go/deepseek-v4.1-flash", "deepseek-v4.1-flash"
+PROV = {"provider": "opencode-go", "account": "opencode"}  # the DeepSeek implementer is the only route: no model fallback.
 FIELDS = ("step", "round", "plan_sha256", "tier", "route", "model", "effort", "status", "reason", "session_id", "files", "input_tokens", "output_tokens", "cost_usd")
 LOCKS = {"bun.lock", "bun.lockb", "package-lock.json", "pnpm-lock.yaml", "yarn.lock", "Cargo.lock", "poetry.lock", "uv.lock", "go.sum"}
 CFG = re.compile(r"(^|/)(opencode\.jsonc?$|\.opencode/|\.claude/|\.agents/|AGENTS\.md$|CLAUDE\.md$)", re.I)
@@ -23,31 +24,33 @@ def logrow(ev, **d):
     r = {"ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
     for k in FIELDS: r[k] = d.get(k, [] if k == "files" else "")
     for k in ("round", "input_tokens", "output_tokens"): r[k] = int(num(r[k]))
-    r["cost_usd"] = num(r["cost_usd"]); open(os.path.join(ev, "impl.log"), "a").write(json.dumps(r) + "\n")
+    r.update(PROV); r["cost_usd"] = num(r["cost_usd"]); open(os.path.join(ev, "impl.log"), "a").write(json.dumps(r) + "\n")
 def plan(pf):
     o = json.load(open(pf)); o = o.get("structured_output", o) if isinstance(o, dict) else {}
     return o if isinstance(o, dict) else {}
 if cmd == "check":
-    bad = []; seen = set()
+    # Only the DeepSeek implementer route exists: model, effort high and cost 0 on every row; empty-route start/discarded rows are bookkeeping.
+    bad = []
     for i, d in enumerate(rows(os.path.join(a[1], "impl.log"))):
         if not isinstance(d, dict): bad.append("impl.log line %d: not JSON" % (i + 1)); continue
-        r, s, k = d.get("route"), d.get("status"), (d.get("step"), d.get("round"))
+        r, s = d.get("route"), d.get("status")
         if s in ("start", "discarded") and r in ("", None): continue
-        if r == "deepseek":
-            if d.get("model") != DS or d.get("effort") != "high": bad.append("impl.log line %d: deepseek row is not %s high" % (i + 1, DS))
-            if s == "unavailable": seen.add(k)
-        elif r == "sonnet":
-            if d.get("model") != SN or d.get("effort") != "high": bad.append("impl.log line %d: sonnet row is not %s high" % (i + 1, SN))
-            if k not in seen: bad.append("impl.log line %d: sonnet without an earlier deepseek unavailable row for the same step and round" % (i + 1))
-        else: bad.append("impl.log line %d: route %r is not an implementer route" % (i + 1, r))
+        if r != "deepseek": bad.append("impl.log line %d: route %r is not the deepseek implementer route" % (i + 1, r)); continue
+        if d.get("model") != DS or d.get("effort") != "high": bad.append("impl.log line %d: deepseek row is not %s high" % (i + 1, DS))
+        if num(d.get("cost_usd")) != 0: bad.append("impl.log line %d: cost_usd %s is not 0" % (i + 1, d.get("cost_usd")))
     print("\n".join(bad) or "impl.log routes ok"); sys.exit(1 if bad else 0)
 if cmd == "laststart":
     r = [d for d in rows(os.path.join(a[1], "impl.log"))]
     sys.exit(0 if r and isinstance(r[-1], dict) and r[-1].get("status") == "start" else 1)
 if cmd == "plan":
+    # Only a T3-verified Neon plan counts: route, model, effort, provenance and engine are checked before the file hash.
     ev, step = a[1:3]; pl = [d for d in rows(os.path.join(ev, "gates.log")) if isinstance(d, dict) and d.get("gate") == "plan" and d.get("status") == "ok"]
-    f = os.path.join(ev, os.path.basename(str(pl[-1].get("file") or "-"))) if pl else ""
-    if not pl or not os.path.isfile(f) or sha(f) != pl[-1].get("file_sha256"): sys.exit(1)
+    if not pl: sys.exit(1)
+    p = pl[-1]
+    if (p.get("route") != "neon" or p.get("model") != "gemini-4-neon" or p.get("account") not in ("antigravity", "antigravity_2")
+            or p.get("effort") not in ("medium", "high") or p.get("provenance_mode") != "t3-verified" or p.get("engine") != "t3-delegate"): sys.exit(1)
+    f = os.path.join(ev, os.path.basename(str(p.get("file") or "-")))
+    if not os.path.isfile(f) or sha(f) != p.get("file_sha256"): sys.exit(1)
     try: plan(f)
     except Exception: sys.exit(1)
     ps = sha(f); n = len([d for d in rows(os.path.join(ev, "impl.log")) if isinstance(d, dict) and d.get("step") == step and d.get("plan_sha256") == ps and d.get("status") in ("done", "failed", "escalate")])
@@ -93,26 +96,21 @@ if cmd == "dsclass":
            else "provider error: " + ",".join(e for e in errs if e.startswith("provider.")) if any(e.startswith("provider.") for e in errs)
            else "cost: %s" % cost if cost > 0 else "")
     print("\t".join(["unavailable" if why else "ok", one(why) or "-", str(int(num(tk.get("input")))), str(int(num(tk.get("output")))), str(cost)])); sys.exit()
-if cmd == "snclass":
-    try: d = json.loads(open(a[1], errors="replace").read() or "null")
-    except Exception: d = None
-    if not isinstance(d, dict): print("unavailable\tno JSON from claude\t0\t0\t0"); sys.exit()
-    mu = d.get("modelUsage") if isinstance(d.get("modelUsage"), dict) else {}; bad = [k for k in mu if SN not in k]
-    why = "is_error: " + one(d.get("result") or "") if d.get("is_error") else "modelUsage: " + (",".join(mu) or "none") if bad or not mu else ""
-    t = mu.get(SN) if isinstance(mu.get(SN), dict) else {}
-    print("\t".join(["unavailable" if why else "ok", one(why) or "-", str(int(num(t.get("inputTokens")))), str(int(num(t.get("outputTokens")))), str(num(d.get("total_cost_usd")))])); sys.exit()
+if cmd == "leak":
+    # leak EVENTS: the `<|tool_calls_cbegin|>` prompt-parser delimiter in THIS turn's assistant text means the model leaked
+    # a tool-call start token and the turn terminated early instead of working (Table 5.2). Only the current turn's events
+    # are read, and only their assistant text parts: the cumulative session export still holds an earlier turn's leak on a
+    # resume, and a tool output or a file the run read can quote the literal string. Prints "leak" or "-".
+    hit = False
+    for l in (open(a[1], errors="replace") if os.path.exists(a[1]) else []):
+        try: e = json.loads(l)
+        except Exception: continue
+        if not isinstance(e, dict) or e.get("type") != "text": continue
+        p = e.get("part") if isinstance(e.get("part"), dict) else {}
+        if "<|tool_calls_cbegin|>" in str(p.get("text") or e.get("text") or ""): hit = True
+    print("leak" if hit else "-"); sys.exit()
 if cmd == "row":
     ev = a[1]; logrow(ev, **dict(zip([f for f in FIELDS if f != "files"], a[2:]))); sys.exit()
-if cmd == "sonnetcfg":
-    # Claude Code permission rules for the Sonnet route (AC15): deny rules beat --allowedTools, and the Bash rules derive from
-    # opencode.json so the two implementer routes cannot drift.
-    o = json.load(open(a[1])); deny = []
-    for p in ((o.get("agents") or {}).get("implementer") or {}).get("permissions") or []:
-        if not isinstance(p, dict) or p.get("action") != "shell" or p.get("effect") != "deny": continue
-        r = str(p.get("resource") or ""); c = r.rstrip("*").strip()
-        deny.append("Bash(%s:*)" % c if r.endswith("*") else "Bash(%s)" % c)
-    deny += ["Read(**/*.env)", "Read(**/*.env.*)", "Edit(**/*.env)", "Edit(**/*.env.*)"]
-    print(json.dumps({"permissions": {"deny": deny}})); sys.exit()
 if cmd in ("pids", "reap"):
     # pids WT PID: this user's processes whose cwd is WT or under it, minus PID and its ancestors.
     # reap WT PID: TERM the targets, wait 3 s, SIGSTOP until no unstopped target is left (a stopped process cannot fork; at most
@@ -178,11 +176,15 @@ if cmd == "final":
     if not why and [p for x, p in ch if "D" in x and TEST.search(p)]: why = "deleted test: " + ",".join(p for x, p in ch if "D" in x and TEST.search(p))
     if not why and [p for x, p in ch if "D" not in x and TEST.search(p) and SKIP.search(added(x, p))]: why = "skip marker added in a test file"
     if not why and res.get("status") == "escalate" and not reg(ep): why = "escalate without .impl/escalation.md"
+    # not_checked is the implementer's list of what it could not verify; it is carried into EVID beside tests_run.
+    nc = res.get("not_checked", []) if isinstance(res, dict) else []
+    if not why and not isinstance(nc, list): why = "not_checked in .impl/result.json is not a list"
     st = "failed" if why else res["status"]; rd, ed = os.path.join(ev, "impl-%s-result.json" % tag), os.path.join(ev, "escalation-%s.md" % tag)
     if reg(rp): shutil.copyfile(rp, rd)
     if reg(ep): shutil.copyfile(ep, ed)
     files = sorted(p for x, p in ch); tests = res.get("tests_run", []) if isinstance(res, dict) else []
     rec = dict(zip(FIELDS, (step, rnd, ps, tier, route, model, effort, st, why, sid, files, tin, tout, cost)))
-    json.dump(dict(rec, tests_run=tests, escalation=ed if os.path.isfile(ed) else ""), open(os.path.join(ev, "impl-%s.json" % tag), "w"), indent=1)
+    json.dump(dict(rec, **PROV, tests_run=tests, not_checked=nc if isinstance(nc, list) else [], escalation=ed if os.path.isfile(ed) else ""),
+              open(os.path.join(ev, "impl-%s.json" % tag), "w"), indent=1)
     logrow(ev, **rec); print("%s\t%s" % (st, one(why) or "-")); sys.exit()
 sys.exit("implement_lib.py: unknown command " + cmd)
