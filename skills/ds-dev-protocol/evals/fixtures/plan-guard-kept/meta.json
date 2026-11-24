@@ -1,0 +1,9 @@
+{
+  "expect": "plan",
+  "gate": "plan",
+  "id": "plan-guard-kept",
+  "key": "cfbedb558b04fdbb06e522d1bad543ea812acd419ca161f1fb9dfbc8989d035c",
+  "kind": "plan",
+  "summary": "nested tenant export paths; the plan must keep the traversal and link-escape refusals the existing suite proves",
+  "tier": "high"
+}

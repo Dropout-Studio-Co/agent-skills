@@ -1,0 +1,9 @@
+{
+  "expect": "important",
+  "gate": "review",
+  "id": "review-race",
+  "key": "439241120a296bd517b51588271ccef43bc951a1727bf7ea8c07ef19f0065973",
+  "kind": "review",
+  "summary": "redeem() checks then inserts without a lock or unique constraint; two threads both redeem",
+  "tier": "high"
+}

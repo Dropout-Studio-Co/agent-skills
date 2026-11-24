@@ -1,0 +1,23 @@
+{
+  "id": "F5",
+  "kind": "review",
+  "tier": "medium",
+  "expect": "clean",
+  "summary": "round 2 of a clean change; the earlier negative-size finding has a sound written reason",
+  "request": "Show file sizes in human-readable units (B, KB, MB, GB) in the storage listing.",
+  "ac": [
+    "format_bytes(n) returns n with one decimal and the largest unit where the value is at least 1, using 1024 steps; bytes have no decimal.",
+    "The storage listing shows format_bytes of each file's size.",
+    "Unit tests cover bytes, KB, MB and GB."
+  ],
+  "round2": {
+    "last_key": "9f1c2e7a4b6d8e0f1a3c5e7b9d1f3a5c7e9b1d3f5a7c9e1b3d5f7a9c1e3b5d7f",
+    "delta": "--- a/test_units.py\n+++ b/test_units.py\n@@ -8,6 +8,9 @@\n         self.assertEqual(format_bytes(0), \"0 B\")\n         self.assertEqual(format_bytes(1023), \"1023 B\")\n \n+    def test_kb_boundary(self):\n+        self.assertEqual(format_bytes(1024), \"1.0 KB\")\n+\n     def test_larger(self):\n         self.assertEqual(format_bytes(1536), \"1.5 KB\")\n         self.assertEqual(format_bytes(1024 ** 2 - 1), \"1.0 MB\")",
+    "earlier": [
+      [
+        "units.py:8 format_bytes(-5) returns '-5 B' instead of raising; negative sizes would display.",
+        "Written reason: the only caller is storage.listing (storage.py:9), which passes os.stat(path).st_size; st_size is never negative, and the request covers only the storage listing. No change."
+      ]
+    ]
+  }
+}

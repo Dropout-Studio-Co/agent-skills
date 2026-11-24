@@ -1,0 +1,9 @@
+{
+  "expect": "important",
+  "gate": "review",
+  "id": "F1",
+  "key": "70f073f5116d8d0c89858e50f0ad12f9c292dca0ea553160e6759909c4224943",
+  "kind": "review",
+  "summary": "profile_summary of a just-signed-up user divides by an empty score list",
+  "tier": "medium"
+}

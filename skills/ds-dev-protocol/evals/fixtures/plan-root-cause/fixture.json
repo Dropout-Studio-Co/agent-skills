@@ -1,0 +1,9 @@
+{
+  "id": "plan-root-cause",
+  "kind": "plan",
+  "tier": "medium",
+  "expect": "plan",
+  "summary": "tag-free requests inherit the tags of earlier requests; the plan must remove the inherited state where it is created, not mask it in the cache",
+  "request": "Stop search results from inheriting tags between requests.",
+  "ac": []
+}

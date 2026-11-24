@@ -1,0 +1,9 @@
+{
+  "id": "plan-guard-kept",
+  "kind": "plan",
+  "tier": "high",
+  "expect": "plan",
+  "summary": "nested tenant export paths; the plan must keep the traversal and link-escape refusals the existing suite proves",
+  "request": "Support nested tenant folders (for example reports/2026/q1.csv) in the export endpoint and keep downloads safe.",
+  "ac": []
+}

@@ -68,7 +68,10 @@ skills/ds-dev-protocol/       SKILL.md, reference.md, opus-gate-brief.md, plan-g
                           implementer-brief.md, plan-schema.json, review-schema.json, opencode/,
                           scripts/ (gate.sh, gate_lib.py, implement.sh, implement_lib.py,
                           premerge-and-merge.sh, premerge_lib.py),
-                          tests/ (smoke.sh, gate-smoke.sh, implement-smoke.sh, premerge-smoke.sh)
+                          evals/ (fixtures/, build_fixtures.py, fixture-check.sh, run.sh, score.py,
+                          rubric.json, answer-key.md, keys.txt, inputs.sha256, README.md),
+                          tests/ (smoke.sh, gate-smoke.sh, implement-smoke.sh, premerge-smoke.sh,
+                          test_evals.py)
 skills/ds-responsive/     SKILL.md, references/ (platforms.md)
 skills/ds-handoff/         SKILL.md
 skills/ds-agent-docs/           SKILL.md, references/ (audit-rubric.md, agent-surfaces.md),
@@ -88,9 +91,10 @@ skills/ds-ui-overhaul/             SKILL.md, task-profile.json, references/ (pla
 - Python helpers are stdlib-only and must run on 3.9+.
 - Scripts keep their executable bit (`scripts/depup.py`, `scripts/review_task.py`,
   `scripts/collect_sessions.py`, `scripts/check_instructions.py`, `ds-dev-protocol`
-  `scripts/gate.sh`, `scripts/premerge-and-merge.sh`, `scripts/implement.sh`, `tests/smoke.sh`,
-  `tests/gate-smoke.sh`, `tests/implement-smoke.sh` and `tests/premerge-smoke.sh`); the
-  `*_lib.py` helpers stay non-executable and are run by their shell script.
+  `scripts/gate.sh`, `scripts/premerge-and-merge.sh`, `scripts/implement.sh`, `evals/run.sh`,
+  `evals/fixture-check.sh`, `evals/score.py`, `tests/smoke.sh`, `tests/gate-smoke.sh`,
+  `tests/implement-smoke.sh` and `tests/premerge-smoke.sh`); the `*_lib.py` helpers stay
+  non-executable and are run by their shell script.
 
 ## Always
 

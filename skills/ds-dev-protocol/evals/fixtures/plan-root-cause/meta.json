@@ -1,0 +1,9 @@
+{
+  "expect": "plan",
+  "gate": "plan",
+  "id": "plan-root-cause",
+  "key": "5515191d7e8c00619057cbae6d2cdf8d9d87fa799c2edc8c98ea4e695c1ceea7",
+  "kind": "plan",
+  "summary": "tag-free requests inherit the tags of earlier requests; the plan must remove the inherited state where it is created, not mask it in the cache",
+  "tier": "medium"
+}

@@ -1,0 +1,13 @@
+{
+  "id": "F4",
+  "kind": "review",
+  "tier": "medium",
+  "expect": "clean",
+  "summary": "parse_port rejects non-ASCII digits and every claimed edge; any important finding is false",
+  "request": "Validate the PORT setting at startup and fail with a clear message when it is invalid.",
+  "ac": [
+    "parse_port(value) returns an int between 1 and 65535.",
+    "Empty, non-numeric or out-of-range values raise ValueError with a message naming PORT.",
+    "Unit tests cover valid, empty, non-numeric and out-of-range values."
+  ]
+}

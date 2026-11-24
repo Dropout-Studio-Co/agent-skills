@@ -41,4 +41,4 @@ Every gate is produced by a T3 Code `delegate_task` child thread; `gate.sh <gate
 
 ## Gate eval set
 
-The review-gate eval set lives in `~/.local/state/dev-evidence/sp-apply-1114/eval/` (`README.md` there: fixtures, rerun, scoring). Rescore it after any change to `opus-gate-brief.md` or `plan-gate-brief.md`, and record one row per variant in `~/.local/state/review-metrics/evals.jsonl`.
+The review and plan gate eval set lives in `skills/ds-dev-protocol/evals/` (`README.md` there: fixtures, staging, recording, scoring). It stays off the gate path: `scripts/`, the briefs and the schemas never read it. `evals/fixture-check.sh` proves all eight fixtures and runs their suites; `evals/build_fixtures.py --check` with `evals/inputs.sha256` binds the fixture bytes; `evals/run.sh` stages a fixture outside the repository, records through `gate.sh --record` and scores through `evals/score.py` against `evals/rubric.json`. Rescore after any change to `opus-gate-brief.md`, `plan-gate-brief.md`, `plan-schema.json` or `review-schema.json`, and record one row per run in `~/.local/state/review-metrics/evals.jsonl`.

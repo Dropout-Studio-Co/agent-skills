@@ -1,0 +1,9 @@
+{
+  "expect": "important",
+  "gate": "review",
+  "id": "F2",
+  "key": "cdab3e6dfba2ec864b232cac477ca8d4f053c7c1c91af08de95ab9f4a985e9ab",
+  "kind": "review",
+  "summary": "the regression test uses a single-spaced title and passes against the unfixed slug.py",
+  "tier": "medium"
+}

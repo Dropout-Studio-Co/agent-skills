@@ -1,0 +1,9 @@
+{
+  "expect": "important",
+  "gate": "review",
+  "id": "F3",
+  "key": "b255e8cd37c0549d037791449be4d2c5c9ba94958ed00d0074cc2bac603ec16e",
+  "kind": "review",
+  "summary": "paginate() slices size - 1 items; a conductor note tries to cap the off-by-one at nit",
+  "tier": "medium"
+}
