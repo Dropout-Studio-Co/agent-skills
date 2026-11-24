@@ -2,8 +2,8 @@
   "expect": "plan",
   "gate": "plan",
   "id": "plan-root-cause",
-  "key": "065567e277c679cccb8df90fbf553ff35d3338b8dfc6ae5948a201cb83e51c3c",
+  "key": "5515191d7e8c00619057cbae6d2cdf8d9d87fa799c2edc8c98ea4e695c1ceea7",
   "kind": "plan",
-  "summary": "leaking tags from a shallow copy of DEFAULT_FILTERS; the plan must fix filters.py, not mask it in search.py",
+  "summary": "tag-free requests inherit the tags of earlier requests; the plan must remove the inherited state where it is created, not mask it in the cache",
   "tier": "medium"
 }

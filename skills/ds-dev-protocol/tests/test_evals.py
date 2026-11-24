@@ -115,6 +115,14 @@ class FixtureSetTests(unittest.TestCase):
     def test_no_pycache(self):
         self.assertEqual([str(p) for p in EVALS.rglob("__pycache__")], [])
 
+    def test_plan_facts_do_not_leak_the_diagnosis(self):
+        facts = (EVALS / "fixtures" / "plan-root-cause" / "facts.md").read_text(encoding="utf-8")
+        for spoiler in ("shallow", "DEFAULT_FILTERS", "filters.py:8", "dict("):
+            self.assertNotIn(spoiler, facts)
+        guard = (EVALS / "fixtures" / "plan-guard-kept" / "facts.md").read_text(encoding="utf-8")
+        for spoiler in ("realpath", "commonpath", "abspath"):
+            self.assertNotIn(spoiler, guard)
+
     def test_line_limits_and_executable_bits(self):
         limits = {"build_fixtures.py": 180, "fixture-check.sh": 90, "run.sh": 140, "score.py": 200}
         for name, limit in limits.items():
@@ -180,6 +188,29 @@ class RunScriptTests(unittest.TestCase):
             self.assertEqual(done.returncode, 0)
             self.assertIn("already recorded", done.stdout)
 
+    def test_record_resolves_paths_and_defaults_the_diff(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            stub = root / "stub.sh"
+            stub.write_text('#!/usr/bin/env bash\nprintf "%s\\n" "$@" > "$STUB_ARGS"\n'
+                            'printf "state=%s\\n" "${XDG_STATE_HOME:-unset}" >> "$STUB_ARGS"\n',
+                            encoding="utf-8")
+            (root / "evid").mkdir()
+            (root / "work").mkdir()
+            (root / "evid" / "fixture.diff").write_text("diff\n", encoding="utf-8")
+            (root / "record.json").write_text("{}", encoding="utf-8")
+            args_file = root / "args.txt"
+            env = dict(os.environ, DS_EVAL_GATE=str(stub), STUB_ARGS=str(args_file))
+            done = run("bash", EVALS / "run.sh", "record", "--evid", "evid", "--tier", "medium",
+                       "--record", "record.json", "--child-thread", "c1", "--parent-thread", "p1",
+                       "--force", cwd=root, env=env)
+            self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+            seen = args_file.read_text(encoding="utf-8").splitlines()
+            real = os.path.realpath(str(root))
+            self.assertIn(real + "/record.json", seen)
+            self.assertIn(real + "/evid/fixture.diff", seen)
+            self.assertIn("state=" + real + "/evid/state", seen)
+
     def test_prepare_stages_outside_the_repository(self):
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp) / "out"
@@ -196,6 +227,15 @@ class RunScriptTests(unittest.TestCase):
                 evid = Path(entry["evid"])
                 self.assertTrue((evid / "facts.md").exists() if entry["kind"] == "plan"
                                 else (evid / "fixture.diff").exists(), entry["id"])
+
+    def test_prepare_rejects_an_unsafe_variant(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "out"
+            done = run("bash", EVALS / "run.sh", "prepare", "--variant", "../escape",
+                       "--out-dir", out)
+            self.assertEqual(done.returncode, 2, done.stdout + done.stderr)
+            self.assertIn("bad --variant/--fixture name", done.stderr)
+            self.assertFalse(out.exists())
 
     def test_prepare_refuses_an_in_repo_out_dir(self):
         target = SKILL / "evals" / ".prepare-probe"
@@ -223,6 +263,15 @@ class ScoreTests(unittest.TestCase):
                 done = python("score.py", "--fixture", fid, "--record", record)
                 self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
                 self.assertIn("ok", done.stdout)
+
+    def test_a_missing_record_exits_two_without_appending(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            payloads = dict(PASSING)
+            payloads["F3"] = None
+            out = write_records(tmp, payloads)
+            done = python("score.py", "--run", out)
+            self.assertEqual(done.returncode, 2, done.stdout)
+            self.assertIn("F3 missing", done.stdout)
 
     def test_a_missed_defect_exits_one(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -277,6 +326,7 @@ class ScoreTests(unittest.TestCase):
             self.assertEqual(len(rows), 1)
             row = json.loads(rows[0])
             self.assertEqual((row["eval"], row["fixtures"], row["passed"], row["score"]), ("ds-dev-protocol", 8, 8, 1.0))
+            self.assertEqual((row["total"], row["false_important"]), (8, 0))
             self.assertEqual(row["misses"], [])
 
     def test_append_refuses_a_metrics_path_inside_the_repository(self):
@@ -300,10 +350,22 @@ class ScoreTests(unittest.TestCase):
             self.assertFalse((state / "review-metrics" / "evals.jsonl").exists())
             allowed = run("bash", EVALS / "run.sh", "score", "--run", out, "--append-jsonl",
                           "--allow-partial", env=env)
-            self.assertEqual(allowed.returncode, 1, allowed.stdout)
+            self.assertEqual(allowed.returncode, 2, allowed.stdout)
             row = json.loads((state / "review-metrics" / "evals.jsonl").read_text(encoding="utf-8").splitlines()[0])
             self.assertEqual(row["passed"], 7)
             self.assertEqual(row["misses"][0]["id"], "F3")
+
+    def test_row_counts_false_importants(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            payloads = dict(PASSING)
+            payloads["F4"] = review_payload("F4", "fail", [important("config.py:9", "claims int() accepts unicode digits")])
+            out = write_records(tmp, payloads)
+            state = Path(tmp) / "state"
+            env = dict(os.environ, XDG_STATE_HOME=str(state))
+            done = run("bash", EVALS / "run.sh", "score", "--run", out, "--append-jsonl", env=env)
+            self.assertEqual(done.returncode, 1, done.stdout)
+            row = json.loads((state / "review-metrics" / "evals.jsonl").read_text(encoding="utf-8").splitlines()[0])
+            self.assertEqual((row["passed"], row["total"], row["false_important"]), (7, 8, 1))
 
 
 if __name__ == "__main__":

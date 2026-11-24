@@ -5,8 +5,8 @@ usage: score.py --fixture <id> --record <file>
        score.py --run <out-dir> [--variant NAME] [--append-jsonl] [--allow-partial]
 
 exit: 0 every scored fixture matched; 1 a miss (an uncaught defect, an Important on a clean
-fixture, or over five nits); 2 invalid (usage, oversized or unreadable record, schema
-failure, wrong key, partial batch, or a metrics path inside a git repository).
+fixture, or over five nits); 2 invalid (usage, oversized or unreadable record, schema failure,
+wrong key, partial batch, or a metrics path inside a git repository).
 """
 import argparse, fcntl, json, os, re, subprocess, sys, time
 from pathlib import Path
@@ -45,11 +45,10 @@ def validate(schema, value, path="$"):
 def read_record(path, limit):
     """Return (payload, problem); a gate output file is unwrapped to its structured_output."""
     try:
-        size = os.path.getsize(path)
+        if os.path.getsize(path) > limit:
+            return None, "record is over the %d byte limit" % limit
     except OSError as problem:
         return None, "record %s not readable: %s" % (Path(path).name, problem.strerror)
-    if size > limit:
-        return None, "record is %d bytes; the limit is %d" % (size, limit)
     try:
         value = json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, ValueError) as problem:
@@ -85,9 +84,7 @@ def score_plan(payload, rule, tier):
     notes = ["plan tier %r, fixture tier %s" % (payload.get("tier"), tier)] if payload.get("tier") != tier else []
     files = " ".join(str(item) for item in payload.get("files") or [])
     notes += ["plan files do not name %s" % need for need in rule.get("files") or [] if not re.search(need, files)]
-    text = " ".join([str(payload.get("design") or "")] +
-                    [str(item) for key in ("acceptance_criteria", "tests", "risks")
-                     for item in payload.get(key) or []])
+    text = " ".join([str(payload.get("design") or "")] + [str(item) for key in ("acceptance_criteria", "tests", "risks") for item in payload.get(key) or []])
     if not re.search(rule["pattern"], text):
         notes.append("plan text does not name the required cause or guard: %s" % rule["pattern"])
     if rule.get("forbid") and re.search(rule["forbid"], text):
@@ -96,27 +93,30 @@ def score_plan(payload, rule, tier):
 
 
 def evaluate(fid, path, rubric, keys):
-    """Return (status, notes) with status one of ok, miss, invalid."""
+    """Return (status, notes, false_importants) with status one of ok, miss, invalid."""
     rule = rubric["fixtures"].get(fid)
     if not rule:
-        return "invalid", ["unknown fixture %r" % (fid,)]
+        return "invalid", ["unknown fixture %r" % (fid,)], 0
     meta = json.loads((HERE / "fixtures" / fid / "meta.json").read_text(encoding="utf-8"))
     if meta.get("key") != keys.get(fid):
-        return "invalid", ["fixture meta key %s disagrees with keys.txt %s" % (meta.get("key"), keys.get(fid))]
+        return "invalid", ["fixture meta key %s disagrees with keys.txt %s" % (meta.get("key"), keys.get(fid))], 0
     payload, problem = read_record(path, rubric["limits"]["max_record_bytes"])
     if problem or not isinstance(payload, dict):
-        return "invalid", [problem or "record is not a JSON object"]
+        return "invalid", [problem or "record is not a JSON object"], 0
     if payload.get("gate") != rule["kind"]:
-        return "invalid", ["record gate %r, fixture kind %s" % (payload.get("gate"), rule["kind"])]
+        return "invalid", ["record gate %r, fixture kind %s" % (payload.get("gate"), rule["kind"])], 0
     schema = json.loads((SKILL / ("plan-schema.json" if rule["kind"] == "plan" else "review-schema.json")).read_text(encoding="utf-8"))
     problem = validate(schema, payload)
     if problem:
-        return "invalid", ["schema " + problem]
+        return "invalid", ["schema " + problem], 0
     if rule["kind"] == "review" and payload.get("head_sha") != keys.get(fid):
-        return "invalid", ["wrong key: head_sha %r, fixture key %s" % (payload.get("head_sha"), keys.get(fid))]
+        return "invalid", ["wrong key: head_sha %r, fixture key %s" % (payload.get("head_sha"), keys.get(fid))], 0
     ok, notes = (score_plan(payload, rule, meta["tier"]) if rule["kind"] == "plan"
                  else score_review(payload, rule, rubric["limits"]))
-    return ("ok" if ok else "miss"), notes
+    clean = rule["expect"] == "clean"
+    false = len([item for item in payload.get("findings") or []
+                 if isinstance(item, dict) and item.get("severity") == "important"]) if clean else 0
+    return ("ok" if ok else "miss"), notes, false
 
 
 def inside_repo(path):
@@ -124,9 +124,7 @@ def inside_repo(path):
     resolved = Path(os.path.abspath(path))
     if resolved == REPO or REPO in resolved.parents:
         return True
-    probe = resolved.parent
-    while not probe.is_dir() and probe != probe.parent:
-        probe = probe.parent
+    probe = next((item for item in [resolved, *resolved.parents] if item.is_dir()), resolved)
     try:
         return subprocess.run(["git", "-C", str(probe), "rev-parse", "--git-dir"],
                               capture_output=True, text=True).returncode == 0
@@ -156,12 +154,11 @@ def main():
     keys = dict(line.split() for line in (HERE / "keys.txt").read_text(encoding="utf-8").split("\n") if line.strip())
     if not args.run:
         if not args.fixture or args.fixture not in rubric["fixtures"] or not args.record:
-            print(USAGE, file=sys.stderr)
-            return 2
+            print(USAGE, file=sys.stderr); return 2
         if args.append_jsonl:
             print("score.py: --append-jsonl needs a full --run, never one fixture", file=sys.stderr)
             return 2
-        status, notes = evaluate(args.fixture, args.record, rubric, keys)
+        status, notes, _ = evaluate(args.fixture, args.record, rubric, keys)
         print("%s %s%s" % (args.fixture, status, "" if not notes else ": " + "; ".join(notes)))
         return {"ok": 0, "miss": 1}.get(status, 2)
     try:
@@ -169,31 +166,33 @@ def main():
     except (OSError, ValueError) as problem:
         print("score.py: %s is not a prepared run: %s" % (args.run, problem), file=sys.stderr)
         return 2
-    results = []
+    results = []; false_importants = 0
     for entry in manifest.get("fixtures") or []:
         path = Path(entry.get("evid") or "") / ("%s-%s.json" % (entry.get("kind"), entry.get("key")))
-        status, notes = ("missing", ["%s not recorded" % path.name]) if not path.is_file() else evaluate(entry.get("id"), path, rubric, keys)
+        status, notes, false = evaluate(entry.get("id"), path, rubric, keys) if path.is_file() else ("missing", ["%s not recorded" % path.name], 0)
+        false_importants += false
         results.append({"id": entry.get("id"), "status": status, "notes": notes})
         print("%s %s%s" % (entry.get("id"), status, "" if not notes else ": " + "; ".join(notes)))
     passed = sum(1 for item in results if item["status"] == "ok")
     counts = {name: sum(1 for item in results if item["status"] == name) for name in ("invalid", "missing")}
     row = {"date": time.strftime("%Y-%m-%d"), "eval": "ds-dev-protocol", "fixtures": len(results),
-           "passed": passed, "variant": args.variant or manifest.get("variant") or Path(args.run).name,
+           "total": len(results), "passed": passed, "false_important": false_importants,
+           "variant": args.variant or manifest.get("variant") or Path(args.run).name,
            "score": round(passed / len(results), 3) if results else 0,
            "misses": [item for item in results if item["status"] != "ok"]}
     print(json.dumps({name: row[name] for name in ("variant", "fixtures", "passed", "score")}, sort_keys=True))
-    if not args.append_jsonl:
-        return 0 if not sum(counts.values()) and passed == len(results) else 1
+    bad = sum(counts.values())
+    rc = 2 if bad else (0 if passed == len(results) else 1)
+    if not args.append_jsonl: return rc
     target = Path(args.jsonl) if args.jsonl else STATE / "review-metrics" / "evals.jsonl"
     if inside_repo(target):
         print("score.py: refusing to append inside a git repository: %s" % target, file=sys.stderr)
         return 2
-    if sum(counts.values()) and not args.allow_partial:
-        print("score.py: %d invalid and %d missing; pass --allow-partial to record anyway"
-              % (counts["invalid"], counts["missing"]), file=sys.stderr)
+    if bad and not args.allow_partial:
+        print("score.py: %d invalid, %d missing; pass --allow-partial to record anyway" % (counts["invalid"], counts["missing"]), file=sys.stderr)
         return 2
     append_row(target, row)
     print("appended one row to %s" % target)
-    return 0 if not sum(counts.values()) and passed == len(results) else 1
+    return rc
 
 if __name__ == "__main__": sys.exit(main())

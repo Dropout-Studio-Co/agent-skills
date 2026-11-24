@@ -47,7 +47,6 @@ for f in F1 F2 F3 F4 F5 review-race plan-root-cause plan-guard-kept; do
   need "$f suite" "OK"
 done
 
-find . -name __pycache__ -exec /bin/rm -rf {} + 2>/dev/null
-if [ -n "$(find . -name __pycache__ -print -quit)" ]; then printf 'FAIL __pycache__ left under evals/\n'; FAILED=1; fi
+if [ -n "$(find . -name __pycache__ -print -quit)" ]; then printf 'FAIL __pycache__ left under evals/ (run scripts with -I -B)\n'; FAILED=1; fi
 printf '%s\n' "$([ "$FAILED" = 0 ] && echo 'fixture-check: ALL 8 FIXTURES VERIFIED' || echo 'fixture-check: FAILED')"
 exit "$FAILED"

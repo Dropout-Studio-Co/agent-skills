@@ -57,16 +57,21 @@ any drift between `inputs.sha256` and the fixtures.
 
 `record` runs `scripts/gate.sh --record` from that fixture's `work/` and keeps its exit code
 (0 pass, 1 fail verdict, 2 usage/precondition, 3 blocked, 4 round cap). It writes `<evid>/exit`, and
-skips a fixture already at 0 or 1 unless `--force` is given. The gate call itself is unchanged: a
-real run still needs the T3 child and parent thread ids, and `gate.sh` still verifies the model,
-effort, thread and payload.
+skips a fixture already at 0 or 1 unless `--force` is given. `--evid`, `--record` and `--diff` are
+resolved to absolute paths before the call, a review fixture with no `--diff` uses its staged
+`<evid>/fixture.diff`, and the call runs with `XDG_STATE_HOME=<evid>/state` so synthetic eval
+findings never reach the production `review-metrics/findings.jsonl`. `--variant` and `--fixture`
+names must match `[A-Za-z0-9._-]+`. The gate call itself is unchanged: a real run still needs the T3
+child and parent thread ids, and `gate.sh` still verifies the model, effort, thread and payload.
 
 `score` validates a record against `../review-schema.json` or `../plan-schema.json` (unwrapping
 `structured_output`), checks the fixture key in `head_sha`, and scores it against `rubric.json`.
-A miss exits 1; an invalid record, a wrong key, a record over 5 MB or a partial batch exits 2.
-`--append-jsonl` writes exactly one row per run to
+A miss exits 1; an invalid or missing record, a wrong key, a record over 5 MB or a partial batch
+exits 2, with or without `--append-jsonl`. `--append-jsonl` writes exactly one row per run to
 `${XDG_STATE_HOME:-$HOME/.local/state}/review-metrics/evals.jsonl` under `flock`, and refuses any
-path inside a git repository.
+path inside a git repository. The row carries `date`, `eval`, `fixtures`, `total`, `passed`,
+`false_important`, `variant`, `score` and `misses`, where `false_important` counts Important
+findings raised on a clean fixture.
 
 ## Validity and rerun
 
