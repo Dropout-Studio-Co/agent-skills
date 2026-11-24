@@ -1,6 +1,6 @@
 ---
 name: ds-dev-protocol
-description: 'ds-dev-protocol: 100% end-to-end completion over presentation. Orchestration V2 4 roles: Gemini 4 Neon (Med/High) conducts and plans via gate.sh plan --record; DeepSeek V4.1 Flash High is sole implementer via scripts/implement.sh, no model fallback; Claude Opus 5.5 (Med/High) gates review, security and epoch. Risk tiers, T3 evidence, head-SHA gates, PR delivery. Always on (Rahi 2026-11-09): every development task.'
+description: 'ds-dev-protocol: 100% end-to-end completion over presentation. Orchestration V2 4 roles: Gemini 4 Neon conducts (Medium always) and plans (Med/High) via gate.sh plan --record; DeepSeek V4.1 Flash High is sole implementer via scripts/implement.sh, no model fallback; Claude Opus 5.5 (Med/High) gates review, security, epoch. Risk tiers, T3 evidence, head-SHA gates, PR delivery. Always on (Rahi 2026-11-09): every dev task.'
 ---
 
 ## ds-dev-protocol (applies to the task it accompanies, before or after it)
@@ -29,20 +29,20 @@ Four roles, one model each, no substitution:
 
 | Role | Model and effort (medium/high only) | Path |
 |---|---|---|
-| Conductor | Gemini 4 Neon `gemini-4-neon`, medium (routine) / high (complex, multi-lane) | this T3 Code thread (`antigravity`/`antigravity_2`) |
+| Conductor | Gemini 4 Neon `gemini-4-neon`, `medium` always (never `high` or other) | this T3 Code thread (`antigravity`/`antigravity_2`) |
 | Architect & Planner | Neon, medium for Low, high for Medium and High | fresh `delegate_task` (`antigravity` → `antigravity_2`), then `gate.sh plan --record` |
 | Implementer | DeepSeek V4.1 Flash 1017 `opencode-go/deepseek-v4.1-flash#high`, `variant: high` always | `scripts/implement.sh`, the documented mechanical runner, no OS sandbox; sole implementer, no fallback |
 | Reviewer, Security & Epoch | Claude Opus 5.5 `claude-opus-5-5`, medium (Low and ordinary Medium review, Medium epoch) / high (High tier, `--trigger`, any security) | fresh `delegate_task` (`claudeAgent` → `claudeAgent_2` → `claudeAgent_3`), then `gate.sh <gate> --record` |
 
 - **No other model, route or account:** no Haiku, GPT, Kimi, Zen/`opencode/`, free models, other DeepSeek variants, API-key accounts, paid usage or new spend; never configure OpenCode's Anthropic provider with subscription OAuth. The conductor never plans, reviews or implements; the planner never reviews its own plan; a gate child never writes code, tests or fixes and runs no git mutation, PR or merge.
-- **Effort invariants:** `medium` and `high` only (`thought_level` for Neon, `effort` for Opus), DeepSeek `variant: high` always; `low`, `max`, `ultrathink` and anything above high are forbidden and rejected by `gate.sh`, `implement.sh`, `premerge_lib.py` and smoke tests. Effort switches by tier and complexity; a failed call never moves to another model, provider or effort.
+- **Effort invariants:** `medium`/`high` only (`thought_level` Neon, `effort` Opus); Conductor `medium` always (never `high`/other), DeepSeek `variant: high` always; `low`, `max`, `ultrathink` and above are forbidden and rejected by `gate.sh`, `implement.sh`, `premerge_lib.py` and smoke tests. Planner/Opus switch by tier/trigger; failed calls never change model, provider or effort.
 - **T3 Orchestration V2 (MUST):** call `orchestrator_capabilities` once per thread before the first `delegate_task`, and again only after a provider error or user-named provider change. Every gate, re-gate, re-plan and re-check is a fresh `delegate_task` with packet, brief and schema: never `t3_thread_send` to an earlier delegate, never `t3_thread_launch`/`create_threads` for a subagent. Follow the child's `next`; never poll with `task_status`, `sleep`, loops, watchers or timers. Cancel a rate-limited or unwanted child with `task_cancel`, never `t3_thread_interrupt` on a `childThreadId`. Children work themselves (no nested subagents unless briefed); with `isolation: "worktree"` T3 owns their checkout. Gate children return schema JSON through `t3_submit_output`, recorded by the conductor with `gate.sh --record`.
 - **Same-provider instance failover only:** a child that hits `usage_limit`, or a Claude child stalled holding a turn open, is `task_cancel`led and re-dispatched as a fresh `delegate_task` with the full packet and schema on the next enabled same-provider, same-model, same-effort instance: `claudeAgent` → `claudeAgent_2` → `claudeAgent_3`, `antigravity` → `antigravity_2`, `opencode` alone. Never cross a provider or model, never ask. When every instance is exhausted, log `blocked` (exit 3), record `STATUS: blocked external — <model> quota exhausted; waiting for reset` with `Routes tried:`, finish unaffected work and stop cleanly.
 - **Neon grounding and failure modes:** ground every recent API, SDK and version in live repository files and current docs before citing it; every plan covers failure modes, error and edge boundaries, and isolation and security invariants, not just the happy path. Opus gates cite `file:line`.
 - **Context discipline:** keep implementer runs under 250K input tokens, with static prompts and tool definitions (KV-cache) and minimal diffs over only the named files.
 - **Independent verification (MUST):** the conductor reads the full diff and re-runs bootstrap, lint, types, tests and build itself before any gate; an implementer's green claim is never evidence.
 - **Two-strike escalation:** round 1 failure → retry once with targeted `--notes` in the same plan. Round 2 failure → stop blind retries, run `diagnosing-bugs`, then escalate to a fresh Neon re-plan. Hard cap: 3 rounds per step and plan.
-- **Start check (MUST):** this session must be Gemini 4 Neon in T3 Code; any other model stops. A DeepSeek or Opus session is never the conductor: it runs only its brief and no gate, premerge, git mutation or PR.
+- **Start check (MUST):** session must be Gemini 4 Neon at `medium` in T3 Code; any other model or effort stops. DeepSeek/Opus never conducts: runs only its brief, no gate, premerge, git mutation or PR.
 
 ## 2. Risk tier (MUST, before planning; rules decide, not judgment)
 
