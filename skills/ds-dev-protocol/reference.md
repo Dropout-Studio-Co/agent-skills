@@ -57,6 +57,7 @@ A limited Antigravity main thread cannot switch itself: recover by a manual pick
 
 ## Step 7 delta and epoch mechanics
 
+- **Trail blast.** Review and security packets include `trail blast --no-owners --base <base>` output for Trail-supported diffs; skip docs- or config-only diffs.
 - **Delta commands.** The diff since the last reviewed head is `git diff --no-color <last reviewed head> H` in a repository, or `diff -u` of the old and new diff files saved as `EVID/diff-<key>.diff` outside one.
 - **Refusal and invalid rows.** A refusal is a `blocked` row with `reason: "cyber refusal"` and exit 3. A run refused after the key logs `invalid`; one invalid run is re-dispatched as a fresh child, then logged `blocked`.
 - **Epoch packet.** `EVID/epoch.md` is facts only: the request verbatim, the blocked gate and key, its `gates.log` rows, every round's gate file and `PLAN.md`; no proposed approach. `EVID/packet-epoch.md` carries `Gate: epoch`, the tier, the sha256 of `epoch.md` and its text, and is recorded with `gate.sh epoch <medium|high> --record` at a tier no lower than the blocked gate's.

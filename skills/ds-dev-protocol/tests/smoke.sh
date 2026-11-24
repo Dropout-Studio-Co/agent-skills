@@ -51,6 +51,8 @@ chk "scripts wired into SKILL.md" bash -c "f='$ROOT/SKILL.md'; for s in scripts/
 chk "reference.md documents T3-verified provenance" bash -c "f='$ROOT/reference.md'; test -s \"\$f\" && grep -qF 't3_thread_read' \"\$f\" && grep -qF 't3-verified' \"\$f\" && grep -qF '4-stage chronology' \"\$f\" && grep -qF 'reference.md' \"\$ROOT/SKILL.md\""
 chk "all 12 workflow skills in SKILL.md" bash -c "f='$ROOT/SKILL.md'; bt=\$(printf '\\140'); for s in tdd diagnosing-bugs pr retro setup-pre-commit codebase-design writing-for-agents domain-modeling research prototype wizard grilling; do grep -qF -- \"\$s\$bt\" \"\$f\" || exit 1; done"
 chk "P27 shortcuts in SKILL.md" bash -c "grep -qF 'Shortcuts' '$ROOT/SKILL.md' && grep -qF 'shortcut:' '$ROOT/SKILL.md'"
+chk "routing/policy stays High" grep -qF 'routing/policy' "$ROOT/SKILL.md"
+chk "reference.md documents Trail blast" grep -qF 'trail blast --no-owners' "$ROOT/reference.md"
 # --- AC36: HEAD rules SKILL.md must keep ---
 chk "pre-authorized paragraph" grep -qF 'Pre-authorized (Rahi 2026-11-13' "$ROOT/SKILL.md"
 chk "hard boundaries stated" bash -c "for p in 'new spend, purchases, paid usage or credits, subscriptions or plan upgrades' 'outbound messages under Rahi' 'exposing secrets or credentials' 'bypassing or weakening a failed gate' 'without verified recovery' 'legal agreements or acceptance records' 'changing the model routing or the conductor' 'passkey touch'; do grep -qF \"\$p\" '$ROOT/SKILL.md' || exit 1; done"
