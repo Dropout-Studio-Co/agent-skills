@@ -1,8 +1,9 @@
 # Report input (`depup.py report <run_ref> --input findings.json`)
 
 The helper fills `schema`, `generated`, `run_id`, `mode`, `repo_root`, `base_commit`,
-`branch`, `worktree`, `rollback` and `steps` from the journal; supplied values for these keys
-are ignored. Supply the rest as one JSON object (all keys optional; unknown keys are kept):
+`worktree_base`, `base_source`, `branch`, `worktree`, `rollback` and `steps` from the journal;
+supplied values for these keys are ignored. Supply the rest as one JSON object (all keys optional;
+unknown keys are kept):
 
 ```json
 {
@@ -71,8 +72,11 @@ as `subject`.
 Status rules enforced by the helper: `plan` runs report `PLAN` (or `BLOCKED`); `PASS` requires
 the conditions in [verification.md](verification.md#result-rules) and is otherwise downgraded to
 `PARTIAL`. Copy `reviews` entries verbatim from
-`depup.py review record` output ([fresh-context-tasks.md](fresh-context-tasks.md)). `planning` is written by the
-helper from `<run_dir>/plans/*/entry.json` (input values are ignored) and never gates `PASS`. `risk` describes the version
+`depup.py review record` output ([fresh-context-tasks.md](fresh-context-tasks.md)); the helper also
+merges authoritative `<run_dir>/reviews/*/entry.json` records for the current candidate into
+`reviews` (even on `PARTIAL`, mirroring `planning`) so `summary.md` renders them accurately.
+`planning` is written by the helper from `<run_dir>/plans/*/entry.json` (input values are ignored)
+and never gates `PASS`. `risk` describes the version
 bump; `impact_tier` describes the affected system and consequences. High-risk items do not require
 user approval; disposition follows the documented risk protocol. Corrections are listed in
 `status_corrections`.

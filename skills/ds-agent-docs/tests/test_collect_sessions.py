@@ -15,7 +15,8 @@ import time
 import unittest
 from pathlib import Path
 
-from tests import transcript_fixtures
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import transcript_fixtures
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCRIPT = os.path.join(HERE, 'scripts', 'collect_sessions.py')
@@ -776,6 +777,31 @@ class CollectorRedactionTests(CollectorCase):
             self.assertNotIn(secret, blob)
         self.assertNotIn('alice', proc.stdout.splitlines()[0])
         self.assertNotIn('alice', blob)
+
+    def test_secrets_regex_avoids_english_prose_and_catches_real_secrets(self):
+        module = load_collector()
+        prose = [
+            'Keep the token budget under 5,000.',
+            'Enforce a 5,000-token budget for root memory.',
+            'Never commit secret files to git.',
+            'Use argon2 for password hashing.',
+            'See #high-risk-decision-protocol for details.',
+        ]
+        for line in prose:
+            with self.subTest(prose=line):
+                self.assertEqual(module.redact(line), line)
+        secrets = [
+            ('sk-' + 'x' * 20, 'x' * 20),
+            ('api_key=abc123456', 'abc123456'),
+            ('token: ' + 'eyJhbGciOiJIUzI1NiJ9', 'eyJhbGciOiJIUzI1NiJ9'),
+            ('Authorization: Bearer ' + 'eyJhbGciOiJIUzI1NiJ9', 'eyJhbGciOiJIUzI1NiJ9'),
+            ('password=supersecret1', 'supersecret1'),
+        ]
+        for sample, literal in secrets:
+            with self.subTest(secret=sample):
+                redacted = module.redact(sample)
+                self.assertIn('[REDACTED]', redacted)
+                self.assertNotIn(literal, redacted)
 
 
 class CollectorDriftTests(CollectorCase):

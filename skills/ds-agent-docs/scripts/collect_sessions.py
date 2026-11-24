@@ -58,12 +58,12 @@ _JWT = re.compile(r"\beyJ[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}
 _EMAIL = re.compile(r"\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b")
 _HOME_PATH = re.compile(r"(?:/" + "Users" + r"|/" + "home" + r")/[^/\s\"'`]+")
 _SECRETS = [
-    re.compile(r"(sk-[A-Za-z0-9_-]{16,}|" + _TOKEN_PREFIX + r"p_[A-Za-z0-9]{20,}|"
+    re.compile(r"(?<![A-Za-z0-9_-])(sk-[A-Za-z0-9_-]{16,}|" + _TOKEN_PREFIX + r"p_[A-Za-z0-9]{20,}|"
                + _TOKEN_PREFIX + r"[ousr]_[A-Za-z0-9]{20,}|"
                + _GITHUB_PAT + r"[A-Za-z0-9_]{20,}|"
                + _SHOPIFY_TOKEN + r"[A-Za-z0-9_]{16,}|"
                r"xox[abpr]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{30,})"),
-    re.compile(r"(?i)\b(bearer|token|password|passwd|secret|api[_-]?key)\b\s*[:=]?\s*\S{6,}"),
+    re.compile(r"(?i)(?:\bbearer(?:\s*[:=]\s*|\s+)\S{6,}|\b(?:token|password|passwd|secret|api[_-]?key)\b\s*[:=]\s*\S{6,})"),
 ]
 
 FENCED_CODE = re.compile(r"```.*?```|~~~.*?~~~", re.S)

@@ -73,7 +73,7 @@ skills/ds-handoff/         SKILL.md
 skills/ds-agent-docs/           SKILL.md, references/ (audit-rubric.md, agent-surfaces.md),
                           scripts/ (collect_sessions.py, check_instructions.py),
                           tests/ (collector, checker)
-skills/ds-ui-overhaul/             SKILL.md, task-profile.json, references/ (platforms.md)
+skills/ds-ui-overhaul/             SKILL.md, task-profile.json, references/ (platforms.md, parallel-work.md)
 ```
 
 ## Invariants

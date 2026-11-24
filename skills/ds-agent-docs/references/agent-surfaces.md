@@ -32,5 +32,5 @@ When a repository supports multiple agents:
    - `CLAUDE.md` → `@AGENTS.md` (first non-comment line) or symlink to `AGENTS.md`.
    - `GEMINI.md` → `@AGENTS.md` (or a short pointer to `AGENTS.md` plus Gemini-only notes if any).
    - `.cursor/rules/`, `.github/copilot-instructions.md`, etc. → concise pointer to `AGENTS.md` plus only tool-specific glob/frontmatter rules.
-3. Move large repeatable procedures into **`SKILL.md`** under `.agents/skills/<name>/` (or the repo's configured `skillsDir`) so they load on demand instead of inflating every turn's context window.
+3. Move large repeatable procedures into **`SKILL.md`** under `.agents/skills/<name>/` (or the repo's configured `skillsDir`) so they load on demand instead of inflating every turn's context window. Skills with `disable-model-invocation: true` in their frontmatter are user-invoked only and carry zero always-loaded context cost.
 4. Keep **personal/local** overrides (`CLAUDE.local.md`, user home configs) separate from committed repository instructions; never write user-global rules into a repo's `AGENTS.md`.

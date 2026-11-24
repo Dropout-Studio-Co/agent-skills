@@ -114,7 +114,8 @@ Apply the high-risk decision protocol. These classes are not automatically block
 the protocol's safety conditions cannot be met.
 
 ## Git safety
-Allowed in the owned worktree/branch: add, commit and `git revert`. Never use `git reset`.
+Allowed in the owned worktree/branch: add, commit and `git revert`. Never use `git reset`,
+`git checkout --` or `git restore`.
 Allowed on the repository: the helper's plain `git fetch` of the upstream default branch and
 its owned worktree/branch creation.
 Allowed by delivery mode only: non-force push of the owned `depup/*` branch, opening a PR, and

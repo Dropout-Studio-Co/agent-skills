@@ -42,6 +42,18 @@ LINK = re.compile(r"\]\(\s*([^)\s]+)(?:\s+\"[^\"]*\")?\s*\)")
 URL = re.compile(r"^[a-z][a-z0-9+.-]*://", re.I)
 PH = re.compile(r"[<>{}*?\[\]]")
 PKG = re.compile(r"^\s*(?:npm|pnpm|bun|yarn)\s+run\s+([^\s;&|]+)")
+PKG_SHORT = re.compile(r"^\s*(pnpm|bun|yarn)\s+([^\s;&|]+)")
+PKG_BUILTINS = {
+    "install", "i", "add", "remove", "rm", "update", "up", "upgrade", "init",
+    "dlx", "exec", "x", "run", "create", "link", "unlink", "publish", "pack",
+    "login", "logout", "whoami", "config", "cache", "store", "audit", "outdated",
+    "list", "ls", "why", "info", "view", "search", "version", "help", "patch",
+    "prune", "dedupe", "import", "rebuild", "env", "setup", "pm", "ci",
+    "completions", "upgrade-interactive",
+}
+BUN_BUILTINS = {"test", "build", "repl"}
+SCRIPT_RUNNERS = {"bash", "sh", "zsh", "python", "python3", "node", "tsx", "bun", "deno", "ruby", "perl"}
+SCRIPT_EXT = (".py", ".sh", ".js", ".mjs", ".cjs", ".ts", ".rb", ".pl")
 MAKE = re.compile(r"^\s*make\s+([^\s;&|]+)")
 AT = re.compile(r"^\s*@([^\s`\"'<>]+)\s*$")
 AT_TARGET = re.compile(r"(?:^|/)(?:AGENTS|CLAUDE|GEMINI)\.md$|[/.][A-Za-z0-9._-]+$")
@@ -169,8 +181,8 @@ def worktree_commands(info):
 
 
 def delivery(info, items):
-    surfaces = {i["path"] for i in items if i["category"] == "skills" or Path(i["path"]).name in (
-        "AGENTS.md", "CLAUDE.md", "AGENTS.override.md", "CLAUDE.local.md")}
+    surfaces = {i["path"] for i in items
+                if i["category"] in INSTRUCTION or i["category"] in ("output_styles", "docs")}
 
     def state(action, reason, dirty=False, commands=None):
         return {"action": action, "reason": reason, "dirty": dirty, "commands": commands or []}
@@ -193,7 +205,8 @@ def delivery(info, items):
 
 def frontmatter(text):
     lines = text.splitlines()
-    blank = {"has": False, "name": "", "description": "", "scope": False, "always_apply": None}
+    blank = {"has": False, "name": "", "description": "", "scope": False, "always_apply": None,
+             "disable_model_invocation": False}
     if not lines or lines[0].strip() != "---":
         return blank
     body, closed = [], False
@@ -204,7 +217,7 @@ def frontmatter(text):
         body.append(line)
     if not closed:
         return blank
-    name, desc, apply, scope = "", "", None, False
+    name, desc, apply, scope, disable_model = "", "", None, False, False
     for index, line in enumerate(body):
         hit = re.match(r"name:\s*(.*)$", line)
         if hit:
@@ -227,9 +240,12 @@ def frontmatter(text):
         hit = re.match(r"alwaysApply:\s*(true|false)\s*$", line, re.I)
         if hit:
             apply = hit.group(1).lower() == "true"
+        hit = re.match(r"disable-model-invocation:\s*(true|false)\s*$", line, re.I)
+        if hit:
+            disable_model = hit.group(1).lower() == "true"
         scope = scope or bool(re.match(r"(?:paths|globs|applyTo):\s*", line))
     return {"has": True, "name": name, "description": desc, "scope": scope,
-            "always_apply": apply}
+            "always_apply": apply, "disable_model_invocation": disable_model}
 
 
 def classify(rel, roots):
@@ -273,7 +289,7 @@ def skill_roots_for(skills_rel):
     roots, seen = [], set()
     for pre, agent in [(skills_rel.rstrip("/") + "/", "cross-agent"),
                        (".agents/skills/", "cross-agent"), (".claude/skills/", "claude"),
-                       (".gemini/skills/", "gemini")]:
+                       (".codex/skills/", "codex"), (".gemini/skills/", "gemini")]:
         if pre not in seen:
             seen.add(pre)
             roots.append((pre, agent))
@@ -323,6 +339,8 @@ def discover(info, scope, skills_rel):
                              "tokens": tok(len(data))})
                 if kind == "skills":
                     item["description_tokens"] = tok(len(meta["description"].encode("utf-8")))
+                    if meta["disable_model_invocation"]:
+                        item["disable_model_invocation"] = True
             items.append(item)
     return sorted(items, key=lambda e: e["path"])
 
@@ -360,15 +378,28 @@ def context_load(root, items, cap):
         seen.add(key)
         count = tok(size)
         files += count
-        if item["lines"] > BIG[0] or count > BIG[1]:
-            oversized.append({"path": item["path"], "lines": item["lines"], "tokens": count})
+        lines = item["lines"]
+        if item.get("link"):
+            text = read(root / item["path"])
+            if text is not None:
+                lines = len(text.splitlines())
+        if lines > BIG[0] or count > BIG[1]:
+            oversized.append({"path": item["path"], "lines": lines, "tokens": count})
     desc, seen = 0, set()
     for item in items:
         if item["category"] == "skills":
             key, _size = inode(root, item["path"])
             if key is not None and key not in seen:
                 seen.add(key)
-                desc += item.get("description_tokens", 0)
+                if item.get("link"):
+                    text = read(root / item["path"])
+                    if text is None:
+                        continue
+                    meta = frontmatter(text)
+                    if not meta["disable_model_invocation"]:
+                        desc += tok(len(meta["description"].encode("utf-8")))
+                elif not item.get("disable_model_invocation"):
+                    desc += item.get("description_tokens", 0)
     total = files + desc
     return {"always_loaded_tokens": total, "always_loaded_file_tokens": files,
             "skill_description_tokens": desc, "budget_cap": cap, "over_budget": total > cap,
@@ -408,11 +439,12 @@ def first_outside_comment(text):
 
 def check_imports(root, items):
     directories = set()
+    has_claude = (root / ".claude").is_dir() or any(i.get("agent") == "claude" for i in items)
     for item in items:
         if item["category"] == "memory" and Path(item["path"]).name in ("AGENTS.md", "CLAUDE.md"):
             parent = str(Path(item["path"]).parent).replace(os.sep, "/")
             directories.add("" if parent == "." else parent)
-    errors = []
+    errors, warnings = [], []
     for directory in sorted(directories):
         base = root / directory if directory else root
         rel_a = (directory + "/AGENTS.md") if directory else "AGENTS.md"
@@ -423,14 +455,15 @@ def check_imports(root, items):
         if c_on and not a_on:
             errors.append({"file": rel_a, "error": "missing AGENTS.md"})
         elif a_on and not c_on:
-            errors.append({"file": rel_c, "error": "missing CLAUDE.md import"})
+            target = errors if has_claude else warnings
+            target.append({"file": rel_c, "error": "missing CLAUDE.md import"})
         elif a_on and c_on and claude.is_symlink():
             candidate = os.path.normpath(os.path.join(str(base), os.readlink(str(claude))))
             if os.path.realpath(candidate) != os.path.realpath(str(agents)):
                 errors.append({"file": rel_c, "error": "symlink points elsewhere"})
         elif a_on and c_on:
             errors.extend(import_errors(rel_c, read(claude), read(agents)))
-    return {"ok": not errors, "errors": errors}
+    return {"ok": not errors, "errors": errors, "warnings": warnings}
 
 
 def import_errors(rel_c, text, agents_text):
@@ -520,12 +553,33 @@ def classify_ref(root, files, ref, file_rel, kind, cache, shell=False):
                 return None
             return "scoped" if PH.search(token) else package(root, files, token)
         hit = MAKE.match(ref)
-        if not hit:
-            return None
-        token = hit.group(1)
-        if token.startswith("-"):
-            return None
-        return "scoped" if PH.search(token) else make(root, token)
+        if hit:
+            token = hit.group(1)
+            if token.startswith("-"):
+                return None
+            return "scoped" if PH.search(token) else make(root, token)
+        parts = ref.split()
+        if len(parts) >= 2 and parts[0] in SCRIPT_RUNNERS:
+            for raw_arg in parts[1:]:
+                if raw_arg in ("-m", "-c", "-e", "--eval"):
+                    break
+                if raw_arg.startswith("-"):
+                    continue
+                arg = raw_arg.strip("\"'")
+                if arg and not arg.startswith(("-", "$", "<", "http", "~", "/")) \
+                        and ("/" in arg or arg.endswith(SCRIPT_EXT)):
+                    return classify_ref(root, files, arg, file_rel, kind, cache, False)
+                break
+        hit = PKG_SHORT.match(ref)
+        if hit:
+            mgr, token = hit.group(1), hit.group(2)
+            if token.startswith("-") or token in PKG_BUILTINS \
+                    or (mgr == "bun" and token in BUN_BUILTINS) or "/" in token \
+                    or not ((root / "package.json").is_file()
+                            or any(f.endswith("package.json") for f in files)):
+                return None
+            return "scoped" if PH.search(token) else package(root, files, token)
+        return None
     if URL.match(ref) or ref.startswith(("mailto:", "~", "/", "$")):
         return "external"
     if PH.search(ref):

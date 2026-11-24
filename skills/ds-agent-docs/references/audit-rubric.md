@@ -42,17 +42,4 @@ Identify missing or inadequate documentation an agent needs to understand, navig
 - **Unwritten invariants & gotchas:** domain boundaries, schema/migration ordering, auth/security constraints, deployment/CI expectations, and traps that have caused past regressions.
 - **Cross-agent discoverability:** a single canonical source of truth (`AGENTS.md`) with thin, non-duplicating bridges or pointers for other agents (`CLAUDE.md`, `GEMINI.md`, `.cursor/rules/`, `.github/copilot-instructions.md`) — see `references/agent-surfaces.md`.
 
-## Report Format & Safety Contract
-
-1. **Review-first by default:** present the report and proposed diffs first. Do **not** modify repository files until the user approves the specific changes.
-2. **Evidence-bound:** cite exact `file:line` locations and the verifying fact from the repo for every finding. Never invent a bug or claim a command fails without checking.
-3. **Prioritized output:**
-   - **Summary:** scope audited, files scanned, always-loaded token load vs. budget, and finding counts by priority (`P1`–`P4`).
-   - **Findings table / bullets grouped by P1 → P4:** each item states location, problem, evidence, and concrete proposed fix (or exact diff).
-   - **Documentation gaps:** concise list of missing high-leverage docs (only what the repo actually lacks).
-   - **Limitations:** note that this is a static and semantic instruction audit—not a behavioral test suite—and human review is required to avoid removing intentional project rules.
-4. **Routing findings through the unified workflow:**
-   - **Step 1 (Audit & Delivery State)** supplies `delivery`, `context_load`, `import`, `references`, `structure`, `hygiene` and `docs_coverage`.
-   - **Steps 2–3 (Evidence and Classification)** ground each finding in repository truth, an active `.trail/learnings/` entry, or a verified human quote, and keep user-global rules out of repository files.
-   - **Step 4 (Report & Propose Diffs)** presents one unified report with concrete diffs for memory files and IDE rules/docs; nothing is written yet.
-   - **Step 5 (Apply Approved Edits)** applies only what the user approves, honoring `delivery.action` (`in_place`, `worktree`, or `patch_only`), then re-runs `check_instructions.py audit` to verify zero remaining `P1`, import and hygiene errors. Commit, push and pull requests stay with the user unless asked.
+For the end-to-end 5-step workflow, evidence discipline, report format, and edit/verification contract, follow [`SKILL.md`](../SKILL.md).

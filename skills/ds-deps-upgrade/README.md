@@ -69,8 +69,8 @@ Make every change in the repository on a branch and open a pull request:
 2. Run the tests from the repository root and make them pass:
    `python3 -m unittest discover -s skills/ds-deps-upgrade/tests -t skills/ds-deps-upgrade`
    (also run it with `/usr/bin/python3` when the code must support the oldest interpreter).
-3. Open the pull request; after the merge the installed copy updates from `main` on the next
-   sync (or immediately with `~/.agents/bin/agent-skills-sync`).
+3. Open the pull request; after the merge, update your local installed copy from `main` using
+   the repository's install/sync workflow.
 
 No shell profile, harness config, policy file or global toolchain is modified by this skill.
 

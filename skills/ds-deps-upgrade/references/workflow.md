@@ -69,8 +69,9 @@ For each `major`, `prerelease`, `deprecated`, `unknown` record and each family:
   (skip for one or two packages; keep the untrusted-data and citation rules above).
 
 ## 5. `plan`
-Run fresh-context architecture and planning first ([fresh-context-tasks.md](fresh-context-tasks.md#architecture-and-planning)):
-the context file carries everything the planner needs, since it shares none of this session's
+Run fresh-context architecture and planning first ([fresh-context-tasks.md](fresh-context-tasks.md#architecture-and-planning));
+skip fresh-context planning only when nothing is outdated.
+The context file carries everything the planner needs, since it shares none of this session's
 context. Prepare one `planning prepare --kind plan` per upgrade and one `--kind architecture
 --subject <risk>` per high-risk item, run each `prompt.md` in a fresh read-only context on the
 current session's configuration ([model rule](fresh-context-tasks.md#model-harness-and-ds-dev-protocol-rule)),

@@ -136,6 +136,19 @@ class DeliveryTests(AuditCase):
         self.assertEqual(data['delivery']['reason'], 'dirty memory file')
         self.assertTrue(data['delivery']['dirty'])
 
+    def test_dirty_gemini_or_readme_is_patch_only(self):
+        self.write('GEMINI.md', '@AGENTS.md\n')
+        self.commit()
+        self.write('GEMINI.md', '@AGENTS.md\nDirty edit.\n')
+        data = self.ok_audit()
+        self.assertEqual(data['delivery']['action'], 'patch_only')
+        self.assertTrue(data['delivery']['dirty'])
+        self.commit()
+        self.write('README.md', DEFAULT_README + '\nDirty readme edit.\n')
+        data = self.ok_audit()
+        self.assertEqual(data['delivery']['action'], 'patch_only')
+        self.assertTrue(data['delivery']['dirty'])
+
     def test_unknown_default_branch_is_patch_only(self):
         trunk = os.path.join(self.tmp, 'trunk')
         os.makedirs(trunk)
@@ -173,6 +186,7 @@ class DiscoveryTests(AuditCase):
             '.claude/output-styles/tone.md': 'Tone.\n',
             '.agents/skills/demo/SKILL.md': '---\nname: demo\ndescription: Demo.\n---\nBody.\n',
             '.claude/skills/tool/SKILL.md': '---\nname: tool\ndescription: Tool.\n---\nBody.\n',
+            '.codex/skills/codex-helper/SKILL.md': '---\nname: codex-helper\ndescription: Codex.\n---\nBody.\n',
             '.gemini/skills/helper/SKILL.md': '---\nname: helper\ndescription: Help.\n---\nBody.\n',
             '.trail/learnings/note.md': '---\nstatus: active\n---\nNote.\n',
             'CONTRIBUTING.md': 'Contribute.\n',
@@ -203,6 +217,8 @@ class DiscoveryTests(AuditCase):
         self.assertEqual(found['.claude/agents/reviewer.md']['category'], 'subagents')
         self.assertEqual(found['.claude/output-styles/tone.md']['category'], 'output_styles')
         self.assertEqual(found['.agents/skills/demo/SKILL.md']['category'], 'skills')
+        self.assertEqual(found['.codex/skills/codex-helper/SKILL.md']['category'], 'skills')
+        self.assertEqual(found['.codex/skills/codex-helper/SKILL.md']['agent'], 'codex')
         self.assertEqual(found['.gemini/skills/helper/SKILL.md']['agent'], 'gemini')
         self.assertEqual(found['.trail/learnings/note.md']['category'], 'learnings')
         self.assertEqual(found['docs/guide.md']['category'], 'docs')
@@ -314,6 +330,26 @@ class ContextLoadTests(AuditCase):
         expected = (len('First line. Second line.'.encode('utf-8')) + 3) // 4
         self.assertEqual(data['context_load']['skill_description_tokens'], expected)
 
+    def test_symlinked_agents_counts_resolved_lines_for_oversized(self):
+        big = '\n'.join('Rule %d' % i for i in range(320)) + '\n'
+        self.write('docs/shared-agents.md', big)
+        self.remove('AGENTS.md')
+        os.symlink('docs/shared-agents.md', os.path.join(self.repo, 'AGENTS.md'))
+        self.commit()
+        data = self.ok_audit()
+        oversized = {i['path']: i for i in data['context_load']['oversized']}
+        self.assertIn('AGENTS.md', oversized)
+        self.assertEqual(oversized['AGENTS.md']['lines'], 320)
+
+    def test_disable_model_invocation_skill_has_zero_description_tokens(self):
+        self.write('.agents/skills/manual/SKILL.md',
+                   '---\nname: manual\ndescription: Manual-only workflow.\n'
+                   'disable-model-invocation: true\n---\nBody.\n')
+        self.commit()
+        data = self.ok_audit()
+        self.assertEqual(data['context_load']['skill_description_tokens'], 0)
+        self.assertTrue(self.by_path(data)['.agents/skills/manual/SKILL.md']['disable_model_invocation'])
+
 
 class ImportTests(AuditCase):
     def test_first_non_comment_line_passes(self):
@@ -338,11 +374,18 @@ class ImportTests(AuditCase):
         errors = self.ok_audit()['import']['errors']
         self.assertIn('backticked import', [e['error'] for e in errors])
 
-    def test_missing_claude_and_missing_agents_fail(self):
+    def test_missing_claude_warns_without_claude_surfaces_and_errors_with_them(self):
         self.remove('CLAUDE.md')
         self.commit()
-        errors = self.ok_audit()['import']['errors']
-        self.assertIn({'file': 'CLAUDE.md', 'error': 'missing CLAUDE.md import'}, errors)
+        imp = self.ok_audit()['import']
+        self.assertTrue(imp['ok'])
+        self.assertEqual(imp['errors'], [])
+        self.assertIn({'file': 'CLAUDE.md', 'error': 'missing CLAUDE.md import'}, imp['warnings'])
+        self.write('.claude/rules/api.md', 'Validate inputs.\n')
+        self.commit()
+        imp = self.ok_audit()['import']
+        self.assertFalse(imp['ok'])
+        self.assertIn({'file': 'CLAUDE.md', 'error': 'missing CLAUDE.md import'}, imp['errors'])
         self.write('CLAUDE.md', '@AGENTS.md\n')
         self.remove('AGENTS.md')
         self.commit()
@@ -441,6 +484,37 @@ class ReferenceTests(AuditCase):
         self.assertNotIn('--json', refs)
         self.assertEqual(data['references']['stale'], [])
         self.assertIsNone(data['references']['counts'].get('scoped'))
+
+    def test_shorthand_package_scripts_and_script_runners(self):
+        self.base_manifest()
+        self.write('scripts/present.py', 'print("ok")\n')
+        self.write('scripts/present.sh', 'echo ok\n')
+        self.write('AGENTS.md', DEFAULT_AGENTS + '\n'
+                   '```sh\n'
+                   'pnpm build\n'
+                   'bun build\n'
+                   'yarn build\n'
+                   'pnpm nope\n'
+                   'bun nope\n'
+                   'yarn nope\n'
+                   'pnpm install\n'
+                   'bun add vitest\n'
+                   'python3 scripts/present.py\n'
+                   'python3 scripts/missing.py\n'
+                   'bash scripts/present.sh\n'
+                   'bash scripts/missing.sh\n'
+                   'python3 -m unittest\n'
+                   '```\n')
+        self.commit()
+        data = self.ok_audit()
+        stale = {item['ref'] for item in data['references']['stale']}
+        for bad in ('pnpm nope', 'bun nope', 'yarn nope',
+                    'python3 scripts/missing.py', 'bash scripts/missing.sh'):
+            self.assertIn(bad, stale, bad)
+        for good in ('pnpm build', 'bun build', 'yarn build', 'pnpm install',
+                     'bun add vitest', 'python3 scripts/present.py',
+                     'bash scripts/present.sh', 'python3 -m unittest'):
+            self.assertNotIn(good, stale, good)
 
 
 class BatchedIgnoreTests(AuditCase):
@@ -561,6 +635,22 @@ class HygieneTests(AuditCase):
 
     def test_clean_instructions_have_no_hits(self):
         self.assertEqual(self.ok_audit()['hygiene']['redaction_hits'], [])
+
+    def test_bun_builtin_test_and_eval_flags_are_not_stale(self):
+        self.write('package.json', '{"name": "fixture", "scripts": {"lint": "echo ok"}}\n')
+        self.write('AGENTS.md', (
+            '# Notes\n\n'
+            '```sh\n'
+            'bun test\n'
+            'bun build\n'
+            'node -e "console.log(\'a/b\')"\n'
+            'perl -e \'s/foo/bar/\'\n'
+            '```\n'
+        ))
+        self.commit()
+        stale = [item for item in self.ok_audit()['references']['stale']
+                 if item['file'] == 'AGENTS.md']
+        self.assertEqual(stale, [])
 
 
 class DocsCoverageTests(AuditCase):

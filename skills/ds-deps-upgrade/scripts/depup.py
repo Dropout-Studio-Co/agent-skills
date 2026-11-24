@@ -567,7 +567,8 @@ def inventory(root):
                 text = read_text(full) or ''
                 result['pnpm_workspaces'].append({
                     'path': rel,
-                    'packages': re.findall(r'^\s*-\s*["\']?([^"\'\n]+)["\']?\s*$', text.split('catalog', 1)[0], re.M),
+                    'packages': re.findall(r'^\s*-\s*["\']?([^"\'\n]+)["\']?\s*$',
+                                           re.split(r'^catalogs?:', text, maxsplit=1, flags=re.M)[0], re.M),
                     'has_catalog': bool(re.search(r'^catalogs?:', text, re.M)),
                 })
             elif name in ECOSYSTEM_FILES or name.endswith(('.csproj', '.fsproj', '.vbproj')) or \
@@ -1334,7 +1335,8 @@ def cmd_run_start(args):
     root, is_git = resolve_repo(args.repo)
     if args.mode == 'upgrade' and not is_git:
         raise Refusal('upgrade mode needs a Git repository for isolation and rollback')
-    run_id = args.run_id or ('%s-%s' % (_dt.datetime.now().strftime('%Y%m%d-%H%M%S'), uuid.uuid4().hex[:6]))
+    run_id = args.run_id or ('%s-%s' % (_dt.datetime.now(_dt.timezone.utc).strftime('%Y%m%d-%H%M%S'),
+                                        uuid.uuid4().hex[:6]))
     if not SAFE_RUN_ID.match(run_id):
         raise Refusal('invalid run id')
     run_dir = os.path.join(repo_state_dir(root), run_id)
@@ -1447,6 +1449,7 @@ def summarize_journal(run_dir, journal):
         'run_dir': run_dir, 'run_id': journal['run_id'], 'mode': journal['mode'], 'status': journal['status'],
         'repo_root': journal['repo_root'], 'base_commit': journal['base_commit'],
         'branch': journal.get('branch'), 'worktree': worktree_state,
+        'workers': journal.get('workers', []),
         'counts': {s: len([x for x in steps if x['status'] == s]) for s in STEP_STATUSES},
         'completed_dangerous': [s['id'] for s in steps if s['status'] == 'done' and s.get('dangerous')],
         'next': pending[0] if pending else None,
@@ -1637,7 +1640,8 @@ def cmd_run_worker(args):
         branch = 'depup/%s-%s' % (journal['run_id'], args.domain)
         path = os.path.join(run_dir, 'workers', args.domain)
         if branch in journal['owned']['branches']:
-            return {'worktree': path, 'branch': branch, 'created': False}
+            existing = next((w for w in journal.get('workers', []) if w.get('branch') == branch), {})
+            return {'worktree': path, 'branch': branch, 'base': existing.get('base'), 'created': False}
         if git(root, 'rev-parse', '--verify', '--quiet', 'refs/heads/' + branch)['rc'] == 0 or os.path.exists(path):
             raise Refusal('branch %s or path %s already exists and is not owned by this run' % (branch, path))
         if args.base:
@@ -1828,24 +1832,40 @@ def cmd_rollback(args):
 def build_report(run_dir, journal, supplied):
     report = {
         'schema': SCHEMA_VERSION, 'generated': now(), 'run_id': journal['run_id'], 'mode': journal['mode'],
-        'repo_root': journal['repo_root'], 'base_commit': journal['base_commit'], 'branch': journal.get('branch'),
-        'candidate_commit': candidate_head(journal),
+        'repo_root': journal['repo_root'], 'base_commit': journal['base_commit'],
+        'worktree_base': journal.get('worktree_base'), 'base_source': journal.get('base_source'),
+        'branch': journal.get('branch'), 'candidate_commit': candidate_head(journal),
         'worktree': journal.get('worktree'), 'status': 'PLAN' if journal['mode'] == 'plan' else 'PARTIAL',
         'upgrades': [], 'migrations': [], 'files_changed': [], 'scripts_executed': [], 'risks': [],
-        'security': [], 'verification': [], 'skipped_checks': [], 'links': [], 'remaining_actions': [],
-        'capabilities': {}, 'rollback': {'run_ref': '%s/%s' % (journal['repo_key'], journal['run_id']),
-                                         'user_checkout_untouched': True},
+        'security': [], 'verification': [], 'skipped_checks': [], 'links': [], 'reviews': [],
+        'remaining_actions': [], 'capabilities': {},
+        'rollback': {'run_ref': '%s/%s' % (journal['repo_key'], journal['run_id']),
+                     'user_checkout_untouched': True},
         'steps': journal.get('steps', []),
         'planning': [{k: e.get(k) for k in ('id', 'kind', 'subject', 'status', 'head', 'target', 'tree_changed',
                                              'planner', 'reason', 'summary', 'counts',
                                              'result', 'evidence')
                       if e.get(k) is not None} for e in planning_entries(run_dir)],
     }
-    protected = ('schema', 'generated', 'steps', 'run_id', 'repo_root', 'mode', 'base_commit', 'branch',
-                 'worktree', 'candidate_commit', 'rollback', 'status_corrections', 'planning')
+    protected = ('schema', 'generated', 'steps', 'run_id', 'repo_root', 'mode', 'base_commit', 'worktree_base',
+                 'base_source', 'branch', 'worktree', 'candidate_commit', 'rollback', 'status_corrections', 'planning')
     for key, value in (supplied or {}).items():
         if key not in protected:
             report[key] = value
+
+    def items(key):
+        return [x for x in (report.get(key) or []) if isinstance(x, dict)]
+
+    candidate = report.get('candidate_commit')
+    # Review entries on disk are authoritative: merge current-candidate entries into report['reviews']
+    # regardless of status (mirroring report['planning']) so summary.md always reflects disk reviews.
+    all_reviews = {r.get('id') or id(r): r for r in items('reviews')}
+    disk_reviews = run_review_entries(run_dir)
+    for entry in disk_reviews:
+        if candidate and entry.get('candidate_head') == candidate:
+            all_reviews[entry.get('id')] = entry
+    report['reviews'] = list(all_reviews.values())
+
     corrections = []
     if any(p.get('tree_changed') and p.get('target') == journal['repo_root'] for p in report['planning']):
         report['rollback']['user_checkout_untouched'] = False
@@ -1860,7 +1880,6 @@ def build_report(run_dir, journal, supplied):
     if status == 'PASS':
         checks = report.get('verification') or []
         failing = [c for c in checks if not isinstance(c, dict) or c.get('result') != 'pass']
-        candidate = report.get('candidate_commit')
         missing_check_evidence = [c for c in checks if not isinstance(c, dict) or
                                   not isinstance(c.get('command'), str) or not c['command'].strip() or
                                   not evidence_artifact(run_dir, c.get('log')) or not candidate or
@@ -1873,127 +1892,118 @@ def build_report(run_dir, journal, supplied):
         if not checks:
             corrections.append('PASS requires recorded verification results; downgraded to PARTIAL')
             status = 'PARTIAL'
-        elif failing:
+        if failing:
             corrections.append('PASS requires every verification result == "pass" (%d not); downgraded to PARTIAL'
                                % len(failing))
             status = 'PARTIAL'
-        elif missing_check_evidence:
+        if missing_check_evidence:
             corrections.append('PASS requires each verification to name its command and a nonempty log '
                                'inside the run directory (%d missing); downgraded to PARTIAL'
                                % len(missing_check_evidence))
             status = 'PARTIAL'
-        elif open_steps:
+        if open_steps:
             corrections.append('PASS requires no open steps (%s); downgraded to PARTIAL' % ', '.join(open_steps))
             status = 'PARTIAL'
-        elif missing_steps:
+        if missing_steps:
             corrections.append('PASS requires completed journal steps %s; downgraded to PARTIAL'
                                % ', '.join(missing_steps))
             status = 'PARTIAL'
-        else:
-            def items(key):
-                return [x for x in (report.get(key) or []) if isinstance(x, dict)]
-            high_risks = [r for r in items('risks') if r.get('severity') in ('high', 'critical')]
-            blocked_risks = [r for r in high_risks if r.get('disposition') == 'blocked']
 
-            def complete_dossier(risk):
-                def nonempty_text(value):
-                    return isinstance(value, str) and bool(value.strip())
+        high_risks = [r for r in items('risks') if r.get('severity') in ('high', 'critical')]
+        blocked_risks = [r for r in high_risks if r.get('disposition') == 'blocked']
 
-                sources = risk.get('sources')
-                alternatives = risk.get('alternatives')
-                controls = risk.get('controls')
-                reviews = risk.get('reviews')
-                review_receipts = {}
-                if isinstance(reviews, list) and candidate:
-                    for review in reviews:
-                        if not isinstance(review, dict) or review.get('status') != 'pass':
-                            continue
-                        review_type = review.get('type')
-                        if review_type not in ('independent', 'security'):
-                            continue
-                        kind = review_type + '-review'
-                        if bound_evidence(run_dir, review.get('evidence'), journal['run_id'], candidate,
-                                          kind, risk.get('name'), 'pass'):
-                            receipt_path = review.get('evidence')
-                            receipt_path = receipt_path if os.path.isabs(receipt_path) else os.path.join(run_dir, receipt_path)
-                            receipt, _ = read_json(receipt_path)
-                            review_receipts[review_type] = receipt
-                review_types = set(review_receipts)
-                ind_r = review_receipts.get('independent', {})
-                sec_r = review_receipts.get('security', {})
-                distinct_ids = (
-                    ind_r.get('reviewer_id', '').strip().lower() != sec_r.get('reviewer_id', '').strip().lower()
-                    if ind_r.get('reviewer_id') and sec_r.get('reviewer_id') else True
-                )
-                distinct_bodies = (
-                    ind_r.get('body_sha256') != sec_r.get('body_sha256')
-                    if ind_r.get('body_sha256') and sec_r.get('body_sha256') else True
-                )
-                distinct_reviews = (
-                    ind_r.get('reviewer') != sec_r.get('reviewer') and
-                    ind_r.get('artifact_sha256') != sec_r.get('artifact_sha256') and
-                    distinct_ids and distinct_bodies
-                )
-                has_source = isinstance(sources, list) and any(
-                    isinstance(source, dict) and nonempty_text(source.get('name')) and
-                    isinstance(source.get('url'), str) and source['url'].startswith('https://') and
-                    nonempty_text(source.get('retrieved')) for source in sources
-                )
-                return (nonempty_text(risk.get('name')) and risk.get('disposition') == 'proceed' and
-                        nonempty_text(risk.get('analysis')) and nonempty_text(risk.get('recovery')) and
-                        has_source and isinstance(alternatives, list) and
-                        any(nonempty_text(option) for option in alternatives) and
-                        isinstance(controls, list) and any(nonempty_text(control) for control in controls) and
-                        {'independent', 'security'}.issubset(review_types) and distinct_reviews)
+        def complete_dossier(risk):
+            def nonempty_text(value):
+                return isinstance(value, str) and bool(value.strip())
 
-            incomplete_dossiers = [r for r in high_risks if r.get('disposition') != 'blocked' and
-                                   not complete_dossier(r)]
-            known_risk_names = {r.get('name') for r in high_risks}
-            missing_dossiers = [u for u in items('upgrades') if u.get('impact_tier') == 'high' and
-                                u.get('name') not in known_risk_names]
-            required_skips = [c for c in items('skipped_checks') if c.get('required')]
-            held = [u for u in items('upgrades') if u.get('status') in ('held', 'blocked', 'failed')]
+            sources = risk.get('sources')
+            alternatives = risk.get('alternatives')
+            controls = risk.get('controls')
+            reviews = risk.get('reviews')
+            review_receipts = {}
+            if isinstance(reviews, list) and candidate:
+                for review in reviews:
+                    if not isinstance(review, dict) or review.get('status') != 'pass':
+                        continue
+                    review_type = review.get('type')
+                    if review_type not in ('independent', 'security'):
+                        continue
+                    kind = review_type + '-review'
+                    if bound_evidence(run_dir, review.get('evidence'), journal['run_id'], candidate,
+                                      kind, risk.get('name'), 'pass'):
+                        receipt_path = review.get('evidence')
+                        receipt_path = receipt_path if os.path.isabs(receipt_path) else os.path.join(run_dir, receipt_path)
+                        receipt, _ = read_json(receipt_path)
+                        review_receipts[review_type] = receipt
+            review_types = set(review_receipts)
+            ind_r = review_receipts.get('independent', {})
+            sec_r = review_receipts.get('security', {})
+            distinct_ids = (
+                ind_r.get('reviewer_id', '').strip().lower() != sec_r.get('reviewer_id', '').strip().lower()
+                if ind_r.get('reviewer_id') and sec_r.get('reviewer_id') else True
+            )
+            distinct_bodies = (
+                ind_r.get('body_sha256') != sec_r.get('body_sha256')
+                if ind_r.get('body_sha256') and sec_r.get('body_sha256') else True
+            )
+            distinct_reviews = (
+                ind_r.get('reviewer') != sec_r.get('reviewer') and
+                ind_r.get('artifact_sha256') != sec_r.get('artifact_sha256') and
+                distinct_ids and distinct_bodies
+            )
+            has_source = isinstance(sources, list) and any(
+                isinstance(source, dict) and nonempty_text(source.get('name')) and
+                isinstance(source.get('url'), str) and source['url'].startswith('https://') and
+                nonempty_text(source.get('retrieved')) for source in sources
+            )
+            return (nonempty_text(risk.get('name')) and risk.get('disposition') == 'proceed' and
+                    nonempty_text(risk.get('analysis')) and nonempty_text(risk.get('recovery')) and
+                    has_source and isinstance(alternatives, list) and
+                    any(nonempty_text(option) for option in alternatives) and
+                    isinstance(controls, list) and any(nonempty_text(control) for control in controls) and
+                    {'independent', 'security'}.issubset(review_types) and distinct_reviews)
 
-            def review_passed(entry):
-                return (entry.get('status') == 'completed' and entry.get('verdict') == 'pass' and
-                        bool(candidate) and entry.get('candidate_head') == candidate and
-                        bound_evidence(run_dir, entry.get('evidence'), journal['run_id'], candidate,
-                                       '%s-review' % entry.get('kind'), entry.get('subject'), 'pass'))
+        incomplete_dossiers = [r for r in high_risks if r.get('disposition') != 'blocked' and
+                               not complete_dossier(r)]
+        known_risk_names = {r.get('name') for r in high_risks}
+        missing_dossiers = [u for u in items('upgrades') if u.get('impact_tier') == 'high' and
+                            u.get('name') not in known_risk_names]
+        required_skips = [c for c in items('skipped_checks') if c.get('required')]
+        held = [u for u in items('upgrades') if u.get('status') in ('held', 'blocked', 'failed')]
 
-            # Review entries on disk are authoritative: leaving one out of the report input,
-            # committing a new candidate, or rerunning without passing cannot hide a required or failed review.
-            all_reviews = {r.get('id') or id(r): r for r in items('reviews')}
-            disk_reviews = run_review_entries(run_dir)
-            for entry in disk_reviews:
-                if entry.get('candidate_head') == candidate:
-                    all_reviews[entry.get('id')] = entry
-            required_pairs = {
-                (r.get('kind'), r.get('subject'))
-                for r in list(all_reviews.values()) + disk_reviews
-                if r.get('required') and r.get('kind') and r.get('subject')
-            }
-            passed_pairs = {
-                (r.get('kind'), r.get('subject'))
-                for r in all_reviews.values()
-                if review_passed(r)
-            }
-            unmet_reviews = [pair for pair in sorted(required_pairs) if pair not in passed_pairs]
-            failed_reviews = [
-                r for r in all_reviews.values()
-                if r.get('candidate_head') == candidate and (
-                    r.get('verdict') == 'fail' or (r.get('prior_failed') and not review_passed(r))
-                )
-            ]
-            for found, label in ((unmet_reviews, 'required review(s) not completed and passed for this candidate'),
-                                 (failed_reviews, 'review(s) of this candidate with unresolved Important findings'),
-                                 (blocked_risks, 'blocked high-risk item(s)'),
-                                 (incomplete_dossiers, 'high-risk item(s) without complete research, controls and reviews'),
-                                 (missing_dossiers, 'high-impact upgrade(s) without a matching complete risk dossier'),
-                                 (required_skips, 'skipped required check(s)'),
-                                 (held, 'held/blocked/failed upgrade(s)')):
-                if found:
-                    corrections.append('PASS not allowed with %d %s; downgraded to PARTIAL' % (len(found), label))
-                    status = 'PARTIAL'
+        def review_passed(entry):
+            return (entry.get('status') == 'completed' and entry.get('verdict') == 'pass' and
+                    bool(candidate) and entry.get('candidate_head') == candidate and
+                    bound_evidence(run_dir, entry.get('evidence'), journal['run_id'], candidate,
+                                   '%s-review' % entry.get('kind'), entry.get('subject'), 'pass'))
+
+        required_pairs = {
+            (r.get('kind'), r.get('subject'))
+            for r in list(all_reviews.values()) + disk_reviews
+            if r.get('required') and r.get('kind') and r.get('subject')
+        }
+        passed_pairs = {
+            (r.get('kind'), r.get('subject'))
+            for r in all_reviews.values()
+            if review_passed(r)
+        }
+        unmet_reviews = [pair for pair in sorted(required_pairs) if pair not in passed_pairs]
+        failed_reviews = [
+            r for r in all_reviews.values()
+            if r.get('candidate_head') == candidate and (
+                r.get('verdict') == 'fail' or (r.get('prior_failed') and not review_passed(r))
+            )
+        ]
+        for found, label in ((unmet_reviews, 'required review(s) not completed and passed for this candidate'),
+                             (failed_reviews, 'review(s) of this candidate with unresolved Important findings'),
+                             (blocked_risks, 'blocked high-risk item(s)'),
+                             (incomplete_dossiers, 'high-risk item(s) without complete research, controls and reviews'),
+                             (missing_dossiers, 'high-impact upgrade(s) without a matching complete risk dossier'),
+                             (required_skips, 'skipped required check(s)'),
+                             (held, 'held/blocked/failed upgrade(s)')):
+            if found:
+                corrections.append('PASS not allowed with %d %s; downgraded to PARTIAL' % (len(found), label))
+                status = 'PARTIAL'
     report['status'] = status
     report['status_corrections'] = corrections
     return report
@@ -2014,6 +2024,9 @@ def render_summary(report):
     lines = ['# Dependency upgrade: %s' % report['status'], '',
              '- Run: `%s` (%s)' % (report['rollback']['run_ref'], report['mode']),
              '- Repo: `%s` @ `%s`' % (report['repo_root'], (report.get('base_commit') or '')[:12])]
+    if report.get('worktree_base') and report.get('worktree_base') != report.get('base_commit'):
+        source = ' (%s)' % report['base_source'] if report.get('base_source') else ''
+        lines.append('- Worktree base: `%s`%s' % (report['worktree_base'][:12], source))
     if report.get('branch'):
         lines.append('- Branch: `%s` (worktree `%s`)' % (report['branch'], report.get('worktree')))
     for note in report.get('status_corrections') or []:
@@ -2153,7 +2166,10 @@ def cmd_review_prepare(args):
     review_dir = os.path.join(reviews_dir, review_id)
     entry_path = os.path.join(review_dir, 'entry.json')
     existing, _ = read_json(entry_path)
-    if isinstance(existing, dict) and existing.get('status') == 'completed' and not args.rerun:
+    context_text = redact_text(read_text(args.context) or '') if args.context else None
+    context_sha = hashlib.sha256(context_text.encode('utf-8')).hexdigest() if context_text is not None else None
+    same_context = isinstance(existing, dict) and existing.get('context_sha256') == context_sha
+    if isinstance(existing, dict) and existing.get('status') == 'completed' and same_context and not args.rerun:
         if args.required and not existing.get('required'):
             existing['required'] = True
             atomic_write(entry_path, json.dumps(redact_output(existing), indent=2) + '\n')
@@ -2162,9 +2178,9 @@ def cmd_review_prepare(args):
     files = write_review_inputs(tp, journal['worktree'], journal.get('worktree_base') or journal['base_commit'],
                                 candidate, review_dir)
     context = None
-    if args.context:
+    if context_text is not None:
         context = os.path.join(review_dir, 'context' + (os.path.splitext(args.context)[1] or '.txt'))
-        atomic_write(context, redact_text(read_text(args.context) or ''))
+        atomic_write(context, context_text)
     prompt = tp.build_prompt(args.kind, subject, journal['worktree'],
                              journal.get('worktree_base') or journal['base_commit'], candidate, files, context)
     prompt_path = os.path.join(review_dir, 'prompt.md')
@@ -2174,7 +2190,7 @@ def cmd_review_prepare(args):
     meta = {
         'id': review_id, 'kind': args.kind, 'subject': subject,
         'required': bool(args.required or (isinstance(existing, dict) and existing.get('required'))),
-        'candidate_head': candidate, 'status': 'pending', 'created': now(),
+        'candidate_head': candidate, 'context_sha256': context_sha, 'status': 'pending', 'created': now(),
         'prompt_path': prompt_path, 'output_path': output_path,
         'next': (
             'Run %s in a fresh, read-only independent context using this session\'s current harness, model and '

@@ -194,6 +194,17 @@ class InventoryTests(TempCase):
             names = sorted(r['name'] for r in out['records'])
             self.assertEqual(names, ['is-odd', 'left-pad'], manager)
 
+    def test_pnpm_workspace_with_catalog_package_path_not_truncated(self):
+        root = os.path.join(self.tmp, 'pnpm-cat')
+        write(os.path.join(root, 'package.json'), {'name': 'root', 'private': True})
+        write(os.path.join(root, 'pnpm-workspace.yaml'),
+              'packages:\n  - packages/catalog\n  - apps/*\ncatalog:\n  react: ^19.0.0\n')
+        _, inv = self.cli('inventory', '--repo', root)
+        self.assertEqual(len(inv['pnpm_workspaces']), 1)
+        ws = inv['pnpm_workspaces'][0]
+        self.assertEqual(ws['packages'], ['packages/catalog', 'apps/*'])
+        self.assertTrue(ws['has_catalog'])
+
 
 if __name__ == '__main__':
     unittest.main()
