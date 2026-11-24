@@ -59,6 +59,7 @@ if tool == "t3_thread_read":
         text = json.dumps(record())
         emit({"items": [{"type": "assistant_message", "itemId": req.get("itemId"), "text": text[off:], "textTruncated": False}]})
     its = items()
+    if E("FAKE_ITEM_STOP"): its.append({"type": "system_notice", "itemId": "it-stop", "stopReason": E("FAKE_ITEM_STOP")})
     if E("FAKE_NOTICE"): its.append({"type": "system_notice", "itemId": "it-n", "text": E("FAKE_NOTICE")})
     run = {"runId": "run-1", "status": E("FAKE_RUN_STATUS", "completed"),
            "providerInstanceId": E("FAKE_RUN_INSTANCE", E("FAKE_INSTANCE", "claudeAgent")),
@@ -75,7 +76,7 @@ FAKE
 chmod +x "$T/bin/acp-node"; NODE=$T/bin/acp-node; export T3_ACP_MCP_NODE="$NODE" T3_ACP_MCP_ENTRYPOINT=""
 : > "$T/t3.calls"; : > "$T/cid"
 fresh() { : > "$T/t3.calls"; unset FAKE_STATUS FAKE_PARENT FAKE_NO_PARENT FAKE_INSTANCE FAKE_MODEL FAKE_OPTION FAKE_EFFORT \
-  FAKE_RECORD FAKE_ERR FAKE_EXECUTED FAKE_MODE FAKE_NOTICE FAKE_ISERROR FAKE_RUN_STATUS FAKE_RUN_MODEL FAKE_RUN_INSTANCE FAKE_RUNS FAKE_THREAD_MODEL; }
+  FAKE_RECORD FAKE_ERR FAKE_EXECUTED FAKE_MODE FAKE_NOTICE FAKE_ISERROR FAKE_RUN_STATUS FAKE_RUN_MODEL FAKE_RUN_INSTANCE FAKE_RUNS FAKE_THREAD_MODEL FAKE_ITEM_STOP; }
 nextid() { local v=$(( $(cat "$T/cid") + 1 )); echo "$v" > "$T/cid"; printf 'c%s' "$v"; }
 unset GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM; export GIT_CONFIG_NOSYSTEM=1
 git config --global user.email smoke@example.com; git config --global user.name Smoke; git config --global init.defaultBranch main
@@ -197,6 +198,11 @@ for b in main HEAD~1; do fresh; opusenv medium; export FAKE_RECORD=$E/rec.json; 
 fresh; new_ev cy; pkt review "$H" "$B"; rec_review review "$H" pass; opusenv medium; export FAKE_RECORD=$E/rec.json FAKE_ERR='{"stop_reason": "refusal"}'
 g "$E" review medium --record "$E/rec.json"
 chk "[cyber] refusal exit3 blocked cyber refusal" bash -c "[ $GRC = 3 ] && tail -1 '$E/gates.log' | grep -q '\"status\": \"blocked\"' && tail -1 '$E/gates.log' | grep -q '\"reason\": \"cyber refusal\"' && ! ls '$E'/review-*.json 2>/dev/null"
+fresh; new_ev rf2; pkt review "$H" "$B"; rec_review review "$H" pass; opusenv medium
+export FAKE_RECORD=$E/rec.json FAKE_ERR='{"stopReason":"end_turn"}' FAKE_ITEM_STOP=refusal; g "$E" review medium --record "$E/rec.json"
+chk "thread end_turn with an item stopReason refusal is still blocked exit3" bash -c "[ $GRC = 3 ] && tail -1 '$E/gates.log' | grep -q '\"reason\": \"cyber refusal\"'"
+unset FAKE_ITEM_STOP; export FAKE_RUNS='[{"runId":"run-2","status":"completed","stopReason":"refusal"}]'; g "$E" review medium --record "$E/rec.json"
+chk "thread end_turn with a latest-run refusal is still blocked exit3" bash -c "[ $GRC = 3 ] && tail -1 '$E/gates.log' | grep -q '\"reason\": \"cyber refusal\"'"
 fresh; new_ev prose; pkt review "$H" "$B"; rec_review review "$H" pass; opusenv medium; export FAKE_MODE=prose FAKE_RECORD=$E/rec.json
 g "$E" review medium --record "$E/rec.json"
 chk "normal text mentioning 'cyber' does not false-positive on review" bash -c "[ $GRC = 0 ] && test -s '$E/review-$H.json'"
@@ -210,6 +216,10 @@ chk "Claude notice with 'declined' is not a cyber refusal" bash -c "[ $GRC = 0 ]
 fresh; new_ev vp; pkt review "$H" "$B"; rec_review review "$H" pass '[{"severity":"important","location":"g.txt:1","failure_scenario":"s","evidence":"e"}]'
 opusenv medium; export FAKE_RECORD=$E/rec.json; g "$E" review medium --record "$E/rec.json"
 chk "verdict pass with an Important finding exit2" bash -c "[ $GRC = 2 ] && tail -1 '$E/gates.log' | grep -q 'Important finding' && ! ls '$E'/review-*.json 2>/dev/null"
+fresh; new_ev vp2; pkt review "$H" "$B"; rec_review review "$H" pass '[{"severity":"important","location":"g.txt:1","failure_scenario":"s","evidence":"e"}]'
+opusenv medium; export FAKE_RECORD=$E/rec.json; g "$E" review medium --record "$E/rec.json"; rc1=$GRC
+g "$E" review medium --record "$E/rec.json"
+chk "verdict pass with an Important finding twice escalates to blocked exit3" bash -c "[ $rc1 = 2 ] && [ $GRC = 3 ] && tail -1 '$E/gates.log' | grep -q '\"status\": \"blocked\"' && tail -1 '$E/gates.log' | grep -q 'invalid output after retry'"
 # --- log_metrics: review and security findings.jsonl ---
 fresh; new_ev met; pkt review "$H" "$B"; rec_review review "$H" pass '[{"severity":"nit","location":"g.txt:1","failure_scenario":"s","evidence":"e"}]'; opusenv medium; export FAKE_RECORD=$E/rec.json
 g "$E" review medium --record "$E/rec.json"; rc1=$GRC
@@ -226,6 +236,10 @@ fresh; new_ev cap6; pkt review "$H" "$B"; rec_review review "$H" pass; opusenv m
 seed review:medium:ok:pass: review:medium:ok:pass: review:medium:ok:pass: plan:medium:ok:pass: review:medium:ok:pass: review:medium:ok:pass: review:medium:ok:pass:
 g "$E" review medium --record "$E/rec.json"
 chk "6-round epoch cap exit3 blocked" bash -c "[ $GRC = 3 ] && tail -1 '$E/gates.log' | grep -q '\"status\": \"blocked\"' && tail -1 '$E/gates.log' | grep -q 'round cap after re-plan' && [ ! -s '$T/t3.calls' ]"
+fresh; new_ev cap6p; pkt review "$H" "$B"; rec_review review "$H" pass; opusenv medium; export FAKE_RECORD=$E/rec.json
+seed review:medium:ok:pass: review:medium:ok:pass: review:medium:ok:pass: review:medium:ok:pass: review:medium:ok:pass: review:medium:ok:pass: plan:medium:ok:pass:
+g "$E" review medium --record "$E/rec.json"
+chk "6 ok rounds plus a later plan still exit3 blocked" bash -c "[ $GRC = 3 ] && tail -1 '$E/gates.log' | grep -q 'round cap after re-plan' && [ ! -s '$T/t3.calls' ]"
 # --- epoch: needs a block, tier, pass/fail/ceiling ---
 epk() { printf 'request %s\n' "$1" > "$E/epoch.md"; K=$(shasum -a 256 "$E/epoch.md" | awk '{print $1}'); { printf 'Gate: epoch\nkey: %s\nhead: %s\nTier: low\nTier: medium\nTier: high\n' "$K" "$H"; cat "$E/epoch.md"; } > "$E/packet-epoch.md"; }
 blk() { seed review:"$1":ok:pass: review:"$1":ok:pass: review:"$1":ok:pass: plan:"$1":ok:pass: review:"$1":ok:pass: review:"$1":ok:pass: review:"$1":ok:pass: "review:$1:blocked::round cap after re-plan"; }
@@ -282,6 +296,9 @@ chk "thread model conflicting with modelSelection exit2" bash -c "[ $GRC = 2 ] &
 fresh; new_ev effconf; pkt review "$H" "$B"; rec_review review "$H" pass; opusenv medium
 export FAKE_RECORD=$E/rec.json FAKE_RUNS='[{"runId":"run-2","status":"completed","options":{"effort":"low"}}]'; g "$E" review medium --record "$E/rec.json"
 chk "run effort conflict exit2" bash -c "[ $GRC = 2 ] && grep -q 'observed effort is' '$E/gates.log'"
+fresh; new_ev ic; pkt review "$H" "$B"; rec_review review "$H" pass; opusenv medium
+export FAKE_RECORD=$E/rec.json FAKE_RUN_INSTANCE=claudeAgent_3; g "$E" review medium --record "$E/rec.json"
+chk "cross-source instance mismatch claudeAgent vs claudeAgent_3 exit2" bash -c "[ $GRC = 2 ] && grep -q 'observed account' '$E/gates.log' && grep -q 'claudeAgent_3' '$E/gates.log' && ! ls '$E'/review-*.json 2>/dev/null"
 fresh; new_ev uf; pkt review "$H" "$B"; rec_review review "$H" pass; export FAKE_RECORD=$E/rec.json FAKE_ERR='{"error":"usage_limit"}'
 opusenv medium claude-opus-5-5 claudeAgent; g "$E" review medium --record "$E/rec.json"; rc1=$GRC; cp "$T/out" "$T/o1"
 opusenv medium claude-opus-5-5 claudeAgent_2; g "$E" review medium --record "$E/rec.json"; rc2=$GRC; cp "$T/out" "$T/o2"

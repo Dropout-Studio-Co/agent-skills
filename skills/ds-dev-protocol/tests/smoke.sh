@@ -12,8 +12,10 @@ SCRIPT=$ROOT/scripts; TESTS=$ROOT/tests
 DOCS=("$ROOT/SKILL.md" "$ROOT/reference.md" "$ROOT/plan-gate-brief.md" "$ROOT/implementer-brief.md" "$ROOT/opencode/opencode.json")
 # --- syntax: every shell script parses; every Python helper compiles with both interpreters, bytecode under $T ---
 for f in "$SCRIPT"/*.sh "$TESTS"/*.sh; do chk "bash -n ${f#$ROOT/}" bash -n "$f"; done
-for f in "$SCRIPT"/*.py; do n=$(basename "$f")
+if [ -x /usr/bin/python3 ]; then for f in "$SCRIPT"/*.py; do n=$(basename "$f")
   chk "py_compile $n (system /usr/bin/python3)" bash -c "rm -rf '$T/py'; mkdir -p '$T/py'; cp '$f' '$T/py/$n' && /usr/bin/python3 -I -m py_compile '$T/py/$n'"
+done; fi
+for f in "$SCRIPT"/*.py; do n=$(basename "$f")
   chk "py_compile $n (python3)" bash -c "rm -rf '$T/py'; mkdir -p '$T/py'; cp '$f' '$T/py/$n' && python3 -I -m py_compile '$T/py/$n'"
 done
 chk "python helpers are the three stdlib libraries" bash -c "ls '$SCRIPT'/gate_lib.py '$SCRIPT'/implement_lib.py '$SCRIPT'/premerge_lib.py >/dev/null"

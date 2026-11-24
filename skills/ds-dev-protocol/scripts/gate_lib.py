@@ -80,23 +80,21 @@ def thread_info(read, cfg):
     runs = [run for run in (read.get("recentRuns") or thread.get("recentRuns") or []) if isinstance(run, dict)]
     latest = thread.get("latestRunId") or read.get("latestRunId")
     run = next((entry for entry in runs if latest and (entry.get("runId") or entry.get("id")) == latest), runs[0] if runs else {})
-    meta = " ".join(str(node[key]) for node in (read, thread, run) if isinstance(node, dict) for key in ERR_KEYS if isinstance(node.get(key), (str, int, float)) and not isinstance(node.get(key), bool)).lower()
-    notice = " ".join(item.get("text") for item in items_of(read) if isinstance(item, dict) and item.get("type") == "system_notice" and isinstance(item.get("text"), str)).lower()
+    meta = " ".join(str(node[key]) for node in (read, thread, run) if isinstance(node, dict) for key in ERR_KEYS if isinstance(node.get(key), (str, int, float)) and not isinstance(node.get(key), bool)).lower(); notice = " ".join(item.get("text") for item in items_of(read) if isinstance(item, dict) and item.get("type") == "system_notice" and isinstance(item.get("text"), str)).lower()
     options = {}
     for source in (selection.get("options"), thread.get("options"), (thread.get("target") or {}).get("options")):
         if isinstance(source, dict): options.update(source)
         elif isinstance(source, list): options.update({entry["id"]: entry.get("value") for entry in source if isinstance(entry, dict) and entry.get("id")})
     seen = []
-    for source in [selection, thread, read] + runs:
-        if not isinstance(source, dict): continue
+    for source in [node for node in [selection, thread, read] + runs if isinstance(node, dict)]:
         opts = source.get("options")
         effort = (opts.get("thought_level") or opts.get("effort") or "") if isinstance(opts, dict) else next((entry.get("value") for entry in opts or [] if isinstance(entry, dict) and entry.get("id") in ("thought_level", "effort")), "")
         strings = lambda *keys: next((source[key] for key in keys if isinstance(source.get(key), str) and source.get(key)), "")
         seen.append(dict(model=strings("model", "modelId"), executed=strings("executedModel"), instance=strings("instanceId", "providerInstanceId"), effort=effort if isinstance(effort, str) else ""))
     pick = lambda *keys: next((source[key] for source in (selection, thread, read, run) for key in keys if isinstance(source, dict) and source.get(key)), "")
     usage = next((item for item in (thread.get("usage"), read.get("usage"), run.get("usage"), thread.get("tokenUsage")) if isinstance(item, dict)), {})
-    stop = next((source[key] for source in (selection, thread, read, run) for key in ("stop_reason", "stopReason") if isinstance(source, dict) and isinstance(source.get(key), str) and source.get(key)), "")
-    return {"status": pick("status"), "parent": thread.get("parentThreadId") or read.get("parentThreadId") or "", "instance": pick("instanceId", "providerInstanceId"), "model": pick("model", "modelId"), "run_status": run.get("status"), "usage": usage, "options": options, "meta": meta, "notice": notice, "seen": seen, "stop": stop, "cyber": "[cyber]" in meta or "[cyber]" in notice}
+    stops = [node[key] for node in [selection, thread, read, run] + runs + items_of(read) if isinstance(node, dict) for key in ("stop_reason", "stopReason") if isinstance(node.get(key), str) and node.get(key)] or [""]
+    return {"status": pick("status"), "parent": thread.get("parentThreadId") or read.get("parentThreadId") or "", "instance": pick("instanceId", "providerInstanceId"), "model": pick("model", "modelId"), "run_status": run.get("status"), "usage": usage, "options": options, "meta": meta, "notice": notice, "seen": seen, "stop": stops[0], "refusal": "refusal" in stops, "cyber": "[cyber]" in meta or "[cyber]" in notice}
 def validate(schema, value, path="$"):
     if schema.get("type") == "object" or schema.get("required"):
         if not isinstance(value, dict): return path + " must be an object"
@@ -128,6 +126,7 @@ def main():
     epochs = [index for index, row in enumerate(rows) if authorized(row)]
     plans = [index for index, row in enumerate(rows) if row.get("gate") == "plan" and row.get("status") == "ok"]
     epoch_start = epochs[-1] + 1 if epochs else 0; plan_start = max(epoch_start, plans[-1] + 1 if plans else 0)
+    last_ok = max((index for index, row in enumerate(rows) if row.get("gate") == args.gate and row.get("status") == "ok"), default=-1)
     used = sum(1 for index, row in enumerate(rows) if index >= plan_start and row.get("gate") == args.gate and row.get("status") == "ok"); total = sum(1 for index, row in enumerate(rows) if index >= epoch_start and row.get("gate") == args.gate and row.get("status") == "ok")
     round_no = len(plans) + 1 if args.gate == "plan" else used + 1
     def emit(**fields):
@@ -152,17 +151,17 @@ def main():
     effort = effort_for(args.gate, args.tier, trigger); chosen = info["options"].get(option) or ""
     obs = dict(model=info["model"], effort=chosen, account=info["instance"])
     def bad(reason):
-        prior = any(row.get("gate") == args.gate and row.get("key") == args.key and row.get("status") == "invalid" and str(row.get("reason", "")).startswith("invalid output") for row in rows)
+        prior = any(row.get("gate") == args.gate and row.get("key") == args.key and row.get("status") == "invalid" and str(row.get("reason", "")).startswith("invalid output") for row in rows[last_ok + 1:])
         if prior: return stop(3, status="blocked", reason="invalid output after retry", **obs)
         return stop(2, reason="invalid output: " + reason, **obs)
     if not info["parent"] or info["parent"] != args.parent_thread: return stop(2, reason="child thread parent %r does not match --parent-thread" % (info["parent"],), **obs)
-    if args.gate != "plan" and (info["stop"] == "refusal" or info["cyber"]): return stop(3, status="blocked", reason="cyber refusal", **obs)
+    if args.gate != "plan" and (info["refusal"] or info["cyber"]): return stop(3, status="blocked", reason="cyber refusal", **obs)
     if any(pattern in info["meta"] or pattern in info["notice"] for pattern in USAGE_PAT):
-        emit(status="invalid", reason="usage_limit", **obs)
-        tried = {row.get("account") for row in rows if (row.get("gate"), row.get("key"), row.get("status"), row.get("reason")) == (args.gate, args.key, "invalid", "usage_limit")} | {info["instance"]}
+        tried = {row.get("account") for row in rows[last_ok + 1:] if (row.get("gate"), row.get("key"), row.get("status"), row.get("reason")) == (args.gate, args.key, "invalid", "usage_limit")} | {info["instance"]}
         rest = [name for name in accounts if name not in tried]
-        if rest: sys.stderr.write("gate.sh: usage limit on %s; retry this gate on %s\n" % (info["instance"] or "unknown", rest[0])); return 2
-        return stop(3, status="blocked", reason="%s quota exhausted on every instance" % model, **obs)
+        if not rest: return stop(3, status="blocked", reason="%s quota exhausted on every instance" % model, **obs)
+        emit(status="invalid", reason="usage_limit", **obs)
+        sys.stderr.write("gate.sh: usage limit on %s; retry this gate on %s\n" % (info["instance"] or "unknown", rest[0])); return 2
     if info["status"] != "completed": return stop(2, reason="child thread status is %r, not completed" % (info["status"],), **obs)
     if info["run_status"] and info["run_status"] not in ("completed", "succeeded", "success", "done"): return stop(2, reason="latest run status is %r, not completed" % (info["run_status"],), **obs)
     if args.expected_head and git("rev-parse", "HEAD") != args.expected_head: return stop(2, reason="HEAD moved during the gate run", **obs)
@@ -173,7 +172,7 @@ def main():
     for seen in info["seen"]:
         for field, expected, label in (("model", model, "model"), ("executed", model, "executed model"), ("effort", effort, option)):
             if seen[field] and seen[field] != expected: return stop(2, reason="observed %s is %r, expected %s" % (label, seen[field], expected), **obs)
-        if seen["instance"] and seen["instance"] not in accounts: return stop(2, reason="observed account %r is not a permitted %s instance" % (seen["instance"], provider), **obs)
+        if seen["instance"] and (seen["instance"] != info["instance"] or seen["instance"] not in accounts): return stop(2, reason="observed account %r disagrees with the modelSelection instance %r" % (seen["instance"], info["instance"]), **obs)
     try: payload = json.load(open(args.record))
     except (OSError, ValueError) as problem: return stop(2, reason="--record is not readable JSON: %s" % problem, **obs)
     if not isinstance(payload, dict): return bad("--record payload is not a JSON object")
@@ -187,7 +186,7 @@ def main():
     final = output_of(read, args.child_thread)
     if not isinstance(final, dict) or not same(payload, final): return bad("record payload does not match the child thread output (final submission only)")
     verdict = payload.get("verdict", "pass")
-    if verdict == "pass" and any(isinstance(item, dict) and item.get("severity") == "important" for item in payload.get("findings") or []): return stop(2, reason="verdict pass is invalid alongside an Important finding", **obs)
+    if verdict == "pass" and any(isinstance(item, dict) and item.get("severity") == "important" for item in payload.get("findings") or []): return bad("verdict pass is invalid alongside an Important finding")
     name = "%s-%s.json" % (args.gate, args.key)
     provenance = dict(provenance_mode="t3-verified", engine="t3-delegate", provider=provider, route=route, model=model, effort=effort, session_id=args.child_thread, parent_thread_id=args.parent_thread, account=info["instance"], verified_at=now())
     target = os.path.join(args.evid, name); open(target, "w").write(json.dumps({"structured_output": payload, "provenance": provenance}, indent=2, sort_keys=True) + "\n")

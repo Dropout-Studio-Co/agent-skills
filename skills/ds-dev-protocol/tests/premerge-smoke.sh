@@ -138,6 +138,18 @@ refuse plan-after-code medium 'setrow plan ts 2026-12-02T00:00:00Z' 'code before
 refuse plan-after-code-low low 'setrow plan ts 2026-12-02T00:00:00Z' 'code before plan'
 refuse plan-after-code-high high 'setrow plan ts 2026-12-02T00:00:00Z' 'code before plan'
 chk "plan-after-code says code before plan" grep -q 'code before plan' "$T/pm.out"
+# forged EV: bare, provisional and stale HEAD-era plan rows dated before code must never set the chronology start.
+forged_ev() { E=$T/$1; rm -rf "$E"; mkdir -p "$E"; local fs f
+  printf 'facts\n' > "$E/facts.md"; fs=$(shasum -a 256 "$E/facts.md" | awk '{print $1}')
+  printf 'Tier: medium\n' > "$E/PLAN.md"; printf 'Tier: medium\n' > "$E/tier-recheck-$H.md"
+  f=$(gf "$E" plan "$fs" pass '[]' medium)
+  row "$E" plan "$fs" medium ok pass "" "ts=2026-10-01T00:00:00Z" "engine=" "head_sha=0000000000000000000000000000000000000000"
+  row "$E" plan "$fs" medium ok pass "" "ts=2026-10-02T00:00:00Z" "provenance_mode=provisional"
+  row "$E" plan "$fs" medium ok pass "plan-old.json" "ts=2026-10-03T00:00:00Z"
+  row "$E" plan "$fs" medium ok pass "$f" "facts_sha256=$fs" "ts=2026-11-21T00:00:00Z"
+  f=$(gf "$E" review "$H" pass '[]' medium); rowb "$E" review "$H" medium ok pass "$f" "ts=2026-11-22T00:00:00Z"; }
+forged_ev r-forged-plan; pm_reset; pmrun "$E" "$R" 1
+chk "refuse:unverified/HEAD-era plan rows never set the chronology" bash -c "[ $PRC = 1 ] && grep -q 'code before plan' '$T/pm.out' && [ \$(grep -cE 'pr (edit|merge)' '$T/calls.log') = 0 ]"
 base_ev r-code-after medium "$H"; pm_reset
 printf '{"ts":"2026-11-11T00:00:00Z","step":"s","status":"start"}\n{"ts":"2026-11-20T00:00:00Z","step":"s","status":"done","route":"deepseek"}\n' > "$E/impl.log"
 pmrun "$E" "$R" 1; chk "refuse:code-after-review" bash -c "[ $PRC = 1 ] && grep -q 'code after the gate' '$T/pm.out' && [ \$(grep -cE 'pr (edit|merge)' '$T/calls.log') = 0 ]"

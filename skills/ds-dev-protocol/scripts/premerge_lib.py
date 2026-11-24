@@ -46,8 +46,7 @@ def evidence(ev, key, tier, base, mode):
         else: ids[s] = n
 
     def fileof(d, g):
-        f = os.path.join(ev, os.path.basename(str(d.get("file") or "-")))
-        return f if os.path.isfile(f) and d.get("file_sha256") == sha(f) and re.fullmatch(g + r"-[^.]+\.json", os.path.basename(f)) else None
+        f = os.path.join(ev, os.path.basename(str(d.get("file") or "-"))); return f if os.path.isfile(f) and d.get("file_sha256") == sha(f) and re.fullmatch(g + r"-[^.]+\.json", os.path.basename(f)) else None
 
     def sop(f):
         try:
@@ -105,7 +104,8 @@ def evidence(ev, key, tier, base, mode):
         else: auth.append((i, d))
     E = auth[-1][0] if auth else -1
     plans = [(i, d) for i, d in R if d.get("gate") == "plan" and d.get("status") == "ok"]
-    pd = plans[-1][1] if plans else None; P2 = next((i for i, d in plans if i > E), None); pt = ep(pd) if pd else None; p0 = min([t for t in (ep(d) for _, d in plans) if t is not None], default=None)
+    pd = plans[-1][1] if plans else None; P2 = next((i for i, d in plans if i > E), None); pt = ep(pd) if pd else None
+    p0 = min([t for t in (ep(d) for _, d in plans if not prov(d, "plan", d.get("tier")) and (not d.get("file") or (bool(fileof(d, "plan")) and os.path.basename(str(d.get("file"))) == "plan-%s.json" % d.get("key")))) if t is not None], default=None)
     live = lambda i: E < 0 or (P2 is not None and i > P2)
     if E >= 0 and P2 is None: F("epoch reset at row %d has no fresh plan after it" % (E + 1))
     if not pd: F("no logged plan row")
