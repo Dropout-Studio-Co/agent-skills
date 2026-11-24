@@ -1,173 +1,101 @@
 #!/usr/bin/env bash
-# gate.sh - run one ds-dev-protocol gate and log exactly one round.
+# gate.sh - record one ds-dev-protocol gate round with T3-verified provenance.
 set -euo pipefail
 usage() { cat <<'EOF'
-usage: EVID=<dir> gate.sh <plan|review|security|epoch> <low|medium|high> [--trigger] [--diff FILE] [--base REF]
-  plan: key EVID/facts.md sha256; effort always xhigh (--trigger no effect); --diff: key FILE sha256
-  review/security: the packet must contain the exact diff (FILE, or git diff merge-base(REF)..HEAD; REF default origin/HEAD); --trigger raises medium effort to high
-  epoch: key EVID/epoch.md sha256; only after a review/security round-cap block; max 2 authorized per EVID
-exit: 0 pass (or valid plan), 1 verdict fail, 2 usage/precondition, 3 blocked, 4 round cap, 5 lock wait timed out (rerun)
+usage: EVID=<dir> gate.sh <plan|review|security|epoch> <low|medium|high>
+         --record <json-file> --child-thread <id> --parent-thread <id>
+         [--trigger] [--diff FILE] [--base REF]
+  plan: key = sha256(EVID/facts.md); thought_level medium on low tier, high on medium/high
+  review: key = HEAD or sha256(--diff FILE); effort medium, high on high tier or --trigger
+  security: key = HEAD or sha256(--diff FILE); high tier only; effort high
+  epoch: key = sha256(EVID/epoch.md); after a round-cap block; max 2 authorized per EVID
+exit: 0 pass (or valid plan), 1 verdict fail, 2 usage/precondition/provenance/tree mismatch, 3 blocked, 4 round cap
 EOF
 }
 die() { printf 'gate.sh: %s\n' "$*" >&2; exit 2; }
+sha() { shasum -a 256 "$1" | awk '{print $1}'; }
 if [ "${1:-}" = --help ]; then usage; exit 0; fi
-[ -n "${EVID:-}" ] || die "EVID is unset"
-[ -d "$EVID" ] || die "EVID is not a directory: $EVID"
+[ -n "${EVID:-}" ] && [ -d "$EVID" ] || die "EVID must name an existing directory"
 [ $# -ge 2 ] || { usage >&2; exit 2; }
 SKILL=${SKILL:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}
-gate=$1; tier=$2; shift 2; trigger=0; diff=""; base=""
+gate=$1; tier=$2; shift 2
+record=""; child=""; parent=""; trigger=0; diff=""; base=""
 while [ $# -gt 0 ]; do case $1 in
+  --record|--child-thread|--parent-thread|--diff|--base)
+    [ $# -ge 2 ] && [ -n "$2" ] || die "$1 needs a value"
+    case $1 in --record) record=$2 ;; --child-thread) child=$2 ;; --parent-thread) parent=$2 ;; --diff) diff=$2 ;; --base) base=$2 ;; esac
+    shift ;;
   --trigger) trigger=1 ;;
-  --diff) shift; [ $# -gt 0 ] || die "--diff needs a file"; diff=$1 ;;
-  --base) shift; [ $# -gt 0 ] || die "--base needs a ref"; base=$1 ;;
-  *) die "unknown argument: $1" ;; esac; shift; done
+  *) die "unknown argument: $1" ;;
+esac; shift; done
 case $gate in plan|review|security|epoch) ;; *) die "bad gate: $gate" ;; esac
 case $tier in low|medium|high) ;; *) die "bad tier: $tier" ;; esac
-if [ "$tier" = low ] && [ "$gate" != review ] && [ "$gate" != plan ]; then die "low tier is only valid with plan or review"; fi
-if [ "$gate" = epoch ] && [ -n "$diff$base" ]; then die "epoch reads EVID/epoch.md; no --diff or --base"; fi
-if [ "$gate" = epoch ]; then [ -s "$EVID/epoch.md" ] || die "missing $EVID/epoch.md"; key=$(shasum -a 256 "$EVID/epoch.md" | awk '{print $1}')
-elif [ -n "$diff" ]; then [ -f "$diff" ] || die "missing diff file: $diff"; key=$(shasum -a 256 "$diff" | awk '{print $1}')
-elif [ "$gate" = plan ]; then [ -s "$EVID/facts.md" ] || die "missing $EVID/facts.md"; key=$(shasum -a 256 "$EVID/facts.md" | awk '{print $1}')
-else git rev-parse --git-dir >/dev/null 2>&1 || die "not a git worktree"
-  git diff --quiet HEAD || die "tracked tree is dirty; commit or stash first"; key=$(git rev-parse HEAD); fi
-TS=$(date -u +%Y-%m-%dT%H:%M:%SZ); round=1; base=${base:-}; mb=""; dsha=""; out=$EVID/$gate-$key.tmp; errf=$EVID/$gate-$key.err; : > "$errf"
-log() { local file=${12} sha=""
-  if [ -n "$file" ] && [ -f "$EVID/$file" ]; then sha=$(shasum -a 256 "$EVID/$file" | awk '{print $1}'); fi
-  python3 -I -c 'import json, sys
-k = "ts gate tier round key base_ref base_sha diff_sha256 status route model effort session_id account input_tokens output_tokens cost_usd verdict reason file file_sha256".split()
-d = dict(zip(k, sys.argv[1:])); n = lambda x: (float(x) if "." in x else int(x)) if x.replace(".", "", 1).isdigit() else 0
-for f in ("round", "input_tokens", "output_tokens", "cost_usd"): d[f] = n(d.get(f, "0"))
-print(json.dumps(d))' "$TS" "$gate" "$tier" "$round" "$key" "$base" "$mb" "$dsha" "$@" "$sha" >> "$EVID/gates.log"; }
-refuse() { log invalid "" "" "" "" "" 0 0 0 "" "$1" ""; die "$1"; }
-TMPD=$(mktemp -d "${TMPDIR:-/tmp}/gate.XXXXXX"); want=$TMPD/diff; trap 'rm -rf "$TMPD"' EXIT; mb=""; dsha=""; cfgchg=0
-if [ "$gate" = epoch ]; then cp "$EVID/epoch.md" "$want"
-elif [ "$gate" != plan ]; then if [ -n "$diff" ]; then cp "$diff" "$want"; base=""
-  else base=${base:-$(git symbolic-ref -q --short refs/remotes/origin/HEAD || echo origin/main)}
-    printf '%s' "$base" | grep -Eq '^origin/[A-Za-z0-9._/-]+$' || refuse "--base must be an origin/<branch> ref: $base"
-    mb=$(git merge-base "$base" HEAD) || refuse "no merge-base with $base"; git diff --no-color "$mb" HEAD > "$want"; [ -s "$want" ] || refuse "empty diff against $base"
-    dsha=$(git diff --no-color --full-index "$mb" HEAD | shasum -a 256 | awk '{print $1}')
-    git -c core.quotePath=false diff --name-only -z "$mb" HEAD | tr '\0' '\n' > "$TMPD/names"
-    if grep -Eiq '(^|/)(opencode\.jsonc?$|\.opencode/|\.claude/|\.agents/|AGENTS\.md$|CLAUDE\.md$)' "$TMPD/names"; then cfgchg=1; fi
-    python3 -I - "$mb" <<'PY' || refuse "a text file shows only as 'Binary files differ' (.gitattributes -diff/binary); drop that attribute before gating"
+[ -n "$record" ] || die "--record is required"
+[ -f "$record" ] || die "missing record file: $record"
+[ -n "$child" ] || die "--child-thread is required"
+[ -n "$parent" ] || die "--parent-thread is required"
+if [ "$tier" = low ] && { [ "$gate" = security ] || [ "$gate" = epoch ]; }; then die "low tier is not valid with $gate"; fi
+if [ "$gate" = security ] && [ "$tier" != high ]; then die "security gate requires tier high"; fi
+if [ "$gate" = epoch ] && [ -n "$diff${base:-}" ]; then die "epoch reads EVID/epoch.md; no --diff or --base"; fi
+repo=0; git rev-parse --git-dir >/dev/null 2>&1 && repo=1 || true
+reponame=outside; head=""; base_ref=""; mb=""; dsha=""; repocheck=0
+tmpd=$(mktemp -d "${TMPDIR:-/tmp}/gate.XXXXXX"); trap 'rm -rf "$tmpd"' EXIT; want=$tmpd/source
+if [ "$gate" = plan ]; then
+  [ -s "$EVID/facts.md" ] || die "missing $EVID/facts.md"; key=$(sha "$EVID/facts.md"); cp "$EVID/facts.md" "$want"
+elif [ "$gate" = epoch ]; then
+  [ -s "$EVID/epoch.md" ] || die "missing $EVID/epoch.md"; key=$(sha "$EVID/epoch.md"); cp "$EVID/epoch.md" "$want"
+elif [ -n "$diff" ]; then
+  [ -f "$diff" ] || die "missing diff file: $diff"; key=$(sha "$diff"); cp "$diff" "$want"
+else
+  [ "$repo" = 1 ] || die "not a git worktree"
+  key=$(git rev-parse HEAD)
+  base_ref=${base:-$(git symbolic-ref -q --short refs/remotes/origin/HEAD || echo origin/main)}
+  printf '%s' "$base_ref" | grep -Eq '^origin/[A-Za-z0-9._/-]+$' || die "--base must be an origin/<branch> ref: $base_ref"
+  mb=$(git merge-base "$base_ref" HEAD) || die "no merge-base with $base_ref"
+  git diff --no-color "$mb" HEAD > "$want"; [ -s "$want" ] || die "empty diff against $base_ref"
+  dsha=$(git diff --no-color --full-index "$mb" HEAD | shasum -a 256 | awk '{print $1}')
+  git -c core.quotePath=false diff --name-only -z "$mb" HEAD | tr '\0' '\n' > "$tmpd/names"
+  if grep -Eiq '(^|/)(opencode\.jsonc?$|\.opencode/|\.claude/|\.agents/|AGENTS\.md$|CLAUDE\.md$)' "$tmpd/names"; then
+    [ "$tier" = low ] && die "agent config changed: tier must be at least medium"
+  fi
+  python3 -I - "$mb" <<'PY' || die "a text file reads as 'Binary files differ' (.gitattributes -diff/binary); drop the attribute before gating"
 import subprocess, sys
-def blob(rev, p):
-    r = subprocess.run(["git", "cat-file", "blob", rev + ":" + p], capture_output=True)
-    return r.stdout[:8000] if r.returncode == 0 else None
-for e in subprocess.run(["git", "diff", "--no-renames", "--numstat", "-z", sys.argv[1], "HEAD"], capture_output=True, check=True).stdout.split(b"\0"):
-    if e.startswith(b"-\t-\t"):
-        p = e[4:].decode("utf-8", "surrogateescape"); sides = [b for b in (blob(sys.argv[1], p), blob("HEAD", p)) if b is not None]
-        if sides and all(b"\0" not in b for b in sides): sys.exit(1)
+def blob(rev, path):
+    out = subprocess.run(["git", "cat-file", "blob", rev + ":" + path], capture_output=True)
+    return out.stdout[:8000] if out.returncode == 0 else None
+for entry in subprocess.run(["git", "diff", "--no-renames", "--numstat", "-z", sys.argv[1], "HEAD"], capture_output=True, check=True).stdout.split(b"\0"):
+    if entry.startswith(b"-\t-\t"):
+        path = entry[4:].decode("utf-8", "surrogateescape")
+        sides = [side for side in (blob(sys.argv[1], path), blob("HEAD", path)) if side is not None]
+        if sides and all(b"\0" not in side for side in sides):
+            sys.exit(1)
 PY
-  fi; fi
-packet=$EVID/packet-$gate.md
-if [ ! -s "$packet" ]; then log invalid "" "" "" "" "" 0 0 0 "" "missing packet" ""; die "missing $packet"; fi
-if ! python3 -I - "$packet" "$gate" "$key" "$EVID/facts.md" "$want" "$mb" <<'PY'
-import sys
-p, g, k, f, w, b = sys.argv[1:7]; t = open(p, encoding="utf-8", errors="replace").read()
-if g == "plan": sys.exit(0 if open(f, encoding="utf-8", errors="replace").read().strip() in t else 1)
-sys.exit(0 if k in t and b in t and "Gate: " + g in t and open(w, encoding="utf-8", errors="replace").read().strip() in t else 1)
-PY
-then log invalid "" "" "" "" "" 0 0 0 "" "packet does not bind key, gate and exact diff" ""; die "packet must contain the key, the merge-base, 'Gate: $gate' and the exact diff"; fi
-vals=$(python3 -I - "$EVID" "$gate" "$tier" "$key" <<'PY'
-import hashlib, json, os, sys
-ev, g, t, k = sys.argv[1:5]; p = os.path.join(ev, "gates.log"); rows = []
-def ld(l):
-    try: return json.loads(l)
-    except Exception: return None
-rows = [d for d in (ld(l) for l in (open(p, errors="replace") if os.path.exists(p) else [])) if isinstance(d, dict)]
-def auth(d):
-    f = os.path.join(ev, d.get("file") or "-")
-    return d.get("gate") == "epoch" and d.get("status") == "ok" and d.get("verdict") == "pass" and d.get("route") in ("opus", "fallback") and os.path.isfile(f) and d.get("file_sha256") == hashlib.sha256(open(f, "rb").read()).hexdigest()
-e = max([i + 1 for i, d in enumerate(rows) if auth(d)] or [0]); s = max([i + 1 for i, d in enumerate(rows) if d.get("gate") == "plan" and d.get("status") == "ok"] or [0])
-xi = set(); sp = set(); pv = {}
-for i, d in [(i, d) for i, d in enumerate(rows) if d.get("status") == "ok"]:
-    q = pv.get(d.get("gate"), -1); pv[d.get("gate")] = i
-    if q >= 0 and d.get("route") == "opus" and rows[q].get("route") == "fallback" and rows[q].get("key") == d.get("key"): xi.add(i); sp.add(q)
-n = len([d for i, d in enumerate(rows) if i >= s and i not in xi and d.get("gate") == g and d.get("status") == "ok"]); tot = len([d for i, d in enumerate(rows) if i >= e and i not in xi and d.get("gate") == g and d.get("status") == "ok"]); rk = {"low": 0, "medium": 1, "high": 2}
-lg = [d for d in rows if d.get("gate") == g and d.get("status") == "ok"]; cf = 1 if g in ("review", "security") and t == "high" and lg and lg[-1].get("route") == "fallback" and lg[-1].get("key") == k else 0
-cap = 0 if cf else 2 if g != "plan" and tot >= 6 else 1 if n >= 3 else 0; ec = 0
-if g == "epoch":
-    b = [d for d in rows[e:] if d.get("gate") in ("review", "security") and d.get("status") == "blocked" and d.get("reason") == "round cap after re-plan"]
-    ec = 1 if not b else 2 if rk.get(t, 0) < rk.get(b[-1].get("tier", ""), 0) else 3 if any(d.get("gate") == "epoch" and d.get("status") == "ok" and d.get("verdict") == "fail" for d in rows[e:]) else 4 if len([d for d in rows if d.get("gate") == "epoch" and d.get("status") == "ok" and d.get("verdict") == "pass"]) >= 2 else 0
-print(n + 1, n, cap, ec, cf)
-PY
-); read -r round ok cap ec conf <<< "$vals"
-case ${ec:-0} in 0) ;; 1) log invalid "" "" "" "" "" 0 0 0 "" "epoch needs a review/security round-cap block" ""; die "epoch: no round-cap block in gates.log" ;; 2) log invalid "" "" "" "" "" 0 0 0 "" "epoch tier below the block tier" ""; die "epoch: tier below the blocked gate's" ;; 3) log blocked "" "" "" "" "" 0 0 0 "" "epoch denied for this block" ""; exit 3 ;; 4) log blocked "" "" "" "" "" 0 0 0 "" "epoch ceiling: 2 per task" ""; exit 3 ;; esac
-if [ "$cap" = 2 ]; then log blocked "" "" "" "" "" 0 0 0 "" "round cap after re-plan" ""; exit 3; fi
-if [ "$cap" = 1 ]; then log cap "" "" "" "" "" 0 0 0 "" "3 ok rounds reached; re-plan required" ""; exit 4; fi
-effort=medium; if [ "$gate" = plan ]; then effort=xhigh; elif [ "$tier" = high ] || [ "$trigger" = 1 ]; then effort=high; fi
-if [ "$gate" = plan ]; then schema=plan-schema.json; else schema=review-schema.json; fi
-run_claude() { local rc=0 ap; set +e
-  ap=$(cat "$SKILL/opus-gate-brief.md")
-  if [ "$gate" = plan ]; then ap+=$'\n'"Requested tier: $tier. Return exactly that value in \`tier\`; put any disagreement about the tier in risks or open_questions."; fi
-  claude -p --model claude-opus-5-5 --effort "$1" --setting-sources "" --strict-mcp-config --mcp-config '{"mcpServers":{}}' --permission-mode dontAsk \
-    --allowedTools "Read,Grep,Glob" --disallowedTools "Bash,Edit,Write,NotebookEdit,Agent,WebFetch,WebSearch" \
-    --append-system-prompt "$ap" --output-format json --json-schema "$(cat "$SKILL/$schema")" < "$packet" > "$out" 2>>"$errf"
-  rc=$?; set -e; return $rc; }
-classify() { python3 -I - "$out" "$gate" "$key" "$1" "$tier" <<'PY'
-import json, sys
-p, g, k, rc, tr = sys.argv[1:6]
-try:
-    d = json.load(open(p)); o = d.get("structured_output") or {}; mu = d.get("modelUsage") or {}
-    t = next((v for x, v in mu.items() if "claude-opus-5-5" in x), {}) if isinstance(mu, dict) else {}
-    e = bool(d.get("is_error")); r = str(d.get("result") or "").lower()
-    b = rc == "0" and not e and isinstance(o, dict) and bool(o) and bool(t) and o.get("gate") == g and (g == "plan" or str(o.get("head_sha", "")) == k)
-    ok = b and (g != "plan" or o.get("tier") == tr)
-    v = ["ok" if ok else "limit" if e and ("limit" in r or "usage" in r) else "invalid", d.get("session_id", ""), t.get("inputTokens", 0), t.get("outputTokens", 0), d.get("total_cost_usd", 0), o.get("verdict", ""), 1 if b and g == "plan" else 0]
-except Exception: v = ["invalid", "", 0, 0, 0, "", 0]
-print("\n".join("%s=%s" % (n, " ".join(str(x).split())) for n, x in zip(["KIND", "SESSION", "INTOK", "OUTOK", "COST", "VERDICT", "TIERBAD"], v)))
-PY
-}
-attempt() { local rc=0; if run_claude "$1"; then rc=0; else rc=$?; fi; classify "$rc" > "$EVID/$gate-$key.cls"
-  KIND=""; SESSION=""; INTOK=0; OUTOK=0; COST=0; VERDICT=""; TIERBAD=0; while IFS='=' read -r k v; do case $k in KIND) KIND=$v;; SESSION) SESSION=$v;; INTOK) INTOK=$v;; OUTOK) OUTOK=$v;; COST) COST=$v;; VERDICT) VERDICT=$v;; TIERBAD) TIERBAD=$v;; esac; done < "$EVID/$gate-$key.cls"; rm -f "$EVID/$gate-$key.cls"
-  if [ "$KIND" != ok ]; then local why="opus attempt: $KIND"; if [ "$TIERBAD" = 1 ]; then why="plan tier mismatch (requested $tier)"; fi; log invalid opus claude-opus-5-5 "$1" "$SESSION" "$account" "$INTOK" "$OUTOK" "$COST" "" "$why" ""; fi; }
-log_metrics() { [ "$gate" = review ] || [ "$gate" = security ] || return 0
-  local mdir=${XDG_STATE_HOME:-$HOME/.local/state}/review-metrics repo=outside
-  if [ -z "$diff" ]; then repo=$(basename "$(git rev-parse --show-toplevel 2>/dev/null || pwd)"); fi
-  mkdir -p "$mdir" 2>/dev/null || return 0
-  python3 -I - "$1" "$TS" "$(basename "$EVID")" "$repo" "$key" "$tier" "$round" "$gate" "$2" >> "$mdir/findings.jsonl" 2>/dev/null <<'PY' || true
-import json, sys
-p, ts, task, repo, sha, tier, rnd, gate, model = sys.argv[1:10]
-sev = {"important": "Important", "nit": "Nit", "pre-existing": "Pre-existing"}
-for f in (json.load(open(p)).get("structured_output") or {}).get("findings") or []:
-    print(json.dumps({"date": ts[:10], "task": task, "repo": repo, "sha": sha, "tier": tier, "round": int(rnd), "severity": sev.get(f.get("severity", ""), f.get("severity", "")), "class": gate, "outcome": "reported", "reviewer": model}))
-PY
-}
-finish() { local file=$gate-$key.json; mv -f "$out" "$EVID/$file"
-  log ok "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "${9}" "${10}" "$file"; log_metrics "$EVID/$file" "$2"
-  printf '%s %s route=%s verdict=%s file=%s\n' "$gate" "$key" "$1" "${9}" "$file"
-  if [ "$gate" = plan ] || [ "${9}" = pass ]; then exit 0; fi; exit 1; }
-if [ "$tier" = low ] && [ "$cfgchg" = 1 ]; then refuse "agent config changed: tier must be >= medium"; fi
-state_dir=${XDG_STATE_HOME:-$HOME/.local/state}/dev-evidence; mkdir -p "$state_dir"; lock=$state_dir/.opus-gate.lock; locked=0
-acquire() { local i=0 pid=""; while [ $i -lt 1800 ]; do
-    if mkdir "$lock" 2>/dev/null; then printf '%s\n' $$ > "$lock/pid"; locked=1; return 0; fi
-    pid=$(cat "$lock/pid" 2>/dev/null || true)
-    age=$(python3 -I -c 'import os,sys,time;print(int(time.time()-os.stat(sys.argv[1]).st_mtime))' "$lock" 2>/dev/null || echo 0)
-    if { [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; } || { [ -z "$pid" ] && [ "$age" -gt 60 ]; }; then
-      [ "$(cat "$lock/pid" 2>/dev/null || true)" = "$pid" ] && rm -rf "$lock"; continue; fi
-    sleep 1; i=$((i + 1)); done; return 1; }
-trap 'rm -rf "$TMPD"; if [ "$locked" = 1 ]; then rm -rf "$lock"; fi' EXIT
-if ! acquire; then log invalid opus claude-opus-5-5 "$effort" "" "" 0 0 0 "" "opus lock wait timed out; rerun" ""; exit 5; fi
-account=signed-in; opus_unavailable=0; reason=""
-acct() { printf '%s' "$1" | python3 -I -c 'import json,sys
-t = sys.stdin.read(); b = {}
-for l in [t] + t.splitlines():
-    try: d = json.loads(l)
-    except Exception: continue
-    if isinstance(d, dict) and isinstance(d.get("active"), dict): b = d["active"]
-print(b.get("number", "signed-in"))'; }
-if command -v cswap >/dev/null 2>&1; then
-  rotate() { local rc=0; CSWAP_RAW=$(cswap auto --once --model Opus --json 2>/dev/null) || rc=$?; return $rc; }
-  if rotate; then rc=0; else rc=$?; fi
-  if [ "$rc" = 1 ]; then sleep "${GATE_CSWAP_RETRY:-30}"; if rotate; then rc=0; else rc=$?; fi; fi
-  if [ "$rc" = 3 ]; then opus_unavailable=1; reason="opus unavailable (cswap exit 3)"; else account=$(acct "${CSWAP_RAW:-}"); fi
 fi
-if [ "$opus_unavailable" = 1 ]; then log blocked opus claude-opus-5-5 "$effort" "" "$account" 0 0 0 "" "$reason" ""; exit 3; fi
-attempt "$effort"
-if [ "$KIND" = limit ]; then cswap switch --strategy next-available --json >/dev/null 2>&1 || true
-  account=$(acct "$(cswap status --json 2>/dev/null || true)"); attempt "$effort"
-  if [ "$KIND" = invalid ]; then attempt "$effort"; fi
-elif [ "$KIND" = invalid ]; then attempt "$effort"; fi
-case $KIND in limit) reason="usage limit after account switch" ;; invalid) reason="opus run invalid after retry"; if [ "$TIERBAD" = 1 ]; then reason="plan tier mismatch after retry"; fi ;; esac
-if [ "$KIND" = ok ]; then finish opus claude-opus-5-5 "$effort" "$SESSION" "$account" "$INTOK" "$OUTOK" "$COST" "$VERDICT" ""; fi
-log blocked opus claude-opus-5-5 "$effort" "" "$account" 0 0 0 "" "$reason" ""; exit 3
+if { [ "$gate" = plan ] || [ "$gate" = epoch ]; } && [ "$repo" = 1 ]; then repocheck=1; fi
+if { [ "$gate" = review ] || [ "$gate" = security ]; } && [ -z "$diff" ]; then repocheck=1; fi
+if [ "$repocheck" = 1 ]; then
+  reponame=$(basename "$(git rev-parse --show-toplevel)")
+  head=$(git rev-parse HEAD)
+  if [ "$gate" = review ] || [ "$gate" = security ]; then head=$key; fi
+  [ -z "$(git status --porcelain --untracked-files=all)" ] || die "worktree is dirty or has untracked files; a gate must run on a clean tree"
+fi
+packet=$EVID/packet-$gate.md
+[ -s "$packet" ] || die "missing $packet"
+python3 -I - "$packet" "$gate" "$key" "$want" "$mb" <<'PY' || die "packet must bind the key, 'Gate: $gate', the merge-base and the exact gate source"
+import sys
+path, gate, key, source, base = sys.argv[1:6]
+text = open(path, encoding="utf-8", errors="replace").read()
+body = open(source, encoding="utf-8", errors="replace").read().strip()
+ok = bool(body) and key in text and "Gate: " + gate in text and body in text
+if gate in ("review", "security") and base:
+    ok = ok and base in text
+sys.exit(0 if ok else 1)
+PY
+fsha=""
+if [ -f "$EVID/facts.md" ]; then fsha=$(sha "$EVID/facts.md"); fi
+rc=0
+python3 -I "$SKILL/scripts/gate_lib.py" --evid "$EVID" --gate "$gate" --tier "$tier" \
+  --record "$record" --child-thread "$child" --parent-thread "$parent" --trigger "$trigger" \
+  --key "$key" --expected-head "$head" --facts-sha "$fsha" --base-ref "$base_ref" --base-sha "$mb" \
+  --diff-sha "$dsha" --repo "$reponame" --skill "$SKILL" || rc=$?
+exit "$rc"

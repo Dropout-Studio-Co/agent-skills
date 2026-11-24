@@ -4,7 +4,7 @@
  "snapshot": false,
  "agents": {
   "implementer": {
-   "description": "Execution-protocol implementer: edits and runs commands inside one worktree from an Opus plan. No git mutation, gh, web, subagents, skills or questions.",
+   "description": "Execution-protocol implementer: edits and runs commands inside one worktree from a logged plan. No git mutation, gh, web, subagents, skills or questions.",
    "mode": "primary",
    "permissions": [
     {

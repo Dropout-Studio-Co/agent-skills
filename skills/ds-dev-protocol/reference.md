@@ -2,26 +2,41 @@
 
 Script internals and accepted-risk documentation that `SKILL.md` refers to; every rule the conductor acts on stays in `SKILL.md`.
 
-## Claude accounts: `cswap` rotation
+## Gate recording: T3-verified provenance (`gate.sh --record`)
 
-Rotation runs inside `gate.sh`, exactly as follows:
+Every gate is produced by a T3 Code `delegate_task` child thread; `gate.sh <gate> <tier> --record <json-file> --child-thread <id> --parent-thread <id> [--trigger] [--diff FILE] [--base REF]` is the only writer of gate evidence. It never trusts caller-supplied model, effort or thread flags:
 
-- A machine-wide Opus lock serializes Opus calls; a wait timeout logs `invalid` and exits 5.
-- Before the gate's Opus calls, `cswap auto --once --model Opus --json` runs: exit 1 waits `GATE_CSWAP_RETRY` (default 30 s) and retries once, then continues; exit 3 logs `blocked`, exits 3 and makes no `claude` call; any other exit continues and logs the active account number (never the email).
-- After a usage-limit result, `cswap switch --strategy next-available --json` runs and the call is rerun once; a second limit logs `blocked` with `usage limit after account switch`.
-- An invalid run is retried once, then logs `blocked` with `opus run invalid after retry`.
-- Without `cswap`, the account is logged as `signed-in` and a usage limit still gets one rerun.
+- **Thread read.** It queries T3 Code directly with `acp-mcp-call t3_thread_read` (`T3_ACP_MCP_NODE` / `T3_ACP_MCP_ENTRYPOINT`) and reads the child's configuration with `t3_thread_configure`. A run counts only when `childThreadId != parentThreadId`, the child's `status` is `completed`, its `providerInstanceId` (logged as `account`) is an enabled instance of the expected provider, its model is exact, and its option (`thought_level` for `plan`, `effort` for `review`, `security`, `epoch`) matches the tier and `--trigger` rule.
+- **Model pinning.** `plan` needs `gemini-4-neon`; `review`, `security` and `epoch` need `claude-opus-5-5`. A silent downgrade (for example `claude-opus-4-8`) is `invalid`, never accepted.
+- **Payload match.** The recorded JSON must equal the child's final `t3_submit_output` payload and validate against `plan-schema.json` or `review-schema.json`; `facts_sha256` must match `EVID/facts.md` for `plan`, and the packet must carry the exact diff, merge-base and `HEAD` for `review` and `security`.
+- **Tree integrity.** Because `delegate_task` cannot strip write or shell tools, the worktree must be clean (`git status --porcelain --untracked-files=all` empty) and `HEAD` unchanged before and after the child; dirty or mutated state is `exit 2`, never a pass.
+- **Refusal fail-closed.** A Claude run reporting a refusal (`stop_reason == "refusal"`, Anthropic `[cyber]` classifier, or `[cyber]` in the error or notice) logs `status: "blocked"`, `reason: "cyber refusal"`, `account: <providerInstanceId>` and exits 3. It is never retried as invalid JSON, never logged `pass`, never counted as model unavailability.
+- **Metrics preserved.** `review` and `security` rows keep `log_metrics` writing every finding to `~/.local/state/review-metrics/findings.jsonl`, unchanged.
+- **Log row.** One JSON line per run in `EVID/gates.log`: `provenance_mode: "t3-verified"`, `engine`, `provider`, `route`, `model`, `effort`, `task_id`, `gate`, `tier`, `round`, `key`, `facts_sha256`, `base_ref`, `base_sha`, `diff_sha256`, `head_sha`, `file`, `file_sha256`, `session_id`, `parent_thread_id`, `account`, `input_tokens`, `output_tokens`, `cost_usd`, `ts`, `status`, `verdict`, `reason`.
+- **Exit codes.** 0 pass or a valid plan; 1 `fail`; 2 usage, precondition, or provenance and tree mismatch; 3 blocked; 4 round cap, re-plan.
 
-**Pass conditions.** `plan` uses `plan-schema.json`; the rest use `review-schema.json`. An Opus run counts only if it exited 0, `is_error` is false, `structured_output` is present and `modelUsage` names `claude-opus-5-5`. For `plan`, `gate.sh` tells the plan author the requested tier, and the run also needs its returned `tier` to equal it; a lower or higher one is invalid, retried once, then logged `blocked` with `plan tier mismatch after retry`.
+## Step 6 implementer: documented sandboxed mechanical runner
 
-## Step 6 implementer runs: no sandbox (Rahi 2026-11-14)
+`scripts/implement.sh` is the sole implementation path: `opencode run --standalone`, pinned to `opencode-go/deepseek-v4.1-flash#high`, with `OPENCODE_DISABLE_CLAUDE_CODE=1`, `OPENCODE_DISABLE_FREE_MODELS=1` and `opencode/opencode.json` tool scoping (no git mutation, `gh`, web, subagents or `.env`). No other model, variant, account or conductor run substitutes for it.
 
-**Accepted risks:** the implementer runs as Rahi's user with unrestricted reads (credentials included), writes and network; the permission rules match command prefixes lexically and can be bypassed (for example through `sh -c`); writes to git config or hooks in the common git dir are not detected; a process that leaves the worktree (`setsid` plus `cd` elsewhere) is not reaped; and implementer code runs in the conductor's checks after the conductor reads the diff.
+- **Delimiter leak and premature stop.** A run that leaks `<|tool_calls_cbegin|>` in **that turn's own assistant text**, or stops before writing `.impl/result.json` (with `HEAD` intact), is resumed once in the same session within the remaining `IMPL_DEADLINE` and under 250K input tokens; only the current turn's `EVID/impl-<tag>-<name>.events` is scanned, never the cumulative `session export` (on a resume it still holds the earlier turn's leak) and never a tool output or a file the run read, which can quote the literal string. If it still does not complete, the round is discarded, the patch saved and the run exits 1 as one strike; a resume classified unavailable exits 3 at once with no failed or `cost_usd > 0` row, and a resume that times out keeps its timeout reason.
+- **`not_checked`.** `.impl/result.json` records the verification commands the implementer ran and a `not_checked` list of what it could not run; the conductor copies it to `EVID/impl-<tag>.json`, covers the gap itself before any gate, and never reports the step complete on `not_checked` alone.
+- **Accepted risks:** the implementer runs as Rahi's user with unrestricted reads (credentials included), writes and network; the permission rules match command prefixes lexically and can be bypassed (for example through `sh -c`); writes to git config or hooks in the common git dir are not detected; a process that leaves the worktree (`setsid` plus `cd` elsewhere) is not reaped; and implementer code runs in the conductor's checks after the conductor reads the diff.
 
 ## Step 8 delivery: premerge checks
 
-It checks the clean tree; the tier re-check (final tier is the highest `Tier:` line across it and `PLAN.md`; lower fails); a logged Opus plan for Medium/High; that every gate JSON in EVID came from `gate.sh` and a Medium/High branch's first commit does not predate the first logged plan unless first gated Low; each required gate file bound to the current head, with a logged ok round, route and tier; the round counts, epoch authorizations (max 2, none denied) and blocked entries; and that every `impl.log` row is a pinned implementer route (`implement.sh --check`), then squash-merges with `--match-head-commit`.
+`scripts/premerge_lib.py` checks the clean tree; the tier floor (final tier is the highest `Tier:` line across the re-check and `PLAN.md`; a lower one fails); and the 4-stage chronology, fail closed at exit 1:
+
+1. **Facts binding:** `EVID/facts.md` exists and its sha256 equals `plan.facts_sha256` on every tier.
+2. **Plan provenance and separation:** the `plan` row is `engine == "t3-delegate"`, `provenance_mode == "t3-verified"`, `route == "neon"`, `model == "gemini-4-neon"`, effort `medium` (Low) or `high` (Medium and High), `account` `antigravity` or `antigravity_2`, and a non-empty `session_id` distinct from `parent_thread_id`.
+3. **Plan before code:** `ts(ok plan) <= ts(first non-start impl.log row)` and `<=` the first branch commit timestamp; a raised tier needs a raised-tier High-effort plan before final review, and the raised-from-Low exception survives only with a logged Low plan and review before the raise.
+4. **Code before review:** `ts(last done impl.log row) <= ts(the passing review or security row on HEAD)`, or a carry from an earlier gated head with a byte-identical PR diff and no prior fail on it.
+5. **Review and security provenance:** `engine == "t3-delegate"`, `provenance_mode == "t3-verified"`, `route == "opus"`, `model == "claude-opus-5-5"`, `account` a `claudeAgent*` instance, `childThreadId != parentThreadId`, effort matching the tier and `--trigger`, and exact binding via `head_sha`, `base_ref` (`origin/<pr-base>`), `base_sha` (`merge-base`) and `diff_sha256`. Any other route or provenance mode is rejected.
+6. **Epoch integrity:** every `epoch-*.json` has an `ok` row with the same T3-verified provenance, effort by tier, a matching `file_sha256`, at most 2 authorized epochs per EVID, no denied epoch in the active epoch, and a fresh `plan` row before any later review or security pass counts.
+7. **Stray files:** every `plan-*.json`, `review-*.json`, `security-*.json` and `epoch-*.json` in `EVID/` has a matching `ok` row and `file_sha256` in `gates.log`. A `--record` working copy goes to `EVID/raw-<gate>-<key>.json`, which is never a gate file, so a failed call cannot leave a stray `<gate>-<key>.json` behind for this check to trip on.
+
+`implement.sh --check` accepts only pinned DeepSeek rows (`opencode-go/deepseek-v4.1-flash`, `high`, `cost == 0`) plus the empty-route `start` and `discarded` rows; the script then squash-merges with `--match-head-commit`.
 
 ## Gate eval set
 
-The review-gate eval set lives in `~/.local/state/dev-evidence/sp-apply-1114/eval/` (`README.md` there: fixtures, rerun, scoring). Rescore it after any change to `opus-gate-brief.md`, and record one row per variant in `~/.local/state/review-metrics/evals.jsonl`.
+The review-gate eval set lives in `~/.local/state/dev-evidence/sp-apply-1114/eval/` (`README.md` there: fixtures, rerun, scoring). Rescore it after any change to `opus-gate-brief.md` or `plan-gate-brief.md`, and record one row per variant in `~/.local/state/review-metrics/evals.jsonl`.
