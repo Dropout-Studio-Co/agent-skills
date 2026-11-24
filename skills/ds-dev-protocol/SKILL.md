@@ -1,6 +1,6 @@
 ---
 name: ds-dev-protocol
-description: 'ds-dev-protocol: 100% end-to-end completion over presentation. Orchestration V2 4 roles: Gemini 4 Neon conducts (Medium always) and plans (Med/High) via gate.sh plan --record; DeepSeek V4.1 Flash High is sole implementer via scripts/implement.sh, no model fallback; Claude Opus 5.5 (Med/High) gates review, security, epoch. Risk tiers, T3 evidence, head-SHA gates, PR delivery. Always on (Rahi 2026-11-09): every dev task.'
+description: 'ds-dev-protocol: 100% end-to-end completion over presentation. Orchestration V2 4 roles: Gemini 4 Neon conducts (Medium always) and plans (Med/High) via gate.sh plan --record; DeepSeek V4.1 Flash High is sole implementer via scripts/implement.sh, no model fallback; Claude Opus 5.5 (Med/High) gates review, security, epoch. Risk tiers, T3 evidence, head-SHA gates, PR delivery. Always on: every dev task.'
 ---
 
 ## ds-dev-protocol (applies to the task it accompanies, before or after it)
@@ -9,13 +9,13 @@ description: 'ds-dev-protocol: 100% end-to-end completion over presentation. Orc
 
 **Goal: 100% end-to-end completion.** Finish the whole task, implementation through finalization; never shrink, defer or leave parts pending. Resolve blockers yourself, and report one only for a kind under "Valid reasons" after every route is exhausted, then finish the rest.
 
-**Completion over presentation (Rahi 2026-11-11, strict, MUST).** The user must never type "continue"; never stop to present progress while executable work remains. End a turn only when every item is done and verified, every other is blocked by a genuinely external or physically impossible step or a gate blocked as steps 1 or 7 define with its reason recorded, or the user said stop.
+**Completion over presentation (strict, MUST).** The user must never type "continue"; never stop to present progress while executable work remains. End a turn only when every item is done and verified, every other is blocked by a genuinely external or physically impossible step or a gate blocked as steps 1 or 7 define with its reason recorded, or the user said stop.
 - **Never a reason:** a finished lane, PR or wave; a long turn or context (checkpoint to `PROGRESS.md`; after a restart re-read it, `PLAN.md`, `gates.log`, `impl.log`, git log); gate cost or time; "a good checkpoint"; wanting to report or confirm direction; uncertainty you can resolve yourself.
 - **No interim reports.** A status update ending "Next action: X" (or "▶ next") while X is executable is a violation: do X. "Next" belongs only in the final report at a valid stop.
 - **Throughput:** parallel independent lanes up to the concurrency allowed; no extra rounds or evidence beyond the gates and step 4's workflow skills.
 - **Before ending any turn (MUST):** list every task item with its status and continue while any is executable; say "Incomplete" only when every open item has a recorded blocker as above; after a user stop, mark each open item not done.
 
-**Pre-authorized (Rahi 2026-11-13, MUST).** Rahi grants every approval, permission and choice this protocol would otherwise ask him for, in advance, for every task: never ask, never wait. What would go to him goes to the owning gate: `facts.md` open questions (a Low task with one plans as Medium) go to Gemini 4 Neon through `gate.sh plan --record`, the `epoch` gate (step 7) to Claude Opus 5.5 through `gate.sh epoch --record`; its logged decision authorizes.
+**Pre-authorized (MUST).** Rahi grants every approval, permission and choice this protocol would otherwise ask him for, in advance, for every task: never ask, never wait. What would go to him goes to the owning gate: `facts.md` open questions (a Low task with one plans as Medium) go to Gemini 4 Neon through `gate.sh plan --record`, the `epoch` gate (step 7) to Claude Opus 5.5 through `gate.sh epoch --record`; its logged decision authorizes.
 - **Never approvable, by any agent or gate:** new spend, purchases, paid usage or credits, subscriptions or plan upgrades; sending email or outbound messages under Rahi's identity; exposing secrets or credentials; disabling security or bypassing or weakening a failed gate; destructive production-data operations without verified recovery; deleting or rewriting legal agreements or acceptance records; changing the model routing or the conductor's own model (only Rahi's explicit instruction changes routing); a physically impossible step (passkey touch).
 - A step that needs one is skipped: record `blocked external` (or `blocked impossible`), name the boundary on `Routes tried:`, finish all other work. "The user said stop" still ends work.
 
@@ -23,7 +23,7 @@ description: 'ds-dev-protocol: 100% end-to-end completion over presentation. Orc
 
 **Progress status (MUST).** Last line of `PROGRESS.md`: `STATUS: in-progress | done | blocked <external|impossible|gate|user-stop> — <reason>`; blocked external or impossible also needs `Routes tried:` with every route attempted.
 
-## 1. Model routing & Orchestration V2 contract (Rahi 2026-11-24, strict)
+## 1. Model routing & Orchestration V2 contract (strict)
 
 Four roles, one model each, no substitution:
 
@@ -59,7 +59,7 @@ The conductor sets the tier from the request and the code it will touch, writing
 
 Evidence folder per task: `~/.local/state/dev-evidence/<task>/` (`EVID`), holding `PLAN.md` and `PROGRESS.md`.
 
-**Neon owns every plan (Rahi 2026-11-24), Low included,** blind to any conductor plan.
+**Neon owns every plan, Low included,** blind to any conductor plan.
 1. The conductor writes `EVID/facts.md`: request verbatim, repo rules, relevant files with `file:line`, current behavior, patterns, constraints, open questions. Facts only: no proposed solution, design or preference.
 2. A fresh Neon `delegate_task` (step 1) reads `plan-gate-brief.md` and `EVID/packet-plan.md` and returns the plan as schema JSON: acceptance criteria, architecture, exact target paths (a directory ends in '/'), tests, failure modes, risks, rollback. The conductor records it with `gate.sh plan <tier> --record ...`, which validates facts sha256, tier, effort, thread separation and clean tree.
 3. The conductor saves it as `PLAN.md` and follows it exactly; `gate.sh` writes `EVID/plan-<facts sha256>.json` for `implement.sh`. A needed deviation returns to Neon before any code: append the reason and current `PLAN.md` to `facts.md` and rerun the `plan` gate (a new plan restarts the rounds). Plan `risks` records every deliberate shortcut as `shortcut: <limit>, <when to upgrade>`, never as a code comment.
@@ -69,7 +69,7 @@ Evidence folder per task: `~/.local/state/dev-evidence/<task>/` (`EVID`), holdin
 
 Check the latest official docs for every command, config, API and version; don't trust memory. Use installed MCP servers, tools and skills that help; skip redundant ones.
 
-**Workflow skills (Rahi 2026-11-20, MUST).** When installed, read each from `~/.agents/skills/<name>/SKILL.md` (`retro` has model invocation off) and use it where listed; this protocol wins where they differ, and a confirmation pause is yours to decide or goes to a gate (Pre-authorized).
+**Workflow skills (MUST).** When installed, read each from `~/.agents/skills/<name>/SKILL.md` (`retro` has model invocation off) and use it where listed; this protocol wins where they differ, and a confirmation pause is yours to decide or goes to a gate (Pre-authorized).
 - `diagnosing-bugs`: unknown-cause bug, failure or slowdown: run phases 1-4 in a scratch detached worktree (removed after) and put the red repro command and confirmed cause in `facts.md` or `--notes`; phases 5-6 are the plan and step 6, and a round 2 implementer failure also runs it.
 - `tdd`: `implement.sh` appends it to every brief, with the plan's Tests as the agreed seams; the implementer follows it, the conductor reads the tests.
 - `pr`: write the step 8 PR body; a repo PR template sets the structure, and the protocol adds tier, triggers, gate links and `Shortcuts`.
@@ -104,7 +104,7 @@ EVID=~/.local/state/dev-evidence/<task> "$SKILL/scripts/implement.sh" <low|mediu
 
 The brief comes from the last logged plan; attempts log to `EVID/impl.log`. Exit 0 done: read the full diff, rerun bootstrap and repo checks, commit each accepted round. 1 failed round (patch saved, tree reset): retry with `--notes`, at most 3 per step and plan. 2 usage or precondition. 3 unavailable: record `STATUS: blocked external — DeepSeek V4.1 Flash 1017 unavailable` with `Routes tried:`; never another model. 4 round cap: re-plan. 5 escalate via `EVID/escalation-<tag>.md` and `--notes`, or re-plan. **Exit 6** (worktree processes survived): read, run, bootstrap or commit nothing there; from the main checkout run `git worktree remove --force <wt>`, never reuse the path, continue from the last accepted commit in a fresh worktree, and record the PIDs in `PROGRESS.md` and the report. After a killed run, `implement.sh --discard --bootstrap <cmd|none>` resets the worktree; take and record the bootstrap in `PROGRESS.md`, and run nothing else there.
 
-**Mechanical runner (Rahi 2026-11-24):** the implementer is the mechanical `implement.sh` runner, no OS sandbox (OpenCode Go, `variant: high`, `cost == 0`), scoped by `opencode/opencode.json`; a delimiter leak or premature stop gets one bounded resume, and the conductor covers `not_checked` before any gate (`reference.md`).
+**Mechanical runner:** the implementer is the mechanical `implement.sh` runner, no OS sandbox (OpenCode Go, `variant: high`, `cost == 0`), scoped by `opencode/opencode.json`; a delimiter leak or premature stop gets one bounded resume, and the conductor covers `not_checked` before any gate (`reference.md`).
 
 ## 7. Review gates (MUST pass before merge)
 
@@ -134,7 +134,7 @@ Every reviewer checks the claimed tier against the diff; an under-classified tie
 - `important` findings are fixed through `implement.sh --step fix-<gate>-r<n> --notes <findings>`, re-verified (step 6), then re-reviewed by a fresh `gate.sh` child with the full packet plus a section headed exactly `## Changes since the last round`: the last reviewed key (one this gate logged `ok`), the diff since it, and each finding with its fix or reason. Later rounds add an `important` finding only for that section's code, behavior it alters, an unresolved fix, an under-classified tier or an exploitable security issue; other unchanged-code issues are `pre-existing`.
 - Any new commit after a pass invalidates it; re-review the delta for the new head.
 - After round 3, rethink: a new Neon plan (step 3), then build and gate it; a Low task at the cap becomes Medium and the turn continues. If that fails 3 more rounds, run the epoch rule; a fail records the gate blocked in `PROGRESS.md` and you finish other work.
-- **Epoch rule (Rahi 2026-11-13).** A new plan epoch needs a passing `epoch` gate. After a `review` or `security` block at the cap, write facts-only `EVID/epoch.md` and `EVID/packet-epoch.md`, then run a fresh Opus `delegate_task` recorded via `gate.sh epoch <medium|high> --record` at no lower tier. Pass authorizes one epoch: rounds restart and a new Neon plan precedes any review; `fail` is final, `blocked gate`. At most 2 per EVID, then `blocked` exit 3; never open a new EVID to dodge a block.
+- **Epoch rule.** A new plan epoch needs a passing `epoch` gate. After a `review` or `security` block at the cap, write facts-only `EVID/epoch.md` and `EVID/packet-epoch.md`, then run a fresh Opus `delegate_task` recorded via `gate.sh epoch <medium|high> --record` at no lower tier. Pass authorizes one epoch: rounds restart and a new Neon plan precedes any review; `fail` is final, `blocked gate`. At most 2 per EVID, then `blocked` exit 3; never open a new EVID to dodge a block.
 - Rounds are counted per gate from EVID/gates.log across all sessions; a blocker counts only after every route listed by the task or user has actually been tried and recorded under "Routes tried:" in PROGRESS.md.
 
 ## 8. Deliver through PRs (merge gate, MUST)
