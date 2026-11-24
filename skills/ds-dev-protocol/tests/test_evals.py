@@ -239,14 +239,48 @@ class RunScriptTests(unittest.TestCase):
 
     def test_prepare_refuses_an_in_repo_out_dir(self):
         target = SKILL / "evals" / ".prepare-probe"
+        in_git = run("git", "-C", SKILL, "rev-parse", "--git-dir").returncode == 0
         done = run("bash", EVALS / "run.sh", "prepare", "--out-dir", target)
         self.assertEqual(done.returncode, 2, done.stdout + done.stderr)
-        self.assertIn("inside the git repository", done.stderr)
+        self.assertIn("inside the git repository" if in_git else "inside the skill directory", done.stderr)
         self.assertFalse(target.exists())
+
+    def test_prepare_refuses_out_dir_inside_non_git_skill_tree(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            skill = root / "ds-dev-protocol"
+            shutil.copytree(EVALS, skill / "evals", ignore=shutil.ignore_patterns("__pycache__"))
+            runner = skill / "evals" / "run.sh"
+            self.assertNotEqual(run("git", "-C", skill, "rev-parse", "--git-dir").returncode, 0)
+            (root / "link").symlink_to(skill / "evals", target_is_directory=True)
+            cases = [skill / "evals" / ".stage", skill, root / "link", root / "missing" / ".." / skill.name]
+            for target in cases:
+                done = run("bash", runner, "prepare", "--out-dir", target)
+                self.assertEqual(done.returncode, 2, "%s: %s" % (target, done.stdout + done.stderr))
+                self.assertIn("inside the skill directory", done.stderr, str(target))
+                self.assertFalse((Path(os.path.realpath(str(target))) / "manifest.json").exists(), str(target))
+            sibling = Path(str(skill) + "-sibling")
+            done = run("bash", runner, "prepare", "--out-dir", sibling, "--fixture", "F1")
+            self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+            self.assertTrue((sibling / "manifest.json").exists())
+
+    def test_prepare_refuses_out_dir_inside_temp_git_repo(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            repo.mkdir()
+            (repo / "home").mkdir()
+            env = dict(os.environ, HOME=str(repo / "home"), GIT_CONFIG_NOSYSTEM="1")
+            init = run("git", "-C", repo, "init", "-q", env=env)
+            self.assertEqual(init.returncode, 0, init.stdout + init.stderr)
+            target = repo / "stage"
+            done = run("bash", EVALS / "run.sh", "prepare", "--out-dir", target, env=env)
+            self.assertEqual(done.returncode, 2, done.stdout + done.stderr)
+            self.assertIn("inside the git repository", done.stderr)
+            self.assertFalse(target.exists())
 
     def test_prepare_refuses_hash_drift(self):
         with tempfile.TemporaryDirectory() as tmp:
-            copy = Path(tmp) / "evals"
+            copy = Path(tmp) / "skill" / "evals"
             shutil.copytree(EVALS, copy, ignore=shutil.ignore_patterns("__pycache__"))
             (copy / "fixtures" / "F1" / "src" / "stats.py").write_text("# drift\n", encoding="utf-8")
             done = run("bash", copy / "run.sh", "prepare", "--out-dir", Path(tmp) / "out")

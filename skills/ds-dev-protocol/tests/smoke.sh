@@ -26,7 +26,7 @@ chk "line limits: gate-smoke.sh <= 375" bash -c "[ \$(wc -l < '$TESTS/gate-smoke
 chk "line limits: premerge-smoke.sh <= 375" bash -c "[ \$(wc -l < '$TESTS/premerge-smoke.sh') -le 375 ]"
 chk "line limits: implement-smoke.sh <= 200" bash -c "[ \$(wc -l < '$TESTS/implement-smoke.sh') -le 200 ]"
 # --- SKILL.md size and frontmatter description ---
-chk "SKILL.md <= 25600 bytes" test "$(wc -c < "$ROOT/SKILL.md")" -le 25600
+chk "SKILL.md <= 23800 bytes" test "$(wc -c < "$ROOT/SKILL.md")" -le 23800
 chk "frontmatter description <= 450 chars" bash -c "d=\$(awk -F\"'\" '/^description:/{print \$2; exit}' '$ROOT/SKILL.md'); [ -n \"\$d\" ] && [ \${#d} -le 450 ]"
 # --- forbidden tokens: no cswap, agy, Sonnet, xhigh, provisional, code-review or sandboxed in anything the conductor reads ---
 TOKENS="cswap agy Sonnet xhigh provisional code-review sandboxed"
@@ -49,13 +49,17 @@ chk "Orchestration V2 contract in SKILL.md" bash -c "f='$ROOT/SKILL.md'; for k i
 chk "medium/high-only effort stated" bash -c "grep -qF 'medium' '$ROOT/SKILL.md' && grep -qF 'high' '$ROOT/SKILL.md' && grep -qF 'No other model, route or account' '$ROOT/SKILL.md' && grep -qF 'no model fallback' '$ROOT/SKILL.md'"
 chk "scripts wired into SKILL.md" bash -c "f='$ROOT/SKILL.md'; for s in scripts/gate.sh scripts/premerge-and-merge.sh scripts/implement.sh; do grep -qF \"\$s\" \"\$f\" || exit 1; done && grep -qF 'gate.sh epoch' \"\$f\" && grep -qF 'Rounds are counted per gate from EVID/gates.log' \"\$f\""
 chk "reference.md documents T3-verified provenance" bash -c "f='$ROOT/reference.md'; test -s \"\$f\" && grep -qF 't3_thread_read' \"\$f\" && grep -qF 't3-verified' \"\$f\" && grep -qF '4-stage chronology' \"\$f\" && grep -qF 'reference.md' \"\$ROOT/SKILL.md\""
+chk "all 12 workflow skills in SKILL.md" bash -c "f='$ROOT/SKILL.md'; bt=\$(printf '\\140'); for s in tdd diagnosing-bugs pr retro setup-pre-commit codebase-design writing-for-agents domain-modeling research prototype wizard grilling; do grep -qF -- \"\$s\$bt\" \"\$f\" || exit 1; done"
+chk "P27 shortcuts in SKILL.md" bash -c "grep -qF 'Shortcuts' '$ROOT/SKILL.md' && grep -qF 'shortcut:' '$ROOT/SKILL.md'"
+chk "routing/policy stays High" grep -qF 'routing/policy' "$ROOT/SKILL.md"
+chk "reference.md documents Trail blast" grep -qF 'trail blast --no-owners' "$ROOT/reference.md"
 # --- AC36: HEAD rules SKILL.md must keep ---
 chk "pre-authorized paragraph" grep -qF 'Pre-authorized (Rahi 2026-11-13' "$ROOT/SKILL.md"
 chk "hard boundaries stated" bash -c "for p in 'new spend, purchases, paid usage or credits, subscriptions or plan upgrades' 'outbound messages under Rahi' 'exposing secrets or credentials' 'bypassing or weakening a failed gate' 'without verified recovery' 'legal agreements or acceptance records' 'changing the model routing or the conductor' 'passkey touch'; do grep -qF \"\$p\" '$ROOT/SKILL.md' || exit 1; done"
 chk "no user authorization left" bash -c "! grep -qE 'only the user|user can authorize|user.s decision|ask the user|user approv' '$ROOT/SKILL.md'"
 chk "delta-round rule stated" grep -qF 'Changes since the last round' "$ROOT/SKILL.md"
 chk "plan risks and RED in SKILL.md" bash -c "grep -qF '## Plan risks' '$ROOT/SKILL.md' && grep -qF 'RED confirmed:' '$ROOT/SKILL.md'"
-chk "brief optional + op record + size" bash -c "grep -qi optional '$ROOT/opus-gate-brief.md' && grep -qF 'op-<name>.md' '$ROOT/SKILL.md' && [ \$(wc -c < '$ROOT/SKILL.md') -le 25600 ]"
+chk "brief optional + op record + size" bash -c "grep -qi optional '$ROOT/opus-gate-brief.md' && grep -qF 'op-<name>.md' '$ROOT/SKILL.md' && [ \$(wc -c < '$ROOT/SKILL.md') -le 23800 ]"
 chk "exit 6 documented" bash -c "bash '$ROOT/scripts/implement.sh' --help | grep -q '6 worktree processes survived' && grep -qF 'Exit 6' '$ROOT/SKILL.md' && ! grep -qF 'stops every process confined' '$ROOT/SKILL.md'"
 chk "rounds and rethink stated" bash -c "grep -qF 'Rounds are counted per gate from EVID/gates.log' '$ROOT/SKILL.md' && grep -qF 'Rounds: 3 per plan' '$ROOT/SKILL.md' && grep -qF -- '- After round 3, rethink:' '$ROOT/SKILL.md'"
 chk "6-lane ceiling stated" grep -qF 'At most 6 concurrent lanes' "$ROOT/SKILL.md"

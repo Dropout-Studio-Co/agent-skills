@@ -52,8 +52,8 @@ python3 -I -B -m unittest discover -s skills/ds-dev-protocol/tests -p 'test_eval
 packet and either `fixture.diff` or `facts.md`, and `<out>/manifest.json` lists them. `work/` is a
 plain directory, not a git worktree, so `gate.sh plan` has nothing to clean-tree check and a child
 cannot read the answer key or mutate the repository. Default `--out-dir` is
-`${XDG_STATE_HOME:-$HOME/.local/state}/dev-evidence/evals/<utc>`; an in-repo out-dir exits 2, as does
-any drift between `inputs.sha256` and the fixtures.
+`${XDG_STATE_HOME:-$HOME/.local/state}/dev-evidence/evals/<utc>`; an out-dir inside a git repository
+or the skill directory exits 2, as does any drift between `inputs.sha256` and the fixtures.
 
 `record` runs `scripts/gate.sh --record` from that fixture's `work/` and keeps its exit code
 (0 pass, 1 fail verdict, 2 usage/precondition, 3 blocked, 4 round cap). It writes `<evid>/exit`, and

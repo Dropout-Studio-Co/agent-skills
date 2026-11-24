@@ -1,6 +1,6 @@
 # ds-dev-protocol: reference
 
-Script internals and accepted-risk documentation that `SKILL.md` refers to; every rule the conductor acts on stays in `SKILL.md`.
+Script internals, exit codes and accepted-risk documentation that `SKILL.md` refers to; every MUST/NEVER rule stays in `SKILL.md`.
 
 ## Gate recording: T3-verified provenance (`gate.sh --record`)
 
@@ -38,6 +38,37 @@ Every gate is produced by a T3 Code `delegate_task` child thread; `gate.sh <gate
 7. **Stray files:** every `plan-*.json`, `review-*.json`, `security-*.json` and `epoch-*.json` in `EVID/` has a matching `ok` row and `file_sha256` in `gates.log`. A `--record` working copy goes to `EVID/raw-<gate>-<key>.json`, which is never a gate file, so a failed call cannot leave a stray `<gate>-<key>.json` behind for this check to trip on.
 
 `implement.sh --check` accepts only pinned DeepSeek rows (`opencode-go/deepseek-v4.1-flash`, `high`, `cost == 0`) plus the empty-route `start` and `discarded` rows; the script then squash-merges with `--match-head-commit`.
+
+## Step 6 implement.sh exit codes
+
+- 0: done; read the full diff, rerun bootstrap and repo checks, and commit the accepted round.
+- 1: one failed round; the patch is saved, the tree reset, the reason logged in `EVID/impl.log`, and the next round uses `--notes` (at most 3 per step and plan).
+- 2: usage or precondition.
+- 3: no implementer available; record the blocked external status with `Routes tried:`; never call another model.
+- 4: round cap; re-plan.
+- 5: escalate through `EVID/escalation-<tag>.md` and `--notes`, or re-plan.
+- 6: worktree processes survived; read, run, bootstrap or commit nothing from that worktree, remove it from the main checkout with `git worktree remove --force <wt>`, never reuse the path, continue from the last accepted commit in a fresh worktree, and record the PIDs in `PROGRESS.md` and the report.
+
+Run nothing else in the worktree during a run: the runner stops every process whose working directory is inside it (exit 6 if one survives). After a killed run, `implement.sh --discard --bootstrap <cmd|none>` resets the worktree; resets wipe ignored files, so the bootstrap (from AGENTS.md/CLAUDE.md/README, recorded in `PROGRESS.md`) must recreate them.
+
+## Conductor parent-thread recovery
+
+A limited Antigravity main thread cannot switch itself: recover by a manual picker switch plus `continue` (delegated children do not migrate, so check or `task_cancel` orphaned ones), or wait for reset (optional same-account `autoResumeLimitedThreads`).
+
+## Step 7 delta and epoch mechanics
+
+- **Trail blast.** Review and security packets include `trail blast --no-owners --base <base>` output for Trail-supported diffs; skip docs- or config-only diffs.
+- **Delta commands.** The diff since the last reviewed head is `git diff --no-color <last reviewed head> H` in a repository, or `diff -u` of the old and new diff files saved as `EVID/diff-<key>.diff` outside one.
+- **Refusal and invalid rows.** A refusal is a `blocked` row with `reason: "cyber refusal"` and exit 3. A run refused after the key logs `invalid`; one invalid run is re-dispatched as a fresh child, then logged `blocked`.
+- **Epoch packet.** `EVID/epoch.md` is facts only: the request verbatim, the blocked gate and key, its `gates.log` rows, every round's gate file and `PLAN.md`; no proposed approach. `EVID/packet-epoch.md` carries `Gate: epoch`, the tier, the sha256 of `epoch.md` and its text, and is recorded with `gate.sh epoch <medium|high> --record` at a tier no lower than the blocked gate's.
+
+## Shortcuts in plans and PRs
+
+A deliberate shortcut with a known limit is recorded in the plan's `risks` as `shortcut: <limit>, <when to upgrade>`; the code never carries a shortcut comment. The PR body lists each open shortcut under a `Shortcuts` heading, or `none`. The step 10 report repeats every still-open shortcut and every `Not checked` item carried from the implementer.
+
+## Workflow skills (extended notes)
+
+Each skill is read from `~/.agents/skills/<name>/SKILL.md`; `retro` has model invocation off. `diagnosing-bugs` phases 1-4 run in a scratch detached worktree (removed after) and produce the red repro command and confirmed cause for `facts.md` or `--notes`; phases 5-6 are the plan and step 6, and a round 2 implementer failure also runs it. `tdd` is appended by `implement.sh` to every brief, with the plan's Tests as the agreed seams. `pr` supplies the repo PR template; the protocol adds tier, triggers, gate links and `Shortcuts`. `retro` runs at step 9 after any `fail` verdict or failed or escalated round, writing candidates to `PROGRESS.md`, never to the user. `setup-pre-commit` is cited in `facts.md` when a JS/TS task adds commit-time hooks or checks, with the repo's hook manager, formatter and package manager winning. `codebase-design` is cited for module interfaces, seams and deep-module refactors. `writing-for-agents` is read before editing a skill, protocol, `AGENTS.md` or `CLAUDE.md`. `domain-modeling` is cited for domain terms, `GLOSSARY.md` or ADRs. `research` is primary-source investigation for recent docs, APIs or versions, captured in `EVID`. `prototype` is an uncommitted throwaway before planning when state-model or UI needs validation. `wizard` is an interactive bash script for human-only setup or migration, never for agent-executable steps. `grilling` is a method only: order `facts.md` open decisions as a frontier tree for the Neon plan gate, never for Rahi.
 
 ## Gate eval set
 

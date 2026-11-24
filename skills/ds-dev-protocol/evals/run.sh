@@ -13,7 +13,7 @@ usage: evals/run.sh <command> [options]
   prepare [--out-dir DIR] [--variant NAME] [--fixture ID]...
                             stage each fixture's src/ as a non-git work/ tree and its packet
                             as evid/ under DIR (default $STATE/dev-evidence/evals/<utc>);
-                            exit 2 on hash drift or an out-dir inside a git repository
+                            exit 2 on hash drift or an out-dir inside a git repository or the skill directory
   record --evid DIR --tier T --record FILE --child-thread ID --parent-thread ID
          [--gate plan|review] [--diff FILE] [--trigger] [--force]
                             run scripts/gate.sh --record from that fixture's work/ and keep
@@ -30,12 +30,10 @@ idcheck() { case $1 in ""|*[!A-Za-z0-9._-]*) die "bad --variant/--fixture name (
 abs() { d=$(dirname -- "$1"); [ -d "$d" ] || { printf '%s/%s\n' "$PWD" "$1"; return; }
   printf '%s/%s\n' "$(cd "$d" && pwd -P)" "$(basename -- "$1")"; }
 hashes() { (cd "$HERE" && shasum -a 256 -c inputs.sha256 >/dev/null); }
-
 check() {
   hashes || die "input hash drift: fixtures/ or keys.txt no longer match inputs.sha256"
   bash "$HERE/fixture-check.sh"
 }
-
 prepare() {
   out=$STATE/dev-evidence/evals/$(date -u +%Y%m%dT%H%M%SZ); variant=base; ids=""
   while [ $# -gt 0 ]; do case $1 in
@@ -45,12 +43,14 @@ prepare() {
       shift ;;
     *) die "unknown prepare argument: $1" ;;
   esac; shift; done
-  probe=$out; while [ ! -d "$probe" ]; do probe=$(dirname "$probe"); done
+  real=$(python3 -I -B -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$out") || die "cannot resolve $out"
+  probe=$real; while [ ! -d "$probe" ]; do probe=$(dirname "$probe"); done
   root=$(git -C "$probe" rev-parse --show-toplevel 2>/dev/null || true)
   [ -z "$root" ] || die "--out-dir is inside the git repository $root; stage outside it"
+  case $real in "$SKILL"|"$SKILL"/*) die "--out-dir is inside the skill directory $SKILL; stage outside it" ;; esac
   hashes || die "input hash drift: fixtures/ or keys.txt no longer match inputs.sha256"
-  mkdir -p "$out" || die "cannot create $out"
-  out=$(cd "$out" && pwd -P)
+  mkdir -p "$real" || die "cannot create $real"
+  out=$real
   manifest=$out/manifest.json
   printf '{"variant": "%s", "created": "%s", "fixtures": [' "$variant" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$manifest"
   first=1
@@ -75,7 +75,6 @@ prepare() {
   printf ']}\n' >> "$manifest"
   printf 'manifest: %s\n' "$manifest"
 }
-
 record() {
   evid=""; tier=""; rec=""; child=""; parent=""; gate=""; diff=""; trigger=0; force=0
   while [ $# -gt 0 ]; do case $1 in
