@@ -24,9 +24,9 @@ mobile, native, desktop, TV, CLI, or backend):
   and never enter `~/Library`, `~/Pictures`, `~/Movies`, or `~/Music` (avoids hangs and OS
   permission prompts). A Git repo counts only when its remote URL matches this repo's `origin`.
 - All local branches, stashes, and uncommitted/untracked changes in every location above.
-- All remote branches and open PRs/MRs on the repository's forge (use `gh-axi` or `gh` on GitHub;
-  when no forge CLI is available or the remote is not GitHub, inspect remote branches via Git and
-  keep remote branches/PRs whose authorship cannot be verified in `(d)`).
+- All remote branches and open PRs/MRs on the repository's forge — including user, agent, bot
+  (e.g., Dependabot, Shopify, Cloudflare), and no-PR branches (use `gh-axi` or `gh` on GitHub; when
+  no forge CLI is available or the remote is not GitHub, inspect remote branches via Git).
 
 ## Blocker
 
@@ -45,10 +45,9 @@ Every step below says "BLOCKER" to mean exactly this. Never ask the user.
    compares against this base).
 2. For every branch, worktree, clone, stash, and PR, collect the facts NOT already in
    `DEFAULT_BRANCH`: unmerged commits (`git cherry <default> <ref>`, `git log <default>..<ref>`),
-   uncommitted changes, untracked files, ignored files, and 24-hour activity
-   (`git log -1 --format=%cI`, file mtimes). Once `DEFAULT_BRANCH` is updated and `start` is
-   recorded, run these read-only inspections (branches and `git cherry`, worktrees, bounded
-   extra-clone search, stashes, `gh pr list` / `gh-axi` and `gh api user --jq .login`, `lsof`)
+   uncommitted changes, untracked files, and ignored files. Once `DEFAULT_BRANCH` is updated and
+   `start` is recorded, run these read-only inspections (branches and `git cherry`, worktrees,
+   bounded extra-clone search, stashes, `gh pr list` / `gh-axi`, `lsof`)
    concurrently as parallel read-only shell calls; use read-only audit subagents only for a repo
    with many diverged branches or clones that need deep diff reading.
 3. Classify every item into exactly one of four evidence classes:
@@ -57,12 +56,12 @@ Every step below says "BLOCKER" to mean exactly this. Never ask the user.
 | --- | --- |
 | **(a) in main (default branch)** | `git cherry <default> <ref>` shows no `+` line, or tip is an ancestor of `DEFAULT_BRANCH` (`git merge-base --is-ancestor <tip> <default>`). Stash or uncommitted change: patch reverse-applies cleanly on `DEFAULT_BRANCH` (`git apply -R --check`). Untracked file: same blob exists at that path in `DEFAULT_BRANCH`. |
 | **(b) superseded** | Cited default-branch commit SHA and `file:line` in the ledger proving the replacement. |
-| **(c) still-needed** | Unique work that is not `(d)`. |
-| **(d) keep** | Still uncertain after a consult; in-progress (`lsof -a -d cwd` shows a live process inside the location, or files/commits changed within 24 h); foreign (compare PR `author.login` from `gh pr list` / `gh-axi` against `gh api user --jq .login`; remote branches without a verified-owner PR stay in `(d)` when remote authorship cannot be verified; forks and bots are foreign); or holding ignored files other than reproducible caches/build outputs (`node_modules`, `dist`, `build`, `.next`, `.svelte-kit`, `.venv`, `__pycache__`, `target`, `.gradle`, `DerivedData`, `Pods`, `.dart_tool`, `.zig-cache`). Local secrets, `.env*`, keystores, signing certificates (`*.p12`, `*.keystore`, `*.mobileprovision`, TV author/distributor certs), and local databases are NEVER reproducible caches and always keep the location in `(d)`. A `(d)` item is never integrated, deleted, dropped, or closed. |
+| **(c) still-needed** | Unique work that is not `(d)` (all branch kinds — user, agent, bot, Dependabot, and no-PR branches — are eligible for integration and cleanup). |
+| **(d) keep** | Still uncertain after a consult; in-progress (`lsof -a -d cwd` shows a live process inside the location — no 24-hour or recency time hold); or holding ignored files other than reproducible caches/build outputs (`node_modules`, `dist`, `build`, `.next`, `.svelte-kit`, `.venv`, `__pycache__`, `target`, `.gradle`, `DerivedData`, `Pods`, `.dart_tool`, `.zig-cache`). Local secrets, `.env*`, keystores, signing certificates (`*.p12`, `*.keystore`, `*.mobileprovision`, TV author/distributor certs), and local databases are NEVER reproducible caches and always keep the location in `(d)`. A `(d)` item is never integrated, deleted, dropped, or closed. |
 
 4. **CONSULT an unclear class**: only if an item's class cannot be settled from the evidence and
    rules above, batch every such item into ONE consult before PLAN (see CONSULT). Never consult on
-   an in-progress, foreign, or ignored-non-cache item: it stays `(d)`.
+   an in-progress or ignored-non-cache item: it stays `(d)`.
 5. **PLAN** (read-only, before any integration decision or mutation): when there is still-needed
    work, write a handoff (scope, the audit ledger with every item, its class and its evidence, repo
    instructions, constraints, conflict risks) and run ONE fresh-context planning task (see
@@ -144,8 +143,8 @@ results recorded in the ledger, and the pre-cleanup restore point is written and
   STEP 2, and STEP 3. Otherwise it is kept as `(d)`.
 - **INDEPENDENT REVIEW** (always, even when no code changed; before any push or cleanup):
   - Prepare `review --kind reconciliation --required --context <ledger>` — add `--with-prs` only
-    when on GitHub with `gh` available (otherwise omit `--with-prs`, record the non-GitHub/no-`gh`
-    state in the ledger, and keep unverified remote branches in `(d)`) — plus `--location <path>`
+    when on GitHub with `gh` available (otherwise omit `--with-prs` and record the non-GitHub/no-`gh`
+    state in the ledger) — plus `--location <path>`
     for every extra clone (and `--main-ref <branch>` if the default branch is not detected).
   - If `DEFAULT_BRANCH`'s code changed, also prepare a separate
     `review --kind code --required --context <ledger>` so the `code` reviewer receives the recorded
@@ -177,10 +176,9 @@ results recorded in the ledger, and the pre-cleanup restore point is written and
 - `git branch -d <branch>`; use `-D` only with `(a)` or `(b)` evidence in the ledger.
 - Drop a stash only after re-finding it by SHA (`git stash list --format='%gd %H'`), and drop that
   exact entry.
-- Delete a remote branch or close a PR only for the user's own verified items: compare
-  `gh api user --jq .login` with `author.login` in `git-inventory.md` (which only contains
-  `author.login` for open PRs). Remote branches without a verified-owner PR stay in `(d)` when
-  authorship cannot be proven; never close or delete foreign or unverified-author work.
+- Delete any remote branch (and close any associated open PR) on the cleanup list — regardless of
+  author, bot, or PR status — once it is proven in `DEFAULT_BRANCH` (`(a)` or `(b)`) and captured in
+  the verified restore point.
 - Delete an extra clone only when it is clean, stash-free, has no local-only commits, and its bundle
   is verified in the restore point.
 - After verified cleanup, delete every `refs/ds-consolidate/<UTC>/` temporary-ref namespace created
@@ -202,8 +200,8 @@ If planning, a consult or a required review is unavailable, apply BLOCKER (integ
   the evidence can neither adopt nor reject; (3) an unclear conflict or port (STEP 2); (4) the
   unclear cause or fix of a build or test failure (STEP 2); (5) an unclear re-check result (STEP 3);
   (6) an unclear fix for a review finding (STEP 3).
-- Never consult on anything a command or an existing rule already answers, on an in-progress,
-  foreign, or ignored-non-cache item (it stays `(d)`), or during STEP 4. A doubt about whether one
+- Never consult on anything a command or an existing rule already answers, on an in-progress or
+  ignored-non-cache item (it stays `(d)`), or during STEP 4. A doubt about whether one
   of those `(d)` conditions applies keeps the item in `(d)` with no consult. One consult per
   distinct decision; never ask the same question again after an unclear answer. A run with no
   unsettled decision makes zero consult calls.
