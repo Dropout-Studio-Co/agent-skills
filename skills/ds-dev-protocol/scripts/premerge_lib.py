@@ -2,7 +2,7 @@
 # premerge_lib.py - evidence checks for scripts/premerge-and-merge.sh (python3 -I premerge_lib.py <cmd> ...); stdlib only.
 import calendar, glob, hashlib, json, os, re, subprocess, sys, time
 NEON, OPUS = "gemini-4-neon", "claude-opus-5-5"
-AG, CL = ("antigravity", "antigravity_2"), ("claudeAgent_2", "claudeAgent_3")
+AG, CL = ("antigravity", "antigravity_2"), ("claudeAgent", "claudeAgent_2")
 RANK = {"low": 0, "medium": 1, "high": 2}
 FIELDS = "ts engine provenance_mode gate tier round key base_ref base_sha diff_sha256 head_sha facts_sha256 route model effort session_id parent_thread_id account input_tokens output_tokens cost_usd verdict status reason file file_sha256".split()
 
