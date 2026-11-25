@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """gate_lib.py - T3-verified provenance, schema, round-cap, epoch and logging for gate.sh (stdlib only)."""
 import argparse, hashlib, json, os, subprocess, sys, time
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.dont_write_bytecode = True; sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import routing_lib as routing
 RANK = {"low": 0, "medium": 1, "high": 2}; SEVERITY = {"important": "Important", "nit": "Nit", "pre-existing": "Pre-existing"}
 ERR_KEYS = ("stopReason", "stop_reason", "error", "errorCode", "errorMessage", "code", "type", "reason", "status", "message", "detail", "details")

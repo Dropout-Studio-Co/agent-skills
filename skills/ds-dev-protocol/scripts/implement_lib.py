@@ -1,6 +1,6 @@
 # implement_lib.py - helpers for scripts/implement.sh (run as: python3 -I implement_lib.py <command> ...); stdlib only.
 import fnmatch, hashlib, json, os, re, shutil, stat, subprocess, sys, time
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.dont_write_bytecode = True; sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import routing_lib as routing
 try: RCFG = routing.load(); IMP = routing.implementer(RCFG)
 except ValueError as problem: sys.stderr.write("implement_lib.py: invalid routing.json: %s\n" % problem); sys.exit(2)
@@ -98,7 +98,7 @@ if cmd == "dsclass":
     why = ("no session" if sid == "-" else "export is not this session" if info.get("id") != sid else "no assistant message" if not ms
            else "model " + ",".join(obs) if obs != ["%s/%s#%s" % (IMP["provider"], IMP["model_id"], IMP["effort"])]
            else "provider error: " + ",".join(e for e in errs if e.startswith("provider.")) if any(e.startswith("provider.") for e in errs)
-           else "cost: %s" % cost if cost > 0 else "")
+           else "cost: %s" % cost if cost > IMP["max_cost_usd"] or cost < 0 else "")
     print("\t".join(["unavailable" if why else "ok", one(why) or "-", str(int(num(tk.get("input")))), str(int(num(tk.get("output")))), str(cost)])); sys.exit()
 if cmd == "leak":
     # leak EVENTS: the `<|tool_calls_cbegin|>` prompt-parser delimiter in THIS turn's assistant text means the model leaked

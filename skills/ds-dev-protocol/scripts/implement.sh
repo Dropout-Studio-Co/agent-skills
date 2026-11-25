@@ -73,7 +73,7 @@ OCCFG=$(python3 -I "$RLIB" opencode-config) || die "invalid opencode/opencode.js
 [ -z "$(git status --porcelain --untracked-files=all)" ] || die "worktree is not clean; commit or discard changes first"
 [ ! -e "$WT/.impl" ] && [ ! -L "$WT/.impl" ] || die "$WT/.impl exists; run implement.sh --discard first"
 if py laststart "$EVID"; then die "the last impl.log row is start: a run was killed; run implement.sh --discard --bootstrap <cmd|none> first"; fi
-pinfo=$(py plan "$EVID" "$step") || die "no logged Neon plan in $EVID/gates.log with a matching file (run gate.sh plan first)"
+pinfo=$(py plan "$EVID" "$step") || die "no logged planner plan in $EVID/gates.log with a matching file (run gate.sh plan first)"
 IFS=$'\t' read -r pf ps round counted <<< "$pinfo"
 if [ "$counted" -ge 3 ]; then printf 'implement.sh: 3 rounds for step %s on this plan; re-plan through gate.sh plan\n' "$step" >&2; exit 4; fi
 tag=$step-r$round-${ps:0:8}; BASE=$(git rev-parse HEAD)

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # premerge_lib.py - evidence checks for scripts/premerge-and-merge.sh (python3 -I premerge_lib.py <cmd> ...); stdlib only.
 import calendar, glob, hashlib, json, os, re, subprocess, sys, time
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.dont_write_bytecode = True; sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import routing_lib as routing
 try: RCFG = routing.load()
 except ValueError as problem: RCFG, ROUTING_ERROR = None, str(problem)

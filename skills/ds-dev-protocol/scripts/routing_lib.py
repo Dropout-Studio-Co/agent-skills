@@ -4,7 +4,7 @@ routing.json holds every route, model, provider, option key, account, cost cap a
 module validates it, derives roles and pinned specs, and syncs opencode/opencode.json and SKILL.md atomically.
 Paths are anchored to this file; no environment override or working-directory lookup is honored.
 """
-import json, os, re, sys, tempfile
+import json, math, os, re, sys, tempfile
 SKILL_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ROUTING_PATH = os.path.join(SKILL_DIR, "routing.json")
 START, END = "<!-- routing:start -->", "<!-- routing:end -->"
@@ -35,7 +35,7 @@ def load(skill_dir=None):
     if not isinstance(cfg, dict) or isinstance(cfg.get("schema_version"), bool) or cfg.get("schema_version") != 1:
         raise ValueError("routing.json must be an object with schema_version 1")
     allowed = cfg.get("allowed_efforts")
-    if not isinstance(allowed, list) or not allowed or len(set(map(str, allowed))) != len(allowed) or set(allowed) - {"medium", "high"}:
+    if not isinstance(allowed, list) or not allowed or not all(isinstance(value, str) for value in allowed) or len(set(allowed)) != len(allowed) or set(allowed) - {"medium", "high"}:
         raise ValueError("allowed_efforts must be a non-empty subset of [medium, high]")
     routes, gates = cfg.get("routes"), cfg.get("gates")
     if not isinstance(routes, dict) or not routes: raise ValueError("routes must be a non-empty object")
@@ -49,18 +49,18 @@ def load(skill_dir=None):
         if not isinstance(accounts, list) or not accounts or len(set(map(str, accounts))) != len(accounts):
             raise ValueError("route %s accounts must be a non-empty list of unique names" % key)
         for account in accounts: ident(account, "route %s account" % key)
-        if "max_cost_usd" in route and (isinstance(cost, bool) or not isinstance(cost, (int, float)) or cost < 0):
+        if "max_cost_usd" in route and (isinstance(cost, bool) or not isinstance(cost, (int, float)) or not math.isfinite(cost) or cost < 0):
             raise ValueError("route %s max_cost_usd must be a non-negative number" % key)
-    for role, field in (("conductor", "model"), ("implementer", "model_id")):
-        spec = cfg.get(role); route = routes.get(spec.get("route")) if isinstance(spec, dict) else None
-        if not isinstance(route, dict) or field not in route: raise ValueError("%s must name a route with %s" % (role, field))
+    for role, fields in (("conductor", ("model", "option_key")), ("implementer", ("model_id",))):
+        spec = cfg.get(role); route = routes.get(spec.get("route")) if isinstance(spec, dict) and isinstance(spec.get("route"), str) else None
+        if not isinstance(route, dict) or any(field not in route for field in fields): raise ValueError("%s must name a route with %s" % (role, " and ".join(fields)))
         effort(spec.get("effort"), allowed, "%s effort" % role)
     imp = routes[cfg["implementer"]["route"]]
     if "max_cost_usd" not in imp: raise ValueError("implementer route needs max_cost_usd")
     ident(imp["provider"], "implementer provider", slash=True); ident(imp["model_id"], "implementer model_id", slash=True)
     if not isinstance(gates, dict) or set(gates) != set(GATES): raise ValueError("gates must be exactly plan, review, security, epoch")
     for gate in GATES:
-        spec = gates[gate]; route = routes.get(spec.get("route")) if isinstance(spec, dict) else None
+        spec = gates[gate]; route = routes.get(spec.get("route")) if isinstance(spec, dict) and isinstance(spec.get("route"), str) else None
         if not isinstance(route, dict) or "model" not in route or "option_key" not in route: raise ValueError("gate %s needs a route with model and option_key" % gate)
         efforts = spec.get("efforts")
         if not isinstance(efforts, dict) or set(efforts) != set(TIERS[gate]): raise ValueError("gate %s efforts must be %s" % (gate, "/".join(TIERS[gate])))
@@ -115,7 +115,7 @@ def render_block(cfg):
         "| Conductor | %s `%s`, `%s` always (never `%s` or other) | this T3 Code thread (%s) |" % (cond["label"], cond["model"], cond["effort"], other[0] if other else "any other", ", ".join(cond["accounts"])),
         "| Architect & Planner | %s `%s`, `%s` Low, `%s` Medium, `%s` High | fresh `delegate_task` (%s), then `gate.sh plan --record` |" % (planner["label"], planner["model"], plan["efforts"]["low"], plan["efforts"]["medium"], plan["efforts"]["high"], chain(planner["accounts"])),
         "| Implementer | %s `%s`, `variant: %s` always | `scripts/implement.sh`, the documented mechanical runner, no OS sandbox; sole implementer, no fallback |" % (imp["label"], imp["pinned"], imp["effort"]),
-        "| Reviewer, Security & Epoch | %s `%s`, review `%s`/`%s` Low/Medium and `%s` High or `--trigger`; security `%s`; epoch `%s`/`%s` | fresh `delegate_task` (%s), then `gate.sh <gate> --record` |" % (reviewer["label"], reviewer["model"], review["efforts"]["low"], review["efforts"]["medium"], review["efforts"]["high"], sec["efforts"]["high"], epoch["efforts"]["medium"], epoch["efforts"]["high"], chain(reviewer["accounts"])),
+        "| Reviewer, Security & Epoch | %s `%s`, review `%s`/`%s` Low/Medium and `%s` High (`%s` with `--trigger`); security `%s`; epoch `%s`/`%s` | fresh `delegate_task` (%s), then `gate.sh <gate> --record` |" % (reviewer["label"], reviewer["model"], review["efforts"]["low"], review["efforts"]["medium"], review["efforts"]["high"], review.get("trigger_effort", review["efforts"]["high"]), sec["efforts"]["high"], epoch["efforts"]["medium"], epoch["efforts"]["high"], chain(reviewer["accounts"])),
         "",
         "- **Same-provider instance failover only:** a child that hits `usage_limit`, or a reviewer child stalled holding a turn "
         "open, is `task_cancel`led and re-dispatched as a fresh `delegate_task` with the full packet and schema on the next "

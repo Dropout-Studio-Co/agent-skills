@@ -98,7 +98,7 @@ chk "evals inputs.sha256" bash -c "cd '$EVALS' && shasum -a 256 -c inputs.sha256
 chk "tests/test_evals.py" bash -c "python3 -I -B -m unittest discover -s '$TESTS' -p 'test_evals.py' >/dev/null 2>&1"
 if [ -x /usr/bin/python3 ]; then chk "tests/test_evals.py (system /usr/bin/python3)" bash -c "/usr/bin/python3 -I -B -m unittest discover -s '$TESTS' -p 'test_evals.py' >/dev/null 2>&1"; fi
 chk "evals/fixture-check.sh" bash "$EVALS/fixture-check.sh"
-chk "zero __pycache__ under evals/" bash -c "[ -z \"\$(find '$EVALS' -name __pycache__ -print -quit)\" ]"
+chk "zero __pycache__ before the suites" bash -c "[ -z \"\$(find '$ROOT' -name __pycache__ -print -quit)\" ]"
 # --- routing source of truth: static contract, guard, sync, validation, alt-routing and commit hook ---
 RLIB=$SCRIPT/routing_lib.py
 HOOK=$ROOT/../../.githooks/pre-commit
@@ -107,7 +107,7 @@ chk "routing_lib.py is not executable" bash -c "[ ! -x '$RLIB' ]"
 chk "routing_lib.py check (python3)" python3 -I "$RLIB" check
 if [ -x /usr/bin/python3 ]; then chk "routing_lib.py check (system /usr/bin/python3)" /usr/bin/python3 -I "$RLIB" check; fi
 chk "routing.json contract" bash -c "python3 -I -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d[\"schema_version\"]==1 and d[\"allowed_efforts\"]==[\"medium\",\"high\"] and set(d[\"routes\"])=={\"neon\",\"opus\",\"deepseek\"} and set(d[\"gates\"])=={\"plan\",\"review\",\"security\",\"epoch\"} and d[\"conductor\"]=={\"route\":\"neon\",\"effort\":\"medium\"} and d[\"implementer\"]=={\"route\":\"deepseek\",\"effort\":\"high\"}' '$ROOT/routing.json'"
-chk "routing_lib derives roles" bash -c "cd '$SCRIPT' && python3 -I -c 'import sys; sys.path.insert(0, sys.argv[1]); import routing_lib as r; c=r.load(); i=r.implementer(c); d=r.conductor(c); g=r.gate_contract(c,\"plan\"); assert i[\"pinned\"]==i[\"model\"]+\"#\"+i[\"effort\"] and i[\"account\"]==i[\"accounts\"][0] and d[\"effort\"]==\"medium\" and g[1:3]==(c[\"gates\"][\"plan\"][\"route\"], c[\"routes\"][c[\"gates\"][\"plan\"][\"route\"]][\"model\"]) and r.option_keys(c) and r.allowed_efforts_for(c,\"review\",\"medium\")' '$SCRIPT'"
+chk "routing_lib derives roles" bash -c "cd '$SCRIPT' && python3 -I -B -c 'import sys; sys.path.insert(0, sys.argv[1]); import routing_lib as r; c=r.load(); i=r.implementer(c); d=r.conductor(c); g=r.gate_contract(c,\"plan\"); assert i[\"pinned\"]==i[\"model\"]+\"#\"+i[\"effort\"] and i[\"account\"]==i[\"accounts\"][0] and d[\"effort\"]==\"medium\" and g[1:3]==(c[\"gates\"][\"plan\"][\"route\"], c[\"routes\"][c[\"gates\"][\"plan\"][\"route\"]][\"model\"]) and r.option_keys(c) and r.allowed_efforts_for(c,\"review\",\"medium\")' '$SCRIPT'"
 cat > "$T/guard.py" <<'PY'
 import json, os, re, sys
 root = sys.argv[1]
@@ -159,13 +159,18 @@ elif case == "dup-marker": open(sp, "a").write("<!-- routing:start -->\n")
 elif case == "desc": d["routes"]["neon"]["label"] = "X" * 460; save(d)
 elif case == "huge": open(sp, "a").write("x" * 2000)
 elif case == "oc": open(op, "w").write("{}\n")
+elif case == "conductor-option":
+    d["routes"]["solo"] = {"label": "Solo Conductor", "provider": "solo-conductor", "model": "solo-model", "accounts": ["solo-instance"]}
+    d["conductor"] = {"route": "solo", "effort": "medium"}; save(d)
+elif case == "allowed-unhashable": d["allowed_efforts"] = [{}]; save(d)
+elif case == "nan-cost": d["routes"][d["implementer"]["route"]]["max_cost_usd"] = float("nan"); save(d)
 PY
 invalid_case() { local a b rc1 rc2; mutate "$1"
   a=$(shasum -a 256 "$T/skill/SKILL.md" "$T/skill/opencode/opencode.json" | shasum -a 256 | awk '{print $1}')
-  rt2 check >/dev/null 2>&1; rc1=$?; rt2 sync >/dev/null 2>&1; rc2=$?
+  rt2 check >/dev/null 2>"$T/err"; rc1=$?; rt2 sync >/dev/null 2>>"$T/err"; rc2=$?
   b=$(shasum -a 256 "$T/skill/SKILL.md" "$T/skill/opencode/opencode.json" | shasum -a 256 | awk '{print $1}')
-  if [ "$rc1" = 2 ] && [ "$rc2" = 2 ] && [ "$a" = "$b" ]; then ok "routing invalid: $1"; else bad "routing invalid: $1 (rc $rc1/$rc2, unchanged $([ "$a" = "$b" ] && echo yes || echo no))"; fi; }
-for c in missing corrupt schema low max tab-model hash-model nl-account accounts cost symlink no-marker dup-marker desc huge oc; do invalid_case "$c"; done
+  if [ "$rc1" = 2 ] && [ "$rc2" = 2 ] && [ "$a" = "$b" ] && ! grep -q Traceback "$T/err"; then ok "routing invalid: $1"; else bad "routing invalid: $1 (rc $rc1/$rc2, unchanged $([ "$a" = "$b" ] && echo yes || echo no), traceback $(grep -q Traceback "$T/err" && echo yes || echo no))"; fi; }
+for c in missing corrupt schema low max tab-model hash-model nl-account accounts cost symlink no-marker dup-marker desc huge oc conductor-option allowed-unhashable nan-cost; do invalid_case "$c"; done
 mutate none; python3 -I - "$T/skill" <<'PY'
 import json, os, sys
 s = sys.argv[1]
@@ -254,6 +259,23 @@ chk "implement.sh injects the alt pinned model at runtime" bash -c "[ $ir1 = 3 ]
 chk "implement.sh rejects a plan row on the old route" bash -c "[ $ir2 = 2 ] && [ ! -s '$T/calls/calls.log' ]"
 cp "$T/skill/routing.json" "$T/routing.keep"; printf '{' > "$T/skill/routing.json"; imprun; ir3=$IRC
 chk "implement.sh fails closed on invalid routing.json" bash -c "[ $ir3 = 2 ] && [ ! -s '$T/calls/calls.log' ]"; cp "$T/routing.keep" "$T/skill/routing.json"
+# implement_lib.py dsclass reads the implementer cost cap from routing.json in its own skill copy.
+DSK=$T/dsskill; rm -rf "$DSK"; cp -R "$ROOT" "$DSK"
+python3 -I - "$DSK/routing.json" <<'PY'
+import json, sys
+p = sys.argv[1]; d = json.load(open(p)); d["routes"][d["implementer"]["route"]]["max_cost_usd"] = 5; open(p, "w").write(json.dumps(d, indent=1) + "\n")
+PY
+dsexp() { python3 -I - "$1" "$2" "$3" "$IPROV" "$IMODELID" "$IEFF" <<'PY'
+import json, sys
+out, sid, cost, prov, model, effort = sys.argv[1:7]
+json.dump({"info": {"id": sid, "tokens": {"input": 10, "output": 5}, "cost": float(cost)}, "messages": [{"type": "assistant", "model": {"providerID": prov, "id": model, "variant": effort}}]}, open(out, "w"))
+PY
+}
+dsclass() { python3 -I "$DSK/scripts/implement_lib.py" dsclass "$1" "$T/ds.events" s1; }
+: > "$T/ds.events"; dsexp "$T/ds-ok.json" s1 3; DSOK=$(dsclass "$T/ds-ok.json" | cut -f1)
+dsexp "$T/ds-high.json" s1 6; DSHIGH=$(dsclass "$T/ds-high.json" | cut -f2)
+dsexp "$T/ds-neg.json" s1 -1; DSNEG=$(dsclass "$T/ds-neg.json" | cut -f1)
+chk "implement_lib dsclass honors max_cost_usd and rejects negative cost" bash -c "[ '$DSOK' = ok ] && [ '$DSHIGH' = 'cost: 6.0' ] && [ '$DSNEG' = unavailable ]"
 # premerge-and-merge.sh --diff end-to-end
 printf 'outside diff\n' > "$T/pdiff"; PK=$(shasum -a 256 "$T/pdiff" | awk '{print $1}')
 pev() { local d=$1 pr=$2 pm=$3 pa=$4 pe=$5 rr=$6 rm=$7 ra=$8 re=$9; rm -rf "$d"; mkdir -p "$d"; printf 'facts\n' > "$d/facts.md"
@@ -310,5 +332,6 @@ printf '\n'
 for s in gate-smoke.sh premerge-smoke.sh implement-smoke.sh; do
   if bash "$TESTS/$s"; then ok "$s passed"; else bad "$s failed"; fi
 done
+chk "zero __pycache__ after the suites" bash -c "[ -z \"\$(find '$ROOT' -name __pycache__ -print -quit)\" ]"
 printf '\n%s\n' "$([ $FAILED = 0 ] && echo 'ALL TESTS PASSED!' || echo 'TESTS FAILED!')"
 exit $FAILED
