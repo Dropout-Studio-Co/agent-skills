@@ -3,6 +3,10 @@
 # Temp HOME/PATH, fake gh, local bare origin; no network.
 set -uo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd -P); PM=$ROOT/scripts/premerge-and-merge.sh
+rt() { python3 -I "$ROOT/scripts/routing_lib.py" "$@"; }
+IFS=$'\t' read -r NP NR NM NO NA <<< "$(rt gate-tsv plan)"; IFS=$'\t' read -r OP OR OM OO OA <<< "$(rt gate-tsv review)"
+IFS=$'\t' read -r IR IP IM ID IE IPIN IACCT ICM <<< "$(rt impl-tsv)"; NEON_ACCT=${NA%% *}; OPUS_ACCT=${OA%% *}
+export NR NM NEON_ACCT OR OM OPUS_ACCT IR IM IE
 T=$(mktemp -d "${TMPDIR:-/tmp}/premerge-smoke.XXXXXX"); T=$(cd "$T" && pwd -P)
 export T HOME="$T/home" XDG_STATE_HOME="$T/state" PATH="$T/bin:$PATH"
 mkdir -p "$HOME" "$XDG_STATE_HOME" "$T/bin"; : > "$T/body.txt"; : > "$T/gh.head"; FAILED=0
@@ -51,13 +55,12 @@ PY
 # Every row gets its own child session_id and a shared non-empty parent_thread_id (a child thread is never reused).
 RS=0
 row() { local a=("$@") n; n=$((RS + 1)); RS=$n
-  python3 - "${a[@]:0:7}" "session_id=child-$n" "parent_thread_id=parent-1" "${a[@]:7}" <<'PY'
+  EFFORT=$(rt effort "$2" "$4") python3 - "${a[@]:0:7}" "session_id=child-$n" "parent_thread_id=parent-1" "${a[@]:7}" <<'PY'
 import hashlib, json, os, sys
 ev, gate, key, tier, status, verdict, fname = sys.argv[1:8]
 def sha(p): return hashlib.sha256(open(p, "rb").read()).hexdigest()
-effort = {"plan": "medium" if tier == "low" else "high", "epoch": "medium" if tier == "medium" else "high"}.get(gate, "medium")
-route, model, account = ("neon", "gemini-4-neon", "antigravity") if gate == "plan" else ("opus", "claude-opus-5-5", "claudeAgent")
-if gate in ("security", "review") and (gate == "security" or tier == "high"): effort = "high"
+effort = os.environ["EFFORT"]
+route, model, account = (os.environ["NR"], os.environ["NM"], os.environ["NEON_ACCT"]) if gate == "plan" else (os.environ["OR"], os.environ["OM"], os.environ["OPUS_ACCT"])
 d = {"ts": "2026-11-11T00:00:00Z", "gate": gate, "tier": tier, "round": 1, "key": key, "base_ref": "", "base_sha": "",
      "diff_sha256": "", "head_sha": key, "facts_sha256": "", "route": route, "model": model, "effort": effort,
      "session_id": "child-1", "parent_thread_id": "parent-1", "account": account, "input_tokens": 0, "output_tokens": 0,
@@ -130,9 +133,9 @@ chk "lower re-check tier fails" bash -c "[ $PRC = 1 ] && grep -q 'lower than PLA
 refuse() { local n=$1 tier=$2 mut=$3 want=$4; base_ev "r-$n" "$tier" "$H"; pm_reset; eval "$mut"; pmrun "$E" "$R" 1
   chk "refuse:$n" bash -c "[ $PRC = 1 ] && grep -q '$want' '$T/pm.out' && [ \$(grep -cE 'pr (edit|merge)' '$T/calls.log') = 0 ]"; }
 for tier in low medium high; do refuse "facts-$tier" "$tier" 'printf x >> "$E/facts.md"' 'does not match plan.facts_sha256'; done
-for spec in 'route=opus' 'model=claude-opus-5-5' 'account=claudeAgent' 'session_id=parent-1' 'effort=medium'; do
+for spec in "route=$OR" "model=$OM" "account=$OPUS_ACCT" 'session_id=parent-1' 'effort=medium'; do
   refuse "plan-${spec%%=*}" medium "setrow plan ${spec%%=*} ${spec#*=}" 'plan provenance'; done
-for spec in 'route=deepseek-low' 'model=gemini-4-neon' 'account=antigravity' 'session_id=parent-1' 'effort=low'; do
+for spec in 'route=deepseek-low' "model=$NM" "account=$NEON_ACCT" 'session_id=parent-1' 'effort=low'; do
   refuse "review-${spec%%=*}" medium "setrow review ${spec%%=*} ${spec#*=}" 'review provenance'; done
 for spec in 'route=fallback' 'provenance_mode=provisional' 'effort=medium' 'model=claude-opus-4-8'; do
   refuse "security-${spec%%=*}" high "setrow security ${spec%%=*} ${spec#*=}" 'security provenance'; done
@@ -182,7 +185,7 @@ replan_ev() { E=$T/$1; rm -rf "$E"; mkdir -p "$E"; local fs f t
   printf 'facts\n' > "$E/facts.md"; fs=$(shasum -a 256 "$E/facts.md" | awk '{print $1}')
   printf 'Tier: medium\n' > "$E/PLAN.md"; printf 'Tier: medium\n' > "$E/tier-recheck-$H.md"
   f=$(gf "$E" plan "$fs" pass '[]' medium); row "$E" plan "$fs" medium ok pass "$f" "facts_sha256=$fs" "ts=2026-11-05T00:00:00Z"
-  printf '{"ts": "2026-11-20T12:00:00Z", "route": "deepseek", "model": "opencode-go/deepseek-v4.1-flash", "effort": "high", "status": "done", "step": "s", "round": 1}\n' > "$E/impl.log"
+  printf '{"ts": "2026-11-20T12:00:00Z", "route": "%s", "model": "%s", "effort": "%s", "status": "done", "step": "s", "round": 1}\n' "$IR" "$IM" "$IE" > "$E/impl.log"
   for t in 21 22 23; do f=$(gf "$E" review "$H" pass '[]' medium); rowb "$E" review "$H" medium ok pass "$f" "ts=2026-11-${t}T00:00:00Z"; done
   f=$(gf "$E" plan "$fs" pass '[]' medium replan); row "$E" plan "$fs" medium ok pass "$f" "facts_sha256=$fs" "ts=2026-11-24T00:00:00Z"
   f=$(gf "$E" review "$H" pass '[]' medium); rowb "$E" review "$H" medium ok pass "$f" "ts=2026-11-25T00:00:00Z"; }
@@ -194,7 +197,7 @@ epoch_replan() { E=$T/$1; rm -rf "$E"; mkdir -p "$E"; local fs f
   printf 'facts\n' > "$E/facts.md"; fs=$(shasum -a 256 "$E/facts.md" | awk '{print $1}')
   printf 'Tier: high\n' > "$E/PLAN.md"; printf 'Tier: high\n' > "$E/tier-recheck-$H.md"
   f=$(gf "$E" plan "$fs" pass '[]' high); row "$E" plan "$fs" high ok pass "$f" "facts_sha256=$fs" "ts=2026-11-05T00:00:00Z"
-  printf '{"ts": "2026-11-20T12:00:00Z", "route": "deepseek", "model": "opencode-go/deepseek-v4.1-flash", "effort": "high", "status": "done", "step": "s", "round": 1}\n' > "$E/impl.log"
+  printf '{"ts": "2026-11-20T12:00:00Z", "route": "%s", "model": "%s", "effort": "%s", "status": "done", "step": "s", "round": 1}\n' "$IR" "$IM" "$IE" > "$E/impl.log"
   f=$(gf "$E" epoch a pass '[]' high); row "$E" epoch a high ok pass "$f" "ts=2026-11-21T00:00:00Z"
   f=$(gf "$E" plan "$fs" pass '[]' high replan); row "$E" plan "$fs" high ok pass "$f" "facts_sha256=$fs" "ts=2026-11-22T00:00:00Z"
   f=$(gf "$E" review "$H" pass '[]' high); rowb "$E" review "$H" high ok pass "$f" "ts=2026-11-23T00:00:00Z"
@@ -292,7 +295,7 @@ base_ev r-straycopy medium "$H"; cp "$E/review-$H.json" "$E/review-copy.json"; p
 chk "refuse:gate file copied under a different basename" bash -c "[ $PRC = 1 ] && grep -q 'not written by gate.sh: review-copy.json' '$T/pm.out'"
 base_ev r-impl medium "$H"; printf '{"route": "sonnet", "model": "claude-sonnet-5-5", "effort": "high", "status": "done"}\n' > "$E/impl.log"; pm_reset; pmrun "$E" "$R" 1
 chk "refuse:off-route impl.log" bash -c "[ $PRC = 1 ] && grep -q 'FAIL implementer log has an off-route row' '$T/pm.out'"
-base_ev r-badts medium "$H"; printf '{"ts": "not-a-date", "route": "deepseek", "model": "opencode-go/deepseek-v4.1-flash", "effort": "high", "status": "done", "step": "s", "round": 1}\n' > "$E/impl.log"; pm_reset; pmrun "$E" "$R" 1
+base_ev r-badts medium "$H"; printf '{"ts": "not-a-date", "route": "%s", "model": "%s", "effort": "%s", "status": "done", "step": "s", "round": 1}\n' "$IR" "$IM" "$IE" > "$E/impl.log"; pm_reset; pmrun "$E" "$R" 1
 chk "refuse:unparseable done ts in impl.log" bash -c "[ $PRC = 1 ] && grep -q 'done implementation row has no parseable ts' '$T/pm.out'"
 base_ev r-fallback medium "$H"; setrow review route provisional; pm_reset; pmrun "$E" "$R" 1
 chk "refuse:legacy fallback/provisional route" bash -c "[ $PRC = 1 ] && grep -q 'review provenance' '$T/pm.out'"

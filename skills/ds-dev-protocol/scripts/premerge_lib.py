@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 # premerge_lib.py - evidence checks for scripts/premerge-and-merge.sh (python3 -I premerge_lib.py <cmd> ...); stdlib only.
 import calendar, glob, hashlib, json, os, re, subprocess, sys, time
-NEON, OPUS = "gemini-4-neon", "claude-opus-5-5"
-AG, CL = ("antigravity", "antigravity_2"), ("claudeAgent", "claudeAgent_2")
+sys.dont_write_bytecode = True; sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import routing_lib as routing
+try: RCFG = routing.load()
+except ValueError as problem: RCFG, ROUTING_ERROR = None, str(problem)
 RANK = {"low": 0, "medium": 1, "high": 2}
 FIELDS = "ts engine provenance_mode gate tier round key base_ref base_sha diff_sha256 head_sha facts_sha256 route model effort session_id parent_thread_id account input_tokens output_tokens cost_usd verdict status reason file file_sha256".split()
-
 def sha(f): return hashlib.sha256(open(f, "rb").read()).hexdigest()
-
 def rows(f):
     out = []
     for l in (open(f, errors="replace") if os.path.exists(f) else []):
@@ -18,7 +18,6 @@ def rows(f):
 def ep(d):
     try: return calendar.timegm(time.strptime(str(d.get("ts", "")), "%Y-%m-%dT%H:%M:%SZ"))
     except Exception: return None
-
 def logrow(ev, **d):
     r = dict((k, 0 if k in ("round", "input_tokens", "output_tokens") else "") for k in FIELDS)
     r["ts"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()); r.update(d)
@@ -33,6 +32,7 @@ def tiers(plan, recheck):
     print(f, rt or "none", pt or "none", 1 if rt and pt and RANK[rt] < RANK[pt] else 0)
 
 def evidence(ev, key, tier, base, mode):
+    if RCFG is None: print("FAIL invalid routing.json: " + ROUTING_ERROR); return
     out = []
     P, F = (lambda t: out.append("PASS " + t)), (lambda t: out.append("FAIL " + t))
     tid = os.path.basename(os.path.abspath(ev)); R, ids = [], {}
@@ -57,19 +57,19 @@ def evidence(ev, key, tier, base, mode):
         if d.get("engine") != "t3-delegate" or d.get("provenance_mode") != "t3-verified": return "%s is not T3-verified" % g
         s, p = str(d.get("session_id") or ""), str(d.get("parent_thread_id") or "")
         if not s or not p or s == p: return "%s child session is missing or equals the parent" % g
-        if g == "plan":
-            if d.get("route") != "neon" or d.get("model") != NEON: return "plan is not the Neon route"
-            if d.get("account") not in AG: return "plan account is not an Antigravity instance"
-            want = "medium" if tr == "low" else "high"
-            return "" if d.get("effort") == want else "plan effort %r is not %s" % (d.get("effort"), want)
-        if d.get("route") != "opus" or d.get("model") != OPUS: return "%s is not the Opus 5.5 route" % g
-        if d.get("account") not in CL: return "%s account is not a Claude instance" % g
+        provider, route, model, option, accounts = routing.gate_contract(RCFG, g)
+        if d.get("route") != route or d.get("model") != model: return "%s is not the %s route" % (g, route)
+        if d.get("account") not in accounts: return "%s account is not one of the %s instances" % (g, route)
         if g == "epoch":
             t = d.get("tier")
             if t not in ("medium", "high") or RANK[t] < RANK[tr]: return "epoch tier is below the task tier"
-            return "" if d.get("effort") == ("medium" if t == "medium" else "high") else "epoch effort does not match its tier"
-        if g == "security" or tr == "high": return "" if d.get("effort") == "high" else "%s effort %r is not high" % (g, d.get("effort"))
-        return "" if d.get("effort") in ("medium", "high") else "%s effort %r is not medium or high" % (g, d.get("effort"))
+            want = routing.effort_for(RCFG, g, t)
+            return "" if d.get("effort") == want else "epoch effort does not match its tier"
+        if g == "plan":
+            want = routing.effort_for(RCFG, g, tr)
+            return "" if d.get("effort") == want else "plan effort %r is not %s" % (d.get("effort"), want)
+        if d.get("effort") in routing.allowed_efforts_for(RCFG, g, tr): return ""
+        return "%s effort %r is not allowed at %s" % (g, d.get("effort"), tr)
 
     def gmerge(b, s):
         mb = subprocess.run(["git", "merge-base", "origin/" + b, s], capture_output=True).stdout.decode().strip()
@@ -110,7 +110,7 @@ def evidence(ev, key, tier, base, mode):
     if E >= 0 and P2 is None: F("epoch reset at row %d has no fresh plan after it" % (E + 1))
     if not pd: F("no logged plan row")
     else:
-        e = prov(pd, "plan"); F("plan provenance: " + e) if e else P("plan provenance ok (neon %s, %s)" % (pd.get("effort"), pd.get("account")))
+        e = prov(pd, "plan"); F("plan provenance: " + e) if e else P("plan provenance ok (%s %s, %s)" % (pd.get("route"), pd.get("effort"), pd.get("account")))
         if pd.get("tier") != tier: F("plan tier %r is not %s" % (pd.get("tier"), tier))
         if not fileof(pd, "plan"): F("plan file is missing or its sha256 does not match")
         elif pt is None: F("plan row has no parseable ts")

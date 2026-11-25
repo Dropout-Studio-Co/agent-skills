@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """gate_lib.py - T3-verified provenance, schema, round-cap, epoch and logging for gate.sh (stdlib only)."""
 import argparse, hashlib, json, os, subprocess, sys, time
-OPUS = ("anthropic", "opus", "claude-opus-5-5", "effort", ("claudeAgent", "claudeAgent_2"))
-CONTRACTS = {"plan": ("google-antigravity", "neon", "gemini-4-neon", "thought_level", ("antigravity", "antigravity_2")),
-             "review": OPUS, "security": OPUS, "epoch": OPUS}
+sys.dont_write_bytecode = True; sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import routing_lib as routing
 RANK = {"low": 0, "medium": 1, "high": 2}; SEVERITY = {"important": "Important", "nit": "Nit", "pre-existing": "Pre-existing"}
 ERR_KEYS = ("stopReason", "stop_reason", "error", "errorCode", "errorMessage", "code", "type", "reason", "status", "message", "detail", "details")
 USAGE_PAT = ("usage_limit", "rate_limit", "rate limit", "usage limit", "quota", "429")
@@ -15,10 +14,6 @@ def parse(text):
 def sha_file(path):
     try: return hashlib.sha256(open(path, "rb").read()).hexdigest()
     except OSError: return ""
-def effort_for(gate, tier, trigger):
-    if gate == "plan": return "medium" if tier == "low" else "high"
-    if gate == "review": return "high" if tier == "high" or trigger else "medium"
-    return "high" if gate == "security" or tier == "high" else "medium"
 def git(*argv):
     try: return subprocess.run(("git",) + argv, capture_output=True, text=True).stdout.strip()
     except OSError: return None
@@ -74,7 +69,7 @@ def output_of(read, thread):
         else: continue
         if isinstance(value, dict): found[slot] = value
     return found.get("submit") or found.get("message")
-def thread_info(read, cfg):
+def thread_info(read, cfg, keys):
     thread = read.get("thread") if isinstance(read.get("thread"), dict) else read
     selection = cfg.get("modelSelection") if isinstance(cfg.get("modelSelection"), dict) else cfg
     runs = [run for run in (read.get("recentRuns") or thread.get("recentRuns") or []) if isinstance(run, dict)]
@@ -88,7 +83,7 @@ def thread_info(read, cfg):
     seen = []
     for source in [node for node in [selection, thread, read] + runs if isinstance(node, dict)]:
         opts = source.get("options")
-        effort = (opts.get("thought_level") or opts.get("effort") or "") if isinstance(opts, dict) else next((entry.get("value") for entry in opts or [] if isinstance(entry, dict) and entry.get("id") in ("thought_level", "effort")), "")
+        effort = next((opts.get(key) for key in keys if isinstance(opts, dict) and opts.get(key)), "") if isinstance(opts, dict) else next((entry.get("value") for entry in opts or [] if isinstance(entry, dict) and entry.get("id") in keys), "")
         strings = lambda *keys: next((source[key] for key in keys if isinstance(source.get(key), str) and source.get(key)), "")
         seen.append(dict(model=strings("model", "modelId"), executed=strings("executedModel"), instance=strings("instanceId", "providerInstanceId"), effort=effort if isinstance(effort, str) else ""))
     pick = lambda *keys: next((source[key] for source in (selection, thread, read, run) for key in keys if isinstance(source, dict) and source.get(key)), "")
@@ -134,6 +129,8 @@ def main():
         row.update(fields); open(os.path.join(args.evid, "gates.log"), "a").write(json.dumps(row, sort_keys=True) + "\n")
     def stop(code, **fields): emit(**fields); return code
     if args.log_invalid: return stop(2, reason=args.reason or "gate.sh refused")
+    try: RCFG = routing.load()
+    except ValueError as problem: return stop(2, reason="invalid routing.json: %s" % problem)
     if args.gate == "epoch":
         caps = [row for row in rows[epoch_start:] if row.get("gate") in ("review", "security") and row.get("status") == "blocked" and row.get("reason") == "round cap after re-plan"]
         if not caps: return stop(2, reason="epoch needs a review/security round-cap block")
@@ -147,8 +144,8 @@ def main():
     if args.gate in ("review", "security") and epochs and not any(index > epochs[-1] and row.get("gate") == "plan" and row.get("status") == "ok" for index, row in enumerate(rows)): return stop(2, reason="a passing epoch requires a fresh plan before %s" % args.gate)
     read = t3("t3_thread_read", {"threadId": args.child_thread, "view": "activity", "maxCharsPerItem": 20000}); cfg = t3("t3_thread_configure", {"threadId": args.child_thread})
     if not isinstance(read, dict) or not isinstance(cfg, dict): return stop(2, reason="T3 MCP verification unavailable (t3_thread_read/t3_thread_configure)")
-    info = thread_info(read, cfg); provider, route, model, option, accounts = CONTRACTS[args.gate]
-    effort = effort_for(args.gate, args.tier, trigger); chosen = info["options"].get(option) or ""
+    info = thread_info(read, cfg, routing.option_keys(RCFG)); provider, route, model, option, accounts = routing.gate_contract(RCFG, args.gate)
+    effort = routing.effort_for(RCFG, args.gate, args.tier, trigger); chosen = info["options"].get(option) or ""
     obs = dict(model=info["model"], effort=chosen, account=info["instance"])
     def bad(reason):
         prior = any(row.get("gate") == args.gate and row.get("key") == args.key and row.get("status") == "invalid" and str(row.get("reason", "")).startswith("invalid output") for row in rows[last_ok + 1:])
