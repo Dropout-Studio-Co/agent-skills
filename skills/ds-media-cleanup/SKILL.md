@@ -16,7 +16,7 @@ Consult [`references/naming-and-jargon.md`](references/naming-and-jargon.md) for
 - **Target path:** Use the directory, drive, or volume passed as an argument; when omitted, use the current working directory.
 - **Accept flexible inputs:** Full paths, relative paths, drive letters, or mounted volume names (resolve dynamically from the current OS — never assume a hardcoded mount point or drive letter).
 - **Preflight check:** Verify the target exists, is readable, and is writable. If missing, unmounted, read-only, or containing no video files, stop immediately and return a single-line plain-language failure message.
-- **Media scope:** Touch only video files (`.mkv`, `.mp4`, `.m4v`, `.avi`, `.mov`, `.webm`, `.ts`, `.wmv`) and their matching sidecar files (`.srt`, `.ass`, `.ssa`, `.sub`, `.idx`, `.vtt`, `.nfo`, artwork). Leave all unrelated files and non-media folders untouched.
+- **Media scope:** When pointed at a drive or volume root, locate the movie/TV library folder(s) rather than walking the entire drive. Touch only movie and TV video files (`.mkv`, `.mp4`, `.m4v`, `.avi`, `.mov`, `.webm`, `.ts`, `.wmv`) and their matching sidecar files (`.srt`, `.ass`, `.ssa`, `.sub`, `.idx`, `.vtt`, `.nfo`, artwork). Skip OS/metadata entries (`._*`, `.DS_Store`, `$RECYCLE.BIN`, `.Trashes`, `.Spotlight-V100`, `System Volume Information`), backup folders, and non-library video folders (such as camera exports or personal project footage).
 
 ## 2. Infer Target Naming Convention
 
@@ -25,7 +25,7 @@ Establish the naming structure before renaming any file:
 1. **Inspect existing library files:** Scan already-clean movies, TV show folders, season folders, and episode filenames in the target path to infer the dominant convention:
    - Movie layout (flat in media root vs. per-movie folder) and pattern (e.g., `<Title> - <YYYY>.<ext>` vs. `<Title> (<YYYY>).<ext>`).
    - TV layout (`<Show Name> (<YYYY>)/Season <NN>/` vs. flat show folder).
-   - Episode pattern (e.g., `<Show Name> - s01e01 - <Episode Title>.<ext>` vs. `<Show Name> - S01E01.<ext>`, season/episode casing, and whether episode titles are kept).
+   - Episode pattern (e.g., `<Show Name> - s01e01 - <Episode Title>.<ext>` vs. `<Show Name> - S01E01.<ext>`, season/episode casing, and whether episode titles are kept — when mixed, preserve titles where present and omit where absent).
 2. **Optional memory check:** If a mind palace or personal notes repository is available in the environment, check it for any recorded media-naming preference. Skip silently if none exists — the skill must work identically without it.
 3. **Universal fallback:** When no existing convention is present (for example, a folder containing only raw downloads), default to:
    - **Movies:** `<Title> (<YYYY>).<ext>`
