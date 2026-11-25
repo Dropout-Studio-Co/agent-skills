@@ -1,11 +1,11 @@
 ---
-name: ds-media-rename
-description: Clean and standardize movie, TV show, and episode filenames (and season folders), detect duplicates with quality-to-size keep/remove recommendations, and report concisely. Use when asked to rename, clean, organize, or deduplicate downloaded movies or TV series in the current directory or a specified drive/path.
+name: ds-media-cleanup
+description: Clean up movie and TV libraries — standardize movie, TV show, and episode filenames (and season folders), detect duplicates with quality-to-size keep/remove recommendations, and report concisely. Use when asked to clean up, rename, organize, or deduplicate downloaded movies or TV series in the current directory or a specified drive/path.
 argument-hint: "Optional: target directory, drive, or volume path (defaults to current working directory)"
 license: MIT
 ---
 
-# Media Rename (`ds-media-rename`)
+# Media Cleanup (`ds-media-cleanup`)
 
 Clean and standardize movie, TV show, and episode filenames (and folder layout where appropriate), flag duplicates without deleting them, and return a strictly concise, jargon-free summary.
 

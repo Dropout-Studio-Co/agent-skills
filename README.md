@@ -49,7 +49,7 @@ Once installed, type the phrase in the right column whenever you want to use a s
 
 | Skill | What it does | What to type |
 | --- | --- | --- |
-| [`ds-media-rename`](skills/ds-media-rename/) | Cleans and standardizes movie, TV show, and episode filenames (and season folders), infers your library's naming style, and flags duplicates with quality-to-size keep/remove recommendations without deleting files. | `/ds-media-rename` or `/ds-media-rename <path or drive>` |
+| [`ds-media-cleanup`](skills/ds-media-cleanup/) | Cleans up movie and TV libraries — standardizes movie, TV show, and episode filenames (and season folders), infers your library's naming style, and flags duplicates with quality-to-size keep/remove recommendations without deleting files. | `/ds-media-cleanup` or `/ds-media-cleanup <path or drive>` |
 
 ### Good to Know
 
