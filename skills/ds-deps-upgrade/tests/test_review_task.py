@@ -114,7 +114,7 @@ class ProfileAndAgnosticComplianceTests(TaskCase):
         self.assertEqual(rt.load_profile('ds-consolidate')['review_kinds']['reconciliation']['evidence'], 'git-inventory')
 
     def test_all_skills_follow_ds_naming_and_valid_frontmatter(self):
-        expected = {'ds-consolidate', 'ds-deps-upgrade', 'ds-dev-protocol', 'ds-responsive', 'ds-handoff', 'ds-agent-docs', 'ds-ui-overhaul'}
+        expected = {'ds-consolidate', 'ds-deps-upgrade', 'ds-dev-protocol', 'ds-responsive', 'ds-handoff', 'ds-agent-docs', 'ds-ui-overhaul', 'ds-media-rename'}
         actual = {d for d in os.listdir(SKILLS) if os.path.isdir(os.path.join(SKILLS, d)) and not d.startswith('.')}
         self.assertEqual(actual, expected)
         for skill in sorted(actual):
