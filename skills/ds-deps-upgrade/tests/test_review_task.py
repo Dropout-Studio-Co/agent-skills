@@ -526,9 +526,9 @@ class SkillSpecificEvidenceTests(TaskCase):
         with open(os.path.join(SKILLS, 'ds-consolidate', 'SKILL.md'), encoding='utf-8') as handle:
             text = handle.read()
         for required in (
-            'git log --merges --cc -p',
+            'git log --merges --cc --format= -p',
             'pull/<n>/head',
-            '--force-with-lease=refs/heads/<branch>:<verified-sha>',
+            '--force-with-lease=refs/heads/<branch>:<verified-sha> origin :refs/heads/<branch>',
             'baseRefName',
             'origin/<DEFAULT_BRANCH>',
         ):

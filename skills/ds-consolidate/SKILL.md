@@ -45,7 +45,7 @@ Every step below says "BLOCKER" to mean exactly this. Never ask the user.
    compares against this base).
 2. For every branch, worktree, clone, stash, and PR, collect the facts NOT already in
    `DEFAULT_BRANCH`: unmerged commits (`git cherry <default> <ref>`, `git log <default>..<ref>`,
-   and `git log --merges --cc -p <default>..<ref>` for non-ancestor branches),
+   and `git log --merges --cc --format= -p <default>..<ref>` for non-ancestor branches),
    uncommitted changes, untracked files, and ignored files. Classify every local branch, remote
    branch, and open PR independently by its own tip SHA (`headRefOid` for PRs). For any open PR
    whose `headRefOid` is not present on `origin/<headRefName>` (such as cross-repo/fork PRs or
@@ -62,7 +62,7 @@ Every step below says "BLOCKER" to mean exactly this. Never ask the user.
 
 | Class | Required evidence |
 | --- | --- |
-| **(a) in main (default branch)** | Tip is an ancestor of `DEFAULT_BRANCH` (`git merge-base --is-ancestor <tip> <default>`), OR `git cherry <default> <ref>` shows no `+` line AND `git log --merges --cc -p <default>..<ref>` is empty (so merge-commit conflict resolutions are never silently dropped). Stash or uncommitted change: patch reverse-applies cleanly on `DEFAULT_BRANCH` (`git apply -R --check`). Untracked file: same blob exists at that path in `DEFAULT_BRANCH`. |
+| **(a) in main (default branch)** | Tip is an ancestor of `DEFAULT_BRANCH` (`git merge-base --is-ancestor <tip> <default>`), OR `git cherry <default> <ref>` shows no `+` line AND `git log --merges --cc --format= -p <default>..<ref>` is empty (so merge-commit conflict resolutions are never silently dropped). Stash or uncommitted change: patch reverse-applies cleanly on `DEFAULT_BRANCH` (`git apply -R --check`). Untracked file: same blob exists at that path in `DEFAULT_BRANCH`. |
 | **(b) superseded** | Cited default-branch commit SHA and `file:line` in the ledger proving the replacement. |
 | **(c) still-needed** | Unique work that is not `(d)` (all branch kinds — user, agent, bot, Dependabot, and no-PR branches — are eligible for integration and cleanup). |
 | **(d) keep** | Still uncertain after a consult; in-progress (`lsof -a -d cwd` shows a live process inside the location — no 24-hour or recency time hold); or holding ignored files other than reproducible caches/build outputs (`node_modules`, `dist`, `build`, `.next`, `.svelte-kit`, `.venv`, `__pycache__`, `target`, `.gradle`, `DerivedData`, `Pods`, `.dart_tool`, `.zig-cache`). Local secrets, `.env*`, keystores, signing certificates (`*.p12`, `*.keystore`, `*.mobileprovision`, TV author/distributor certs), and local databases are NEVER reproducible caches and always keep the location in `(d)`. A `(d)` item is never integrated, deleted, dropped, or closed. |
@@ -198,7 +198,7 @@ results recorded in the ledger, and the pre-cleanup restore point is written and
     (deleting a base branch auto-closes dependent PRs on GitHub); if one does, keep the remote
     branch and report it.
   - Delete remote branches with a SHA lease so any commit pushed after STEP 1 refuses the deletion:
-    `git push --force-with-lease=refs/heads/<branch>:<verified-sha> origin :<branch>`.
+    `git push --force-with-lease=refs/heads/<branch>:<verified-sha> origin :refs/heads/<branch>`.
   - Before closing an open PR, verify its live `headRefOid` still equals the verified ledger SHA;
     if it moved, keep the PR open and report it. For cross-repo/fork PRs, close the PR only.
 - Delete an extra clone only when it is clean, stash-free, has no local-only commits, and its bundle
