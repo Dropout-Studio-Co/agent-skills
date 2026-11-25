@@ -55,7 +55,8 @@ chk "P27 shortcuts in SKILL.md" bash -c "grep -qF 'Shortcuts' '$ROOT/SKILL.md' &
 chk "routing/policy stays High" grep -qF 'routing/policy' "$ROOT/SKILL.md"
 chk "reference.md documents Trail blast" grep -qF 'trail blast --no-owners' "$ROOT/reference.md"
 # --- AC36: HEAD rules SKILL.md must keep ---
-chk "pre-authorized paragraph" grep -qF 'Pre-authorized (Rahi 2026-11-13' "$ROOT/SKILL.md"
+chk "pre-authorized paragraph" grep -qF '**Pre-authorized (MUST).**' "$ROOT/SKILL.md"
+chk "no Rahi date stamps in SKILL.md" bash -c "! grep -qE 'Rahi [0-9]{4}-[0-9]{2}-[0-9]{2}' '$ROOT/SKILL.md'"
 chk "hard boundaries stated" bash -c "for p in 'new spend, purchases, paid usage or credits, subscriptions or plan upgrades' 'outbound messages under Rahi' 'exposing secrets or credentials' 'bypassing or weakening a failed gate' 'without verified recovery' 'legal agreements or acceptance records' 'changing the model routing or the conductor' 'passkey touch'; do grep -qF \"\$p\" '$ROOT/SKILL.md' || exit 1; done"
 chk "no user authorization left" bash -c "! grep -qE 'only the user|user can authorize|user.s decision|ask the user|user approv' '$ROOT/SKILL.md'"
 chk "delta-round rule stated" grep -qF 'Changes since the last round' "$ROOT/SKILL.md"
