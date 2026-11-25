@@ -46,6 +46,7 @@ An inferred library convention or recorded user preference always wins over the 
 - Preserve legitimate title numbers, years inside titles (e.g., `Blade Runner 2049`), and multi-episode ranges (e.g., `S01E01-E02`).
 - Sanitize filenames for cross-OS compatibility (remove or replace `: * ? " < > |`, trim trailing dots/spaces).
 - Move or rename paired sidecar subtitles and metadata alongside their video file, preserving language/forced suffixes (e.g., `.en.srt`, `.en.forced.srt`).
+- **Leave already-clean files untouched:** Rename or move only files that violate the inferred structure (release jargon, missing `Season <NN>` folder, wrong `sXXeYY`/`SXXEYY` casing, or illegal OS characters); skip minor stylistic nitpicks (article casing, apostrophes, subtitle separators) on already-conforming filenames.
 - Execute non-clobbering renames only (check destination absence before moving; handle case-only renames on case-insensitive filesystems via a two-step temporary name). Remove empty download-release wrapper folders only if they contained solely the moved media/sidecars and no other user files.
 - **Completion criterion:** Every non-colliding movie and TV episode in scope matches the target convention, every sidecar stays paired, and zero files were overwritten or deleted.
 

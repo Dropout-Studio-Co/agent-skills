@@ -9,8 +9,8 @@ Remove technical release tokens once title, year, and season/episode markers are
 - **Resolution:** `480p`, `576p`, `720p`, `1080p`, `1080i`, `2160p`, `4K`, `UHD`, `SD`
 - **Source / rip type:** `WEB-DL`, `WEBRip`, `WEB`, `BluRay`, `BDRip`, `BRRip`, `REMUX`, `HDRip`, `DVDRip`, `HDTV`, `PDTV`, `CAM`, `TS`, `HDCAM`, `AMZN`, `NF`, `DSNP`, `ATVP`, `HMAX`, `MAX`, `PMTP`, `STAN`, `IT` (strip short service tags like `MAX` or `IT` only in the release-tag segment after the year or episode code, never inside the title itself)
 - **Video codec / HDR:** `x264`, `x265`, `H.264`, `H264`, `H.265`, `H265`, `HEVC`, `AV1`, `XviD`, `DivX`, `10bit`, `8bit`, `HDR`, `HDR10`, `HDR10+`, `DV`, `DoVi`, `Dolby Vision`, `SDR`, `HLG`, `Hybrid`, `PROPER`, `REPACK`, `INTERNAL`, `LIMITED`, `EXTENDED` (keep edition tags like `Director's Cut` or `Extended` only if two distinct editions are intentionally kept or the library convention keeps them)
-- **Audio:** `AAC`, `AAC2.0`, `AAC5.1`, `AC3`, `EAC3`, `DDP`, `DDP5.1`, `DD5.1`, `DTS`, `DTS-HD`, `DTS-HD.MA`, `TrueHD`, `Atmos`, `FLAC`, `Opus`, `MP3`, `2.0`, `5.1`, `7.1`, `Dual Audio`, `Multi`
-- **Groups & wrappers:** Trailing `-GROUP` tags (`-YTS`, `-RARBG`, `-PSA`, `-QxR`, `-NTb`, `-FLUX`, `-SPARKS`, `-TGx`, `-EVO`, `-MeGusta`), bracketed tags (`[YTS.MX]`, `[1080p]`, `[PSA]`, `[TGx]`), and site prefixes (`www.SiteName.com - `).
+- **Audio & subtitles:** `AAC`, `AAC2.0`, `AAC5.1`, `AC3`, `EAC3`, `DDP`, `DDP5.1`, `DD5.1`, `DTS`, `DTS-HD`, `DTS-HD.MA`, `TrueHD`, `Atmos`, `FLAC`, `Opus`, `MP3`, `2.0`, `5.1`, `7.1`, `2CH`, `6CH`, `8CH`, `Dual Audio`, `Multi`, `MSubs`, `ESub`, `Subbed`, and trailing language tags (`English`, `Hindi`, etc.) when appearing in the release-tag segment after the year or episode code.
+- **Groups & wrappers:** Trailing `-GROUP`, spaced ` - Group`, or dotted `-Group.tld` tags (`-YTS`, `-RARBG`, `-PSA`, `-QxR`, `-NTb`, `-FLUX`, `-SPARKS`, `-TGx`, `-EVO`, `-MeGusta`, `-Pahe.in`, `-d3g`), bracketed tags (`[YTS.MX]`, `[1080p]`, `[PSA]`, `[TGx]`, `[Telly]`), and site prefixes (`www.SiteName.com - `).
 
 ## 2. Parsing Edge Cases
 
