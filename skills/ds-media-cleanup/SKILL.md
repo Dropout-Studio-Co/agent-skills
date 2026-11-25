@@ -26,7 +26,7 @@ Establish the naming structure before renaming any file:
    - Movie layout (flat in media root vs. per-movie folder) and pattern (e.g., `<Title> - <YYYY>.<ext>` vs. `<Title> (<YYYY>).<ext>`).
    - TV layout (`<Show Name> (<YYYY>)/Season <NN>/` vs. flat show folder).
    - Episode pattern (e.g., `<Show Name> - s01e01 - <Episode Title>.<ext>` vs. `<Show Name> - S01E01.<ext>`, season/episode casing, and whether episode titles are kept — when mixed, preserve titles where present and omit where absent).
-2. **Optional memory check:** If a mind palace or personal notes repository is available in the environment, check it for any recorded media-naming preference. Skip silently if none exists — the skill must work identically without it.
+2. **Optional memory check:** If a local mind palace or personal notes repository is already accessible in the environment, check it for any recorded media-naming preference. Skip silently and never block, fetch remotely, or fail if local files or GitHub/network access are missing or unavailable — the skill must work fully standalone.
 3. **Universal fallback:** When no existing convention is present (for example, a folder containing only raw downloads), default to:
    - **Movies:** `<Title> (<YYYY>).<ext>`
    - **TV shows:** `<Show Name> (<YYYY>)/Season <NN>/<Show Name> - S<NN>E<NN> - <Episode Title>.<ext>` (omit ` - <Episode Title>` when no episode title is available).
