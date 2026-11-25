@@ -519,6 +519,23 @@ class SkillSpecificEvidenceTests(TaskCase):
         fields = pr_calls[0][pr_calls[0].index('--json') + 1].split(',')
         self.assertIn('author', fields)
         self.assertIn('headRefOid', fields)
+        self.assertIn('baseRefName', fields)
+        self.assertIn('isCrossRepository', fields)
+
+    def test_consolidate_skill_guards_remote_pr_and_merge_commit_safety(self):
+        with open(os.path.join(SKILLS, 'ds-consolidate', 'SKILL.md'), encoding='utf-8') as handle:
+            text = handle.read()
+        for required in (
+            'git log --merges --cc -p',
+            'pull/<n>/head',
+            '--force-with-lease=refs/heads/<branch>:<verified-sha>',
+            'baseRefName',
+            'origin/<DEFAULT_BRANCH>',
+        ):
+            self.assertIn(required, text)
+        reconciliation = rt.load_profile('ds-consolidate')['review_kinds']['reconciliation']['focus']
+        self.assertIn('baseRefName', reconciliation)
+        self.assertIn('cross-repo/fork PRs', reconciliation)
 
     def test_non_media_manifest_path_never_affects_reuse(self):
         run = self.start('ds-ui-overhaul')

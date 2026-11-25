@@ -241,7 +241,7 @@ def git_inventory(repo, main_ref, locations, with_prs, runner=None):
     with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
         pr_future = pool.submit(
             runner or tp.run_cmd, ['gh', 'pr', 'list', '--state', 'open', '--limit', '200', '--json',
-                                   'number,title,headRefName,headRefOid,author,url,isDraft'],
+                                   'number,title,headRefName,headRefOid,baseRefName,isCrossRepository,author,url,isDraft'],
             cwd=repo, timeout=120) if with_prs else None
         parts.append('## main\n' + git_out(repo, 'rev-parse', main_ref) + git_out(
             repo, 'status', '--porcelain=v1', '--branch', '--untracked-files=all'))

@@ -44,17 +44,25 @@ Every step below says "BLOCKER" to mean exactly this. Never ask the user.
    `python3 $T start --skill ds-consolidate --repo . --base <default-branch SHA>` (every review
    compares against this base).
 2. For every branch, worktree, clone, stash, and PR, collect the facts NOT already in
-   `DEFAULT_BRANCH`: unmerged commits (`git cherry <default> <ref>`, `git log <default>..<ref>`),
-   uncommitted changes, untracked files, and ignored files. Once `DEFAULT_BRANCH` is updated and
+   `DEFAULT_BRANCH`: unmerged commits (`git cherry <default> <ref>`, `git log <default>..<ref>`,
+   and `git log --merges --cc -p <default>..<ref>` for non-ancestor branches),
+   uncommitted changes, untracked files, and ignored files. Classify every local branch, remote
+   branch, and open PR independently by its own tip SHA (`headRefOid` for PRs). For any open PR
+   whose `headRefOid` is not present on `origin/<headRefName>` (such as cross-repo/fork PRs or
+   deleted-branch PRs), fetch it into a temporary ref
+   (`git fetch origin pull/<n>/head:refs/ds-consolidate/<UTC>/pr/<n>`) — or inspect via
+   `gh pr diff <n>` if fetching fails — so its actual commits are compared against
+   `DEFAULT_BRANCH` and captured in the restore point bundle. Once `DEFAULT_BRANCH` is updated and
    `start` is recorded, run these read-only inspections (branches and `git cherry`, worktrees,
-   bounded extra-clone search, stashes, `gh pr list` / `gh-axi`, `lsof`)
+   bounded extra-clone search, stashes, `gh pr list` / `gh-axi` including `baseRefName` and
+   `isCrossRepository`, `lsof`)
    concurrently as parallel read-only shell calls; use read-only audit subagents only for a repo
    with many diverged branches or clones that need deep diff reading.
 3. Classify every item into exactly one of four evidence classes:
 
 | Class | Required evidence |
 | --- | --- |
-| **(a) in main (default branch)** | `git cherry <default> <ref>` shows no `+` line, or tip is an ancestor of `DEFAULT_BRANCH` (`git merge-base --is-ancestor <tip> <default>`). Stash or uncommitted change: patch reverse-applies cleanly on `DEFAULT_BRANCH` (`git apply -R --check`). Untracked file: same blob exists at that path in `DEFAULT_BRANCH`. |
+| **(a) in main (default branch)** | Tip is an ancestor of `DEFAULT_BRANCH` (`git merge-base --is-ancestor <tip> <default>`), OR `git cherry <default> <ref>` shows no `+` line AND `git log --merges --cc -p <default>..<ref>` is empty (so merge-commit conflict resolutions are never silently dropped). Stash or uncommitted change: patch reverse-applies cleanly on `DEFAULT_BRANCH` (`git apply -R --check`). Untracked file: same blob exists at that path in `DEFAULT_BRANCH`. |
 | **(b) superseded** | Cited default-branch commit SHA and `file:line` in the ledger proving the replacement. |
 | **(c) still-needed** | Unique work that is not `(d)` (all branch kinds — user, agent, bot, Dependabot, and no-PR branches — are eligible for integration and cleanup). |
 | **(d) keep** | Still uncertain after a consult; in-progress (`lsof -a -d cwd` shows a live process inside the location — no 24-hour or recency time hold); or holding ignored files other than reproducible caches/build outputs (`node_modules`, `dist`, `build`, `.next`, `.svelte-kit`, `.venv`, `__pycache__`, `target`, `.gradle`, `DerivedData`, `Pods`, `.dart_tool`, `.zig-cache`). Local secrets, `.env*`, keystores, signing certificates (`*.p12`, `*.keystore`, `*.mobileprovision`, TV author/distributor certs), and local databases are NEVER reproducible caches and always keep the location in `(d)`. A `(d)` item is never integrated, deleted, dropped, or closed. |
@@ -93,9 +101,10 @@ Write restore points outside the repository at
   point before the final reconciliation review and `gate`.
 
 Each restore point must capture:
-- Temporary refs for every stash entry and worktree HEAD:
-  `git update-ref refs/ds-consolidate/<UTC>/stash/<n> stash@{n}` and
-  `git update-ref refs/ds-consolidate/<UTC>/worktree/<name> <worktree HEAD SHA>`.
+- Temporary refs for every stash entry, worktree HEAD, and any fetched cross-repo/detached PR:
+  `git update-ref refs/ds-consolidate/<UTC>/stash/<n> stash@{n}`,
+  `git update-ref refs/ds-consolidate/<UTC>/worktree/<name> <worktree HEAD SHA>`, and
+  `refs/ds-consolidate/<UTC>/pr/<n>` (from `git fetch origin pull/<n>/head:...` in STEP 1).
 - `git bundle create <path>/repo.bundle --all` and `git bundle verify <path>/repo.bundle`.
 - A verified bundle per extra clone (`git -C <clone> bundle create <path>/<clone>.bundle --all`,
   verified).
@@ -168,17 +177,30 @@ results recorded in the ledger, and the pre-cleanup restore point is written and
 **Done when**: all required reviews pass on the current candidate, `gate` exits 0, and
 `DEFAULT_BRANCH` is pushed when updated.
 
-## STEP 4 — CLEANUP (only after verify passes and `gate` exits 0)
+## STEP 4 — CLEANUP (only after verify passes, `gate` exits 0, and `DEFAULT_BRANCH` is pushed when updated)
 
-- Remove only items on the ledger's cleanup list. Anything that refuses, or that changed since the
-  gate, is kept and reported.
+- If `DEFAULT_BRANCH` was updated locally and `git push` failed (for example, branch protection or
+  remote drift), apply BLOCKER and do not clean up: remote branches, PRs, and local branches are
+  never removed until `origin/<DEFAULT_BRANCH>` holds the verified commits.
+- Remove only items on the ledger's cleanup list. Verify each local branch, remote branch, and open
+  PR independently by its own verified SHA (`headRefOid` for PRs); never delete or close one ref
+  using a counterpart's proof. Anything that refuses, or whose SHA changed since the gate, is kept
+  and reported.
 - `git worktree remove <path>` (never with `--force`), then `git worktree prune`.
-- `git branch -d <branch>`; use `-D` only with `(a)` or `(b)` evidence in the ledger.
+- `git branch -d <branch>`; use `-D` only with `(a)` or `(b)` evidence in the ledger and after
+  verifying `git rev-parse <branch>` still equals the verified ledger SHA.
 - Drop a stash only after re-finding it by SHA (`git stash list --format='%gd %H'`), and drop that
   exact entry.
 - Delete any remote branch (and close any associated open PR) on the cleanup list — regardless of
   author, bot, or PR status — once it is proven in `DEFAULT_BRANCH` (`(a)` or `(b)`) and captured in
-  the verified restore point.
+  the verified restore point:
+  - Before deleting a remote branch, verify no kept `(d)` open PR targets it as `baseRefName`
+    (deleting a base branch auto-closes dependent PRs on GitHub); if one does, keep the remote
+    branch and report it.
+  - Delete remote branches with a SHA lease so any commit pushed after STEP 1 refuses the deletion:
+    `git push --force-with-lease=refs/heads/<branch>:<verified-sha> origin :<branch>`.
+  - Before closing an open PR, verify its live `headRefOid` still equals the verified ledger SHA;
+    if it moved, keep the PR open and report it. For cross-repo/fork PRs, close the PR only.
 - Delete an extra clone only when it is clean, stash-free, has no local-only commits, and its bundle
   is verified in the restore point.
 - After verified cleanup, delete every `refs/ds-consolidate/<UTC>/` temporary-ref namespace created
