@@ -14,7 +14,7 @@
    "provider": "anthropic",
    "model": "claude-opus-5-5",
    "option_key": "effort",
-   "accounts": ["claudeAgent", "claudeAgent_2", "claudeAgent_3"]
+   "accounts": ["claudeAgent", "claudeAgent_2"]
   },
   "deepseek": {
    "label": "DeepSeek V4.1 Flash 1017",

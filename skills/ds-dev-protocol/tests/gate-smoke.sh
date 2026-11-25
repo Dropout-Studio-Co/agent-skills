@@ -304,11 +304,10 @@ fresh; new_ev ic; pkt review "$H" "$B"; rec_review review "$H" pass; opusenv "$(
 export FAKE_RECORD=$E/rec.json FAKE_RUN_INSTANCE="${OPUS_ALL[1]}"; g "$E" review medium --record "$E/rec.json"
 chk "cross-source instance mismatch ${OPUS_ALL[0]} vs ${OPUS_ALL[1]} exit2" bash -c "[ $GRC = 2 ] && grep -q 'observed account' '$E/gates.log' && grep -q '${OPUS_ALL[1]}' '$E/gates.log' && ! ls '$E'/review-*.json 2>/dev/null"
 fresh; new_ev uf; pkt review "$H" "$B"; rec_review review "$H" pass; export FAKE_RECORD=$E/rec.json FAKE_ERR='{"error":"usage_limit"}'
-opusenv "$(rt effort review medium)" "$OM" "${OPUS_ALL[0]}"; g "$E" review medium --record "$E/rec.json"; rc1=$GRC; cp "$T/out" "$T/o1"
-opusenv "$(rt effort review medium)" "$OM" "${OPUS_ALL[1]}"; g "$E" review medium --record "$E/rec.json"; rc2=$GRC; cp "$T/out" "$T/o2"
-opusenv "$(rt effort review medium)" "$OM" "${OPUS_ALL[2]}"; g "$E" review medium --record "$E/rec.json"
-chk "usage row carries observed account" bash -c "grep -q '\"reason\": \"usage_limit\"' '$E/gates.log' && grep -q '\"account\": \"${OPUS_ALL[1]}\"' '$E/gates.log'"
-chk "usage failover claude: 2,2,3 then blocked" bash -c "[ $rc1 = 2 ] && [ $rc2 = 2 ] && [ $GRC = 3 ] && grep -q '${OPUS_ALL[1]}' '$T/o1' && grep -q '${OPUS_ALL[2]}' '$T/o2' && tail -1 '$E/gates.log' | grep -q '$OM quota exhausted on every instance' && tail -1 '$E/gates.log' | grep -q '\"status\": \"blocked\"'"
+for i in "${!OPUS_ALL[@]}"; do opusenv "$(rt effort review medium)" "$OM" "${OPUS_ALL[$i]}"; g "$E" review medium --record "$E/rec.json"; cp "$T/out" "$T/o$i"
+  if [ "$i" -lt $(( ${#OPUS_ALL[@]} - 1 )) ]; then chk "usage failover claude ${OPUS_ALL[$i]} exit2 next ${OPUS_ALL[$((i+1))]}" bash -c "[ $GRC = 2 ] && grep -q '${OPUS_ALL[$((i+1))]}' '$T/o$i'"
+  else chk "usage failover claude last ${OPUS_ALL[$i]} exit3 blocked" bash -c "[ $GRC = 3 ] && tail -1 '$E/gates.log' | grep -q '$OM quota exhausted on every instance' && tail -1 '$E/gates.log' | grep -q '\"status\": \"blocked\"' && ! ls '$E'/review-*.json 2>/dev/null"; fi; done
+chk "usage row carries observed account" bash -c "grep '\"reason\": \"usage_limit\"' '$E/gates.log' | grep -q '\"account\": \"${OPUS_ALL[0]}\"'"
 fresh; new_ev ufp; printf 'facts body\n' > "$E/facts.md"; K=$(shasum -a 256 "$E/facts.md" | awk '{print $1}'); pkt plan "$K"; rec_plan medium; planenv "$(rt effort plan medium)"
 export FAKE_RECORD=$E/rec.json FAKE_ERR='{"stop_reason":"usage_limit"}'; export FAKE_INSTANCE="${NEON_ALL[0]}"
 g "$E" plan medium --record "$E/rec.json"; p1=$GRC; cp "$T/out" "$T/p1"
