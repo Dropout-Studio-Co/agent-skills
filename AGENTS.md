@@ -10,6 +10,9 @@ kept in sync with `main` automatically (see [Automatic sync](#automatic-sync)).
 python3 -m unittest discover -s skills/ds-deps-upgrade/tests -t skills/ds-deps-upgrade  # ds-deps-upgrade + review_task tests
 python3 -m unittest discover -s skills/ds-agent-docs/tests -t skills/ds-agent-docs  # collector + checker tests
 bash skills/ds-dev-protocol/tests/smoke.sh  # ds-dev-protocol smoke tests (fake CLIs)
+python3 -I skills/ds-dev-protocol/scripts/routing_lib.py check  # routing.json vs its derived files: 0 in sync, 1 drifted
+python3 -I skills/ds-dev-protocol/scripts/routing_lib.py sync   # rewrite opencode/opencode.json + the SKILL.md routing block
+git config core.hooksPath .githooks  # once per clone: the pre-commit hook keeps routing.json and its derived files staged
 diff -rq -x __pycache__ -x graft skills/<name> ~/.agents/skills/<name>  # drift check: must print nothing
 rsync -a --exclude '__pycache__/' --exclude 'graft/.cache/' skills/<name>/ ~/.agents/skills/<name>/  # sync one skill
 ~/.agents/bin/agent-skills-sync --dry-run  # sync: show what the next run would do, change nothing
@@ -64,9 +67,9 @@ up as `Only in ~/.agents/skills/<name>` and are expected; any other difference i
 ```text
 skills/ds-consolidate/    SKILL.md, task-profile.json (plan/review prompt profiles)
 skills/ds-deps-upgrade/           SKILL.md, README.md, scripts/, references/, tests/
-skills/ds-dev-protocol/       SKILL.md, reference.md, opus-gate-brief.md, plan-gate-brief.md,
+skills/ds-dev-protocol/       SKILL.md, routing.json, reference.md, opus-gate-brief.md, plan-gate-brief.md,
                           implementer-brief.md, plan-schema.json, review-schema.json, opencode/,
-                          scripts/ (gate.sh, gate_lib.py, implement.sh, implement_lib.py,
+                          scripts/ (gate.sh, gate_lib.py, implement.sh, implement_lib.py, routing_lib.py,
                           premerge-and-merge.sh, premerge_lib.py),
                           evals/ (fixtures/, build_fixtures.py, fixture-check.sh, run.sh, score.py,
                           rubric.json, answer-key.md, keys.txt, inputs.sha256, README.md),
@@ -81,6 +84,9 @@ skills/ds-ui-overhaul/             SKILL.md, task-profile.json, references/ (pla
 skills/ds-media-cleanup/           SKILL.md, references/ (naming-and-jargon.md)
 ```
 
+`.githooks/pre-commit` (executable 0755) keeps `routing.json` and its derived `opencode/opencode.json` and `SKILL.md`
+regions staged together; enable it once per clone with `git config core.hooksPath .githooks`.
+
 ## Invariants
 
 - `skills/ds-deps-upgrade/scripts/review_task.py` resolves sibling skills as
@@ -90,6 +96,12 @@ skills/ds-media-cleanup/           SKILL.md, references/ (naming-and-jargon.md)
 - `SKILL.md` frontmatter keeps `name` (matching the `ds-*` folder name) and `description`;
   `ds-deps-upgrade` also declares `allowed-tools`, `license` and `disable-model-invocation`.
 - Python helpers are stdlib-only and must run on 3.9+.
+- `skills/ds-dev-protocol/routing.json` (`schema_version` 1) is the only place a model route, provider, option
+  key, account, cost cap or tier/trigger effort is defined. `scripts/routing_lib.py` validates it, fails closed,
+  and renders the `model` field of `opencode/opencode.json` plus the frontmatter `description` and the single
+  `<!-- routing:start -->..<!-- routing:end -->` block of `SKILL.md`. Never hand-edit those derived regions or
+  hardcode a model/account in a runtime script: change `routing.json`, then run `routing_lib.py sync`.
+  `.githooks/pre-commit` (0755) enforces the same sync and is enabled with `git config core.hooksPath .githooks`.
 - Scripts keep their executable bit (`scripts/depup.py`, `scripts/review_task.py`,
   `scripts/collect_sessions.py`, `scripts/check_instructions.py`, `ds-dev-protocol`
   `scripts/gate.sh`, `scripts/premerge-and-merge.sh`, `scripts/implement.sh`, `evals/run.sh`,

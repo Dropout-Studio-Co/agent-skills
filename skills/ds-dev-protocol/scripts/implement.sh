@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# implement.sh - run one ds-dev-protocol implementer round from the last logged Neon plan. The route is locked to
-# opencode-go/deepseek-v4.1-flash at variant high, always, with cost 0: it is the sole implementer, with no model fallback.
+# implement.sh - run one ds-dev-protocol implementer round from the last logged plan. The route, provider, model,
+# effort, account and cost cap come from routing.json at runtime (scripts/routing_lib.py): it is the sole
+# implementer route, with no model fallback.
 # It runs through `opencode run --standalone`, the documented mechanical runner (no OS sandbox): the role limits in
 # opencode/opencode.json, the OPENCODE_DISABLE_* pins, process reaping, the cost check and one bounded delimiter-leak
 # auto-resume all apply. Every attempt is logged to EVID/impl.log.
@@ -8,19 +9,18 @@ set -uo pipefail
 usage() { cat <<'EOF'
 usage: EVID=<dir> implement.sh <low|medium|high> --bootstrap <cmd|none> [--step NAME] [--notes FILE] [--trigger]
        EVID=<dir> implement.sh --discard --bootstrap <cmd|none>   (reset a worktree a killed run left behind)
-       EVID=<dir> implement.sh --check                             (validate that EVID/impl.log is DeepSeek-only)
+       EVID=<dir> implement.sh --check                             (validate that EVID/impl.log uses the pinned implementer route)
   run from the root of a clean, linked task worktree; the brief comes from the last plan gate.sh logged in EVID
-  the model is always opencode-go/deepseek-v4.1-flash at variant high with cost 0; there is no fallback model
+  the route, model, effort, account and cost cap come from routing.json; there is no fallback model
   env: IMPL_DEADLINE (seconds for one round: the probe, the main run and its one resume; default 3600)
 exit: 0 done (conductor reads the diff, then re-runs the bootstrap), 1 failed round, 2 usage or precondition (no model call),
-      3 implementer unavailable (log blocked external and stop; no model fallback, zero claude calls),
+      3 implementer route unavailable (log blocked external and stop; no model fallback, zero reviewer calls),
       4 round cap (3 per step and plan), 5 escalate (EVID/escalation-<tag>.md),
       6 worktree processes survived (the worktree is tainted: read, run or commit nothing from it; remove it, use a new path)
 EOF
 }
 die() { printf 'implement.sh: %s\n' "$*" >&2; exit 2; }
 SKILL=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P); LIB=$SKILL/scripts/implement_lib.py; py() { python3 -I "$LIB" "$@"; }
-DSM=opencode-go/deepseek-v4.1-flash
 # main runs only after bash has parsed the whole file, so an edit to this file during a run cannot change what runs.
 main() {
 if [ "${1:-}" = --help ]; then usage; exit 0; fi
@@ -65,6 +65,11 @@ discard() { reap || tainted; rm -rf "$WT/.impl"
   bootstrap; }
 if [ "$mode" = discard ]; then discard; brc=$?; py row "$EVID" "$step" 0 "" "" "" "" "" discarded "--discard" "" 0 0 0
   printf 'implement.sh: worktree reset to HEAD\n'; exit $((brc ? 1 : 0)); fi
+# Routing comes from routing.json at runtime; invalid routing.json or opencode/opencode.json fails closed before any model call.
+RLIB=$SKILL/scripts/routing_lib.py
+routing_tsv=$(python3 -I "$RLIB" impl-tsv) || die "invalid routing.json: run python3 -I $RLIB check"
+IFS=$'\t' read -r RT _ DSM DSID RE PINNED _ MAXCOST <<< "$routing_tsv"
+OCCFG=$(python3 -I "$RLIB" opencode-config) || die "invalid opencode/opencode.json"
 [ -z "$(git status --porcelain --untracked-files=all)" ] || die "worktree is not clean; commit or discard changes first"
 [ ! -e "$WT/.impl" ] && [ ! -L "$WT/.impl" ] || die "$WT/.impl exists; run implement.sh --discard first"
 if py laststart "$EVID"; then die "the last impl.log row is start: a run was killed; run implement.sh --discard --bootstrap <cmd|none> first"; fi
@@ -74,18 +79,18 @@ if [ "$counted" -ge 3 ]; then printf 'implement.sh: 3 rounds for step %s on this
 tag=$step-r$round-${ps:0:8}; BASE=$(git rev-parse HEAD)
 # Trusted state stays in this process and EVID; the brief and its result live under .impl/ in the worktree.
 py row "$EVID" "$step" "$round" "$ps" "$tier" "" "" "" start "" "" 0 0 0
-RUN=$(mktemp -d "${TMPDIR:-/tmp}/implement.XXXXXX"); RUN=$(cd "$RUN" && pwd -P); mkdir -p "$RUN/x"; RT=deepseek; RM=$DSM; RE=high
+RUN=$(mktemp -d "${TMPDIR:-/tmp}/implement.XXXXXX"); RUN=$(cd "$RUN" && pwd -P); mkdir -p "$RUN/x"; RM=$DSM
 trap 'rm -rf "$RUN"; [ "$TAINT" = 1 ] || rm -rf "$WT/.impl"' EXIT; trap 'trap - INT TERM HUP; reap || tainted; printf "implement.sh: interrupted; run implement.sh --discard next\n" >&2; exit 130' INT TERM HUP
 brief=$EVID/impl-$tag-brief.md; err=$EVID/impl-$tag.err; : > "$err"; py brief "$SKILL/implementer-brief.md" "$pf" "$WT" "$notes" "$brief" || die "cannot build the brief"
 mkimpl() { mkdir "$WT/.impl" && cp "$brief" "$WT/.impl/brief.md"; }; mkimpl
 patch_out() { { git status --porcelain --untracked-files=all; git diff --binary "$BASE"; } > "$EVID/impl-$tag-$1-discarded.patch" 2>/dev/null; }
 # The OpenCode config pinning env is the role-limit and routing pin; the child inherits the caller's XDG and TMPDIR values.
-oc() { env OPENCODE_CONFIG_DIR="$SKILL/opencode" OPENCODE_CONFIG_CONTENT="$(cat "$SKILL/opencode/opencode.json")" OPENCODE_DISABLE_CLAUDE_CODE=1 \
+oc() { env OPENCODE_CONFIG_DIR="$SKILL/opencode" OPENCODE_CONFIG_CONTENT="$OCCFG" OPENCODE_DISABLE_CLAUDE_CODE=1 \
     OPENCODE_DISABLE_FREE_MODELS=1 timeout -k 30 "$TMO" "$@"; }
 # ds NAME AGENT MSG [ARGS]: one opencode run in the worktree, exported and classified. Sets KIND (ok|unavailable|timeout), WHY, SID, TIN, TOUT, COST.
 ds() { local name=$1 agent=$2 msg=$3 evf=$EVID/impl-$tag-$1.events rc; shift 3; KIND=unavailable; SID=-; TIN=0; TOUT=0; COST=0
   if ! command -v opencode >/dev/null 2>&1; then WHY="opencode not on PATH"; return; fi
-  (cd "$WT" && oc opencode run --standalone --archived --agent "$agent" --model "$DSM#high" --format json \
+  (cd "$WT" && oc opencode run --standalone --archived --agent "$agent" --model "$PINNED" --format json \
     --title "$(basename "$EVID")-$step-r$round-$name" "$@" "$msg" < /dev/null > "$evf" 2>> "$err") & wait $!; rc=$?; reap || tainted
   if [ "$rc" = 124 ] || [ "$rc" = 137 ]; then KIND=timeout; WHY="timeout after ${TMO}s"; return; fi
   SID=$(py sid "$evf"); SID=${SID:--}; local ex=$EVID/impl-$tag-$name-export.json; : > "$ex"
@@ -108,10 +113,10 @@ unavail() { py row "$EVID" "$step" "$round" "$ps" "$tier" "$1" "$2" "$3" unavail
 resdone() { [ -f "$WT/.impl/result.json" ] && [ ! -L "$WT/.impl/result.json" ]; }
 samehead() { [ "$(git -C "$WT" rev-parse HEAD)" = "$BASE" ]; }
 leaked() { [ "$(py leak "$EVID/impl-$tag-$1.events")" = leak ]; }
-UMSG='implement.sh: the implementer route is unavailable (opencode-go/deepseek-v4.1-flash#high); no fallback model is permitted: log blocked external in PROGRESS.md, finish unaffected work, stop'
+UMSG="implement.sh: the implementer route is unavailable ($PINNED); no fallback model is permitted: log blocked external in PROGRESS.md, finish unaffected work, stop"
 ds probe implementer-probe "Reply with OK only."
 if [ "$KIND" = ok ]; then ds main implementer "Implement the attached brief exactly. Write .impl/result.json last, then stop." -f "$WT/.impl/brief.md"
-  if [ "$KIND" = timeout ]; then outcome deepseek "$DSM" high "$WHY"; fi
+  if [ "$KIND" = timeout ]; then outcome "$RT" "$DSM" "$RE" "$WHY"; fi
   if [ "$KIND" = ok ]; then LE=0; leaked main && LE=1; LK=$LE; resdone || LK=1
     # ONE bounded auto-resume in the same round, only while HEAD is intact, the deadline has time left, the session exists
     # and the run stayed under the 250K input-token ceiling. A second stop fails the round and counts as one strike.
@@ -121,17 +126,17 @@ if [ "$KIND" = ok ]; then ds main implementer "Implement the attached brief exac
         TMO=$REM; ds resume implementer "Resume and finish the brief. Write .impl/result.json last, then stop." --session "$SID"; TMO=$DEADLINE
         # The resume's own classification decides: unavailable stops the round at once (no failed or cost row), a timeout
         # keeps its reason, and only a verified turn is judged on its own events and .impl/result.json.
-        if [ "$KIND" = unavailable ]; then unavail deepseek "$DSM" high; patch_out deepseek; discard; printf '%s\n' "$UMSG" >&2; exit 3; fi
-        if [ "$KIND" = timeout ]; then outcome deepseek "$DSM" high "$WHY"; fi
-        if resdone && ! leaked resume; then outcome deepseek "$DSM" high -; fi
+        if [ "$KIND" = unavailable ]; then unavail "$RT" "$DSM" "$RE"; patch_out "$RT"; discard; printf '%s\n' "$UMSG" >&2; exit 3; fi
+        if [ "$KIND" = timeout ]; then outcome "$RT" "$DSM" "$RE" "$WHY"; fi
+        if resdone && ! leaked resume; then outcome "$RT" "$DSM" "$RE" -; fi
         if [ "$LE" = 1 ] || leaked resume; then RSN="tool-call delimiter leak"; else RSN="premature turn termination"; fi
       fi
-      outcome deepseek "$DSM" high "$RSN"
+      outcome "$RT" "$DSM" "$RE" "$RSN"
     fi
-    outcome deepseek "$DSM" high -
+    outcome "$RT" "$DSM" "$RE" -
   fi
-  unavail deepseek "$DSM" high; patch_out deepseek; discard
-else [ "$KIND" != timeout ] || WHY="probe $WHY"; unavail deepseek "$DSM" high; fi
+  unavail "$RT" "$DSM" "$RE"; patch_out "$RT"; discard
+else [ "$KIND" != timeout ] || WHY="probe $WHY"; unavail "$RT" "$DSM" "$RE"; fi
 printf '%s\n' "$UMSG" >&2; exit 3
 }
 main "$@"; exit $?

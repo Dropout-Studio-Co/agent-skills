@@ -1,8 +1,11 @@
 # implement_lib.py - helpers for scripts/implement.sh (run as: python3 -I implement_lib.py <command> ...); stdlib only.
 import fnmatch, hashlib, json, os, re, shutil, stat, subprocess, sys, time
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import routing_lib as routing
+try: RCFG = routing.load(); IMP = routing.implementer(RCFG)
+except ValueError as problem: sys.stderr.write("implement_lib.py: invalid routing.json: %s\n" % problem); sys.exit(2)
 a = sys.argv[1:]; cmd = a[0]
-DS, DSID = "opencode-go/deepseek-v4.1-flash", "deepseek-v4.1-flash"
-PROV = {"provider": "opencode-go", "account": "opencode"}  # the DeepSeek implementer is the only route: no model fallback.
+DS, DSID, PROV = IMP["model"], IMP["model_id"], {"provider": IMP["provider"], "account": IMP["account"]}  # the implementer route: no model fallback.
 FIELDS = ("step", "round", "plan_sha256", "tier", "route", "model", "effort", "status", "reason", "session_id", "files", "input_tokens", "output_tokens", "cost_usd")
 LOCKS = {"bun.lock", "bun.lockb", "package-lock.json", "pnpm-lock.yaml", "yarn.lock", "Cargo.lock", "poetry.lock", "uv.lock", "go.sum"}
 CFG = re.compile(r"(^|/)(opencode\.jsonc?$|\.opencode/|\.claude/|\.agents/|AGENTS\.md$|CLAUDE\.md$)", re.I)
@@ -35,9 +38,10 @@ if cmd == "check":
         if not isinstance(d, dict): bad.append("impl.log line %d: not JSON" % (i + 1)); continue
         r, s = d.get("route"), d.get("status")
         if s in ("start", "discarded") and r in ("", None): continue
-        if r != "deepseek": bad.append("impl.log line %d: route %r is not the deepseek implementer route" % (i + 1, r)); continue
-        if d.get("model") != DS or d.get("effort") != "high": bad.append("impl.log line %d: deepseek row is not %s high" % (i + 1, DS))
-        if num(d.get("cost_usd")) != 0: bad.append("impl.log line %d: cost_usd %s is not 0" % (i + 1, d.get("cost_usd")))
+        if r != IMP["route"]: bad.append("impl.log line %d: route %r is not the %s implementer route" % (i + 1, r, IMP["route"])); continue
+        if d.get("model") != DS or d.get("effort") != IMP["effort"]: bad.append("impl.log line %d: %s row is not %s %s" % (i + 1, IMP["route"], DS, IMP["effort"]))
+        cost = num(d.get("cost_usd"))
+        if cost > IMP["max_cost_usd"] or cost < 0: bad.append("impl.log line %d: cost_usd %s is outside 0..%s" % (i + 1, d.get("cost_usd"), IMP["max_cost_usd"]))
     print("\n".join(bad) or "impl.log routes ok"); sys.exit(1 if bad else 0)
 if cmd == "laststart":
     r = [d for d in rows(os.path.join(a[1], "impl.log"))]
@@ -46,9 +50,9 @@ if cmd == "plan":
     # Only a T3-verified Neon plan counts: route, model, effort, provenance and engine are checked before the file hash.
     ev, step = a[1:3]; pl = [d for d in rows(os.path.join(ev, "gates.log")) if isinstance(d, dict) and d.get("gate") == "plan" and d.get("status") == "ok"]
     if not pl: sys.exit(1)
-    p = pl[-1]
-    if (p.get("route") != "neon" or p.get("model") != "gemini-4-neon" or p.get("account") not in ("antigravity", "antigravity_2")
-            or p.get("effort") not in ("medium", "high") or p.get("provenance_mode") != "t3-verified" or p.get("engine") != "t3-delegate"): sys.exit(1)
+    p = pl[-1]; gr = routing.gate_contract(RCFG, "plan")
+    if (p.get("route") != gr[1] or p.get("model") != gr[2] or p.get("account") not in gr[4]
+            or p.get("effort") not in set(RCFG["gates"]["plan"]["efforts"].values()) or p.get("provenance_mode") != "t3-verified" or p.get("engine") != "t3-delegate"): sys.exit(1)
     f = os.path.join(ev, os.path.basename(str(p.get("file") or "-")))
     if not os.path.isfile(f) or sha(f) != p.get("file_sha256"): sys.exit(1)
     try: plan(f)
@@ -92,7 +96,7 @@ if cmd == "dsclass":
         if isinstance(e, dict) and e.get("type") == "step_finish" and isinstance(e.get("part"), dict): steps.append(num(e["part"].get("cost")))
     tk = info.get("tokens") if isinstance(info.get("tokens"), dict) else {}; cost = max([num(info.get("cost"))] + steps)
     why = ("no session" if sid == "-" else "export is not this session" if info.get("id") != sid else "no assistant message" if not ms
-           else "model " + ",".join(obs) if obs != ["opencode-go/%s#high" % DSID]
+           else "model " + ",".join(obs) if obs != ["%s/%s#%s" % (IMP["provider"], IMP["model_id"], IMP["effort"])]
            else "provider error: " + ",".join(e for e in errs if e.startswith("provider.")) if any(e.startswith("provider.") for e in errs)
            else "cost: %s" % cost if cost > 0 else "")
     print("\t".join(["unavailable" if why else "ok", one(why) or "-", str(int(num(tk.get("input")))), str(int(num(tk.get("output")))), str(cost)])); sys.exit()

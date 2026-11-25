@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# pre-commit - keep the ds-dev-protocol routing source of truth and its two derived files in step (zero dependencies).
+# Install once per clone: git config core.hooksPath .githooks
+set -uo pipefail
+ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
+D=skills/ds-dev-protocol
+W=("$D/routing.json" "$D/opencode/opencode.json" "$D/SKILL.md" "$D/scripts/routing_lib.py")
+staged=$(git -C "$ROOT" diff --cached --name-only -- "${W[@]}")
+[ -n "$staged" ] || exit 0
+for f in "${W[@]}"; do
+  if ! git -C "$ROOT" diff --quiet -- "$f"; then
+    printf 'pre-commit: unstaged changes in %s; stage or stash them before committing\n' "$f" >&2
+    exit 1
+  fi
+done
+LIB=$ROOT/$D/scripts/routing_lib.py
+rc=0
+python3 -I "$LIB" check >/dev/null 2>&1 || rc=$?
+[ "$rc" = 0 ] && exit 0
+if [ "$rc" = 1 ] && printf '%s\n' "$staged" | grep -qx "$D/routing.json"; then
+  if python3 -I "$LIB" sync && git -C "$ROOT" add -- "$D/opencode/opencode.json" "$D/SKILL.md" && python3 -I "$LIB" check; then
+    exit 0
+  fi
+fi
+printf 'pre-commit: ds-dev-protocol routing is not in sync; edit %s/routing.json, run python3 -I %s/scripts/routing_lib.py sync and stage the result\n' "$D" "$D" >&2
+exit 1

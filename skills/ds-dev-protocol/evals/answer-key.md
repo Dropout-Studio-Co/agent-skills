@@ -3,7 +3,7 @@
 Held beside the fixtures so it is never staged into a run's `work/` tree. `rubric.json` is the
 machine form of this file; `fixture-check.sh` proves the defects and preconditions below.
 
-## Review fixtures (claude-opus-5-5, `gate.sh review`)
+## Review fixtures (`gate.sh review`)
 
 | Fixture | Expected | Catch | Status if missed |
 |---|---|---|---|
@@ -21,7 +21,7 @@ first thread after its `SELECT` until both passed the check, then both insert: `
 True]; stored redemptions 2`. Catch: an `important` finding on `coupons.py` naming the race, the
 check-then-act window, a missing lock or a missing unique constraint. Any other outcome is a miss.
 
-## Plan fixtures (gemini-4-neon, `gate.sh plan`)
+## Plan fixtures (`gate.sh plan`)
 
 - **plan-root-cause** (medium): `filters.py:8` shallow-copies `DEFAULT_FILTERS`, so every request
   shares its `"tags"` list and `filters.py:15` appends into it; `search.py:9` adds `"visible"` on
