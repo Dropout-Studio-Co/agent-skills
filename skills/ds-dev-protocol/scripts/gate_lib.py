@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """gate_lib.py - T3-verified provenance, schema, round-cap, epoch and logging for gate.sh (stdlib only)."""
 import argparse, hashlib, json, os, subprocess, sys, time
-OPUS = ("anthropic", "opus", "claude-opus-5-5", "effort", ("claudeAgent_2", "claudeAgent_3"))
+OPUS = ("anthropic", "opus", "claude-opus-5-5", "effort", ("claudeAgent", "claudeAgent_2"))
 CONTRACTS = {"plan": ("google-antigravity", "neon", "gemini-4-neon", "thought_level", ("antigravity", "antigravity_2")),
              "review": OPUS, "security": OPUS, "epoch": OPUS}
 RANK = {"low": 0, "medium": 1, "high": 2}; SEVERITY = {"important": "Important", "nit": "Nit", "pre-existing": "Pre-existing"}
