@@ -56,7 +56,7 @@ import hashlib, json, os, sys
 ev, gate, key, tier, status, verdict, fname = sys.argv[1:8]
 def sha(p): return hashlib.sha256(open(p, "rb").read()).hexdigest()
 effort = {"plan": "medium" if tier == "low" else "high", "epoch": "medium" if tier == "medium" else "high"}.get(gate, "medium")
-route, model, account = ("neon", "gemini-4-neon", "antigravity") if gate == "plan" else ("opus", "claude-opus-5-5", "claudeAgent")
+route, model, account = ("neon", "gemini-4-neon", "antigravity") if gate == "plan" else ("opus", "claude-opus-5-5", "claudeAgent_2")
 if gate in ("security", "review") and (gate == "security" or tier == "high"): effort = "high"
 d = {"ts": "2026-11-11T00:00:00Z", "gate": gate, "tier": tier, "round": 1, "key": key, "base_ref": "", "base_sha": "",
      "diff_sha256": "", "head_sha": key, "facts_sha256": "", "route": route, "model": model, "effort": effort,
