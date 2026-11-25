@@ -51,7 +51,7 @@ def items():
 def emit(content):
     print(json.dumps({"structuredContent": content, "isError": E("FAKE_ISERROR") == "1"})); sys.exit(0)
 if tool == "t3_thread_configure":
-    emit({"modelSelection": {"instanceId": E("FAKE_INSTANCE", "claudeAgent_2"), "model": E("FAKE_MODEL", "claude-opus-5-5"),
+    emit({"modelSelection": {"instanceId": E("FAKE_INSTANCE", "claudeAgent"), "model": E("FAKE_MODEL", "claude-opus-5-5"),
          "options": [{"id": E("FAKE_OPTION", "effort"), "value": E("FAKE_EFFORT", "medium")}]}})
 if tool == "t3_thread_read":
     off = req.get("textOffset")
@@ -62,11 +62,11 @@ if tool == "t3_thread_read":
     if E("FAKE_ITEM_STOP"): its.append({"type": "system_notice", "itemId": "it-stop", "stopReason": E("FAKE_ITEM_STOP")})
     if E("FAKE_NOTICE"): its.append({"type": "system_notice", "itemId": "it-n", "text": E("FAKE_NOTICE")})
     run = {"runId": "run-1", "status": E("FAKE_RUN_STATUS", "completed"),
-           "providerInstanceId": E("FAKE_RUN_INSTANCE", E("FAKE_INSTANCE", "claudeAgent_2")),
+           "providerInstanceId": E("FAKE_RUN_INSTANCE", E("FAKE_INSTANCE", "claudeAgent")),
            "model": E("FAKE_RUN_MODEL", E("FAKE_MODEL", "claude-opus-5-5"))}
     if E("FAKE_EXECUTED"): run["executedModel"] = E("FAKE_EXECUTED")
     th = {"threadId": req.get("threadId", "child-1"), "status": E("FAKE_STATUS", "completed"), "latestRunId": "run-1",
-          "providerInstanceId": E("FAKE_INSTANCE", "claudeAgent_2"), "model": E("FAKE_THREAD_MODEL", E("FAKE_MODEL", "claude-opus-5-5"))}
+          "providerInstanceId": E("FAKE_INSTANCE", "claudeAgent"), "model": E("FAKE_THREAD_MODEL", E("FAKE_MODEL", "claude-opus-5-5"))}
     if E("FAKE_NO_PARENT") != "1": th["parentThreadId"] = E("FAKE_PARENT", "p1")
     if E("FAKE_ERR"): th.update(json.loads(E("FAKE_ERR")))
     if E("FAKE_RUNS"): emit({"thread": dict(th, latestRunId="run-2"), "recentRuns": json.loads(E("FAKE_RUNS")), "items": its})
@@ -91,7 +91,7 @@ pkt() { { printf 'Gate: %s\nkey: %s\nhead: %s\nTier: low\nTier: medium\nTier: hi
 rec_review() { printf '{"gate":"%s","head_sha":"%s","verdict":"%s","summary":"ok","findings":%s}\n' "$1" "$2" "$3" "${4:-[]}" > "$E/rec.json"; }
 rec_plan() { printf '{"gate":"plan","tier":"%s","acceptance_criteria":["a"],"design":"d","files":["f"],"tests":["t"],"risks":[],"rollback":"r"}\n' "$1" > "$E/rec.json"; }
 planenv() { export FAKE_OPTION=thought_level FAKE_MODEL=gemini-4-neon FAKE_INSTANCE=antigravity FAKE_EFFORT="$1"; }
-opusenv() { export FAKE_OPTION=effort FAKE_MODEL="${2:-claude-opus-5-5}" FAKE_INSTANCE="${3:-claudeAgent_2}" FAKE_EFFORT="$1"; }
+opusenv() { export FAKE_OPTION=effort FAKE_MODEL="${2:-claude-opus-5-5}" FAKE_INSTANCE="${3:-claudeAgent}" FAKE_EFFORT="$1"; }
 gaterun() { ( cd "$R" && EVID="$1" bash "$GATE" "$2" "$3" "${@:4}" >"$T/out" 2>&1 ); GRC=$?; }
 # g EVID GATE TIER [args...]: a gate run with a fresh child thread id (children are never reused across ok rows).
 g() { local e=$1; shift; gaterun "$e" "$1" "$2" --child-thread "$(nextid)" --parent-thread p1 "${@:3}"; }
