@@ -118,7 +118,7 @@ open(target, "w").write(json.dumps({"structured_output": {"gate": "epoch", "head
 row = {"ts": "2026-11-11T00:00:00Z", "gate": "epoch", "tier": tier, "round": 1, "key": key, "status": "ok", "verdict": "pass",
        "reason": "", "file": name, "file_sha256": hashlib.sha256(open(target, "rb").read()).hexdigest(),
        "route": "opus", "model": "claude-opus-5-5", "effort": "high" if tier == "high" else "medium", "engine": "t3-delegate",
-       "provenance_mode": "t3-verified", "session_id": "seed-epoch-" + key, "parent_thread_id": "parent-1", "account": "claudeAgent_2"}
+       "provenance_mode": "t3-verified", "session_id": "seed-epoch-" + key, "parent_thread_id": "parent-1", "account": "claudeAgent"}
 open(os.path.join(ev, "gates.log"), "a").write(json.dumps(row) + "\n")
 PY
 }
@@ -297,13 +297,13 @@ fresh; new_ev effconf; pkt review "$H" "$B"; rec_review review "$H" pass; opusen
 export FAKE_RECORD=$E/rec.json FAKE_RUNS='[{"runId":"run-2","status":"completed","options":{"effort":"low"}}]'; g "$E" review medium --record "$E/rec.json"
 chk "run effort conflict exit2" bash -c "[ $GRC = 2 ] && grep -q 'observed effort is' '$E/gates.log'"
 fresh; new_ev ic; pkt review "$H" "$B"; rec_review review "$H" pass; opusenv medium
-export FAKE_RECORD=$E/rec.json FAKE_RUN_INSTANCE=claudeAgent_3; g "$E" review medium --record "$E/rec.json"
-chk "cross-source instance mismatch claudeAgent_2 vs claudeAgent_3 exit2" bash -c "[ $GRC = 2 ] && grep -q 'observed account' '$E/gates.log' && grep -q 'claudeAgent_3' '$E/gates.log' && ! ls '$E'/review-*.json 2>/dev/null"
+export FAKE_RECORD=$E/rec.json FAKE_RUN_INSTANCE=claudeAgent_2; g "$E" review medium --record "$E/rec.json"
+chk "cross-source instance mismatch claudeAgent vs claudeAgent_2 exit2" bash -c "[ $GRC = 2 ] && grep -q 'observed account' '$E/gates.log' && grep -q 'claudeAgent_2' '$E/gates.log' && ! ls '$E'/review-*.json 2>/dev/null"
 fresh; new_ev uf; pkt review "$H" "$B"; rec_review review "$H" pass; export FAKE_RECORD=$E/rec.json FAKE_ERR='{"error":"usage_limit"}'
-opusenv medium claude-opus-5-5 claudeAgent_2; g "$E" review medium --record "$E/rec.json"; rc1=$GRC; cp "$T/out" "$T/o1"
-opusenv medium claude-opus-5-5 claudeAgent_3; g "$E" review medium --record "$E/rec.json"
-chk "usage row carries observed account" bash -c "grep -q '\"reason\": \"usage_limit\"' '$E/gates.log' && grep -q '\"account\": \"claudeAgent_2\"' '$E/gates.log'"
-chk "usage failover claude: 2,3 then blocked" bash -c "[ $rc1 = 2 ] && [ $GRC = 3 ] && grep -q 'claudeAgent_3' '$T/o1' && tail -1 '$E/gates.log' | grep -q 'claude-opus-5-5 quota exhausted on every instance' && tail -1 '$E/gates.log' | grep -q '\"status\": \"blocked\"'"
+opusenv medium claude-opus-5-5 claudeAgent; g "$E" review medium --record "$E/rec.json"; rc1=$GRC; cp "$T/out" "$T/o1"
+opusenv medium claude-opus-5-5 claudeAgent_2; g "$E" review medium --record "$E/rec.json"
+chk "usage row carries observed account" bash -c "grep -q '\"reason\": \"usage_limit\"' '$E/gates.log' && grep -q '\"account\": \"claudeAgent\"' '$E/gates.log'"
+chk "usage failover claude: 1,2 then blocked" bash -c "[ $rc1 = 2 ] && [ $GRC = 3 ] && grep -q 'claudeAgent_2' '$T/o1' && tail -1 '$E/gates.log' | grep -q 'claude-opus-5-5 quota exhausted on every instance' && tail -1 '$E/gates.log' | grep -q '\"status\": \"blocked\"'"
 fresh; new_ev ufp; printf 'facts body\n' > "$E/facts.md"; K=$(shasum -a 256 "$E/facts.md" | awk '{print $1}'); pkt plan "$K"; rec_plan medium; planenv high
 export FAKE_RECORD=$E/rec.json FAKE_ERR='{"stop_reason":"usage_limit"}'; export FAKE_INSTANCE=antigravity
 g "$E" plan medium --record "$E/rec.json"; p1=$GRC; cp "$T/out" "$T/p1"
