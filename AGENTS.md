@@ -78,7 +78,7 @@ skills/ds-agent-docs/           SKILL.md, references/ (audit-rubric.md, agent-su
                           scripts/ (collect_sessions.py, check_instructions.py),
                           tests/ (collector, checker)
 skills/ds-ui-overhaul/             SKILL.md, task-profile.json, references/ (platforms.md, parallel-work.md)
-skills/ds-media-rename/            SKILL.md, references/ (naming-and-jargon.md)
+skills/ds-media-cleanup/           SKILL.md, references/ (naming-and-jargon.md)
 ```
 
 ## Invariants
