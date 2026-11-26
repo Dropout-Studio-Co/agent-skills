@@ -283,6 +283,76 @@ class ProfileAndAgnosticComplianceTests(TaskCase):
         for sizing in ('docker system df', '25 MB', '1 MB', '-P'):
             self.assertIn(sizing, classification)
 
+        # Presentation contract: one GFM table owns every qualifying audit result.
+        table_header = '| What to delete | What it is | Space freed |'
+        self.assertIn(table_header, parts[2],
+                      'SKILL.md must define the 3-column GFM table header')
+        self.assertIn('| :--- | :--- | ---: |', parts[2],
+                      'SKILL.md must left-align text columns and right-align the size column')
+        self.assertIn('**Total**', parts[2], 'the example needs a bold Total summary row')
+        self.assertNotIn('1. What to delete:', parts[2],
+                         'the legacy numbered-block example must be gone')
+        self.assertNotIn('What to delete:', parts[2],
+                         'the numbered item blocks must be replaced by the table')
+
+        self.assertIn('strictly descending by exact reclaimable bytes', lower_skill,
+                      'rows must sort by exact bytes, not the displayed label')
+        self.assertIn('alphabetical', lower_skill,
+                      'ties must break deterministically by alphabetical order')
+        for discipline in ('single-line', '\\|', 'newline', 'control character'):
+            self.assertIn(discipline, lower_skill,
+                          'cells must stay single-line and sanitize %s' % discipline)
+
+        for boundary in ('0 qualifying items', 'omit the table', 'placeholder table',
+                         'single qualifying item', 'closing note below the table',
+                         'vanished', 're-check', 'multi-volume', 'no table'):
+            self.assertIn(boundary, lower_skill,
+                          'SKILL.md must define boundary behavior: %s' % boundary)
+
+        # The worked example's arithmetic must be internally consistent.
+        example_blocks = re.findall(r'```[^\n]*\n(.*?)```', parts[2], re.S)
+        table_blocks = [block for block in example_blocks if table_header in block]
+        self.assertEqual(len(table_blocks), 1,
+                         'SKILL.md needs exactly one fenced example containing the table')
+        example = table_blocks[0]
+        size_re = re.compile(r'^(\d+(?:\.\d+)?)\s*(B|KB|MB|GB|TB)$')
+        scale = {'B': 1, 'KB': 10 ** 3, 'MB': 10 ** 6, 'GB': 10 ** 9, 'TB': 10 ** 12}
+
+        def as_bytes(cell):
+            match = size_re.match(cell.strip().strip('*').strip())
+            self.assertIsNotNone(match, 'unparseable example size: %r' % cell)
+            return float(match.group(1)) * scale[match.group(2)]
+
+        rows = [line.strip() for line in example.splitlines() if line.strip().startswith('|')]
+        body_rows = rows[2:]
+        item_rows = [row for row in body_rows if '**Total**' not in row]
+        total_rows = [row for row in body_rows if '**Total**' in row]
+        self.assertEqual(len(total_rows), 1, 'the example needs exactly one bold Total row')
+        item_sizes = [as_bytes(row.strip('|').split('|')[-1]) for row in item_rows]
+        self.assertGreaterEqual(len(item_sizes), 2, 'the example should show several items')
+        for left, right in zip(item_sizes, item_sizes[1:]):
+            self.assertGreaterEqual(left, right,
+                                    'example rows must be sorted largest to smallest')
+        summed = round(sum(item_sizes))
+        self.assertEqual(summed, round(as_bytes(total_rows[0].strip('|').split('|')[-1])),
+                         'the example Total must equal the sum of its item rows')
+        opening = re.search(r'free about ([\d.]+)\s*(B|KB|MB|GB|TB)', example)
+        self.assertIsNotNone(opening, 'the example must open with the reclaimable total')
+        self.assertEqual(summed, round(as_bytes('%s %s' % (opening.group(1), opening.group(2)))),
+                         'the example opening total must match the table Total')
+
+        # safety-classification.md must defer table layout to SKILL.md and stop describing blocks.
+        lower_classification = classification.lower()
+        self.assertNotIn('one item per block', lower_classification,
+                         'the block-per-item wording conflicts with the table contract')
+        self.assertIn('one item per row', lower_classification,
+                      'plain-language guidance must describe table rows')
+        self.assertIn('SKILL.md', classification,
+                      'layout details must defer to SKILL.md')
+        for column in ('What to delete', 'What it is', 'Space freed'):
+            self.assertIn(column, classification,
+                          'plain-language guidance must name the report column: %s' % column)
+
         # Review round 1: only cache directories, never installed app trees or credential-bearing roots.
         self.assertNotIn(r'%LOCALAPPDATA%\Microsoft\Teams\`', os_locations,
                          'Teams Classic is an installed app directory, not a cache')
