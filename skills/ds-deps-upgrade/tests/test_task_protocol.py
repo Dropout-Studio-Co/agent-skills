@@ -86,6 +86,19 @@ class TaskProtocolUnitTests(TempCase):
         self.assertIsNone(tp.parse_plan_result(nodecision, 'architecture')[0])
         self.assertIsNone(tp.parse_result(PLAN_TEXT)[0], 'a plan never counts as a review result')
 
+    def test_prompts_enforce_official_docs_and_major_migration_guides(self):
+        plan_prompt = tp.build_plan_prompt('plan', 'upgrade', '/repo', 'abc', '/ctx', '')
+        critical_prompt = tp.build_prompt(
+            'critical', 'upgrade', '/repo', 'abc', 'def',
+            {'code_diff': 'a', 'code_lines': 1, 'lock_diff': 'b', 'lock_lines': 1, 'stat': 'c'})
+        for prompt in (plan_prompt, critical_prompt):
+            lower = prompt.lower()
+            self.assertIn('latest official documentation', lower)
+            self.assertIn('every dependency', lower)
+            self.assertIn('official migration guides', lower)
+            self.assertIn('every major upgrade', lower)
+            self.assertIn('held', lower)
+
 
 class DepupTaskCase(TempCase):
 

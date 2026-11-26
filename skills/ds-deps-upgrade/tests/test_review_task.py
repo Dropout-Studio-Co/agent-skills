@@ -917,6 +917,60 @@ class DepsUpgradeSpecTests(TempCase):
                                 '%s escapes the skill: %s' % (rel, target))
                 self.assertTrue(os.path.exists(resolved), '%s has a broken link: %s' % (rel, target))
 
+    def test_documentation_and_major_migration_rules(self):
+        skill = self.read('SKILL.md')
+        workflow = self.read('references/workflow.md')
+        safety = self.read('references/safety.md')
+
+        # Frontmatter and the all-stable default align with the research contract.
+        front = self.frontmatter(skill)
+        self.assertIn('official documentation', front)
+        self.assertIn('migration', front)
+        self.assertIn('official migration guides/sources are verified', skill)
+
+        # One authoritative non-negotiable rule (section 2) owns both requirements.
+        rules = skill.split('## 2. Non-negotiable rules', 1)[1].split('## 3.', 1)[0]
+        self.assertIn('Official documentation and major migration guides', rules)
+        rule = re.sub(r'\s+', ' ', rules.split('Official documentation and major migration guides', 1)[1]).lower()
+        for phrase in ('latest official documentation for every dependency being upgraded',
+                       'official migration guides and migration sources',
+                       'every major', 'cannot be found or verified', 'hold any major upgrade'):
+            self.assertIn(phrase, rule)
+
+        # The old "non-trivial target" loophole is gone everywhere.
+        self.assertNotIn('non-trivial target', skill)
+        self.assertNotIn('non-trivial target', workflow)
+
+        # Research step 6 covers every target and holds unverified majors.
+        self.assertIn('explicit source-gap note for non-major targets', skill)
+        self.assertIn('is marked held', skill)
+
+        # Offline degradation never mutates a major or high-risk item without source research.
+        offline = skill.split('- No network:', 1)[1].split('- No write access:', 1)[0]
+        self.assertIn('Never mutate a major upgrade or a high-risk item', offline)
+        self.assertIn('never guess from memory', offline)
+
+        research = re.sub(r'\s+', ' ', workflow.split('## 4. `research`', 1)[1].split('## 5. `plan`', 1)[0]).lower()
+        for phrase in ('every dependency being upgraded', 'patch', 'minor', 'major',
+                       'prerelease', 'deprecated', 'unknown', 'official documentation',
+                       'official migration guides and migration sources', 'every major',
+                       'hold any major upgrade'):
+            self.assertIn(phrase, research)
+
+        plan = re.sub(r'\s+', ' ', workflow.split('## 5. `plan`', 1)[1].split('## 6. `worktree`', 1)[0]).lower()
+        self.assertIn('official documentation links', plan)
+        self.assertIn('official migration guide/source links', plan)
+
+        batch = re.sub(r'\s+', ' ', workflow.split('## 7. `batch-N`', 1)[1].split('## 8. `verify`', 1)[0]).lower()
+        self.assertIn('researched latest official documentation', batch)
+        self.assertIn('official migration guide/sources', batch)
+
+        # Official docs and migration guides stay untrusted data for prompt-injection defense.
+        untrusted = re.sub(r'\s+', ' ', safety.split('## Untrusted content', 1)[1].split('\n## ', 1)[0]).lower()
+        self.assertIn('official documentation', untrusted)
+        self.assertIn('migration guides', untrusted)
+        self.assertIn('**data**', untrusted)
+
     def test_no_symlinks_inside_the_skill(self):
         root = self.skill_dir()
         for dirpath, dirnames, filenames in os.walk(root):
