@@ -54,21 +54,20 @@ def evidence(ev, key, tier, base, mode):
 
     def prov(d, g, tr=None):
         tr = tr or tier
+        ui = d.get("ui", False)
+        if not isinstance(ui, bool) or (ui and g not in routing.UI_GATES): return "%s ui flag is not valid for this gate" % g
         if d.get("engine") != "t3-delegate" or d.get("provenance_mode") != "t3-verified": return "%s is not T3-verified" % g
         s, p = str(d.get("session_id") or ""), str(d.get("parent_thread_id") or "")
         if not s or not p or s == p: return "%s child session is missing or equals the parent" % g
-        provider, route, model, option, accounts = routing.gate_contract(RCFG, g)
-        if d.get("route") != route or d.get("model") != model: return "%s is not the %s route" % (g, route)
-        if d.get("account") not in accounts: return "%s account is not one of the %s instances" % (g, route)
+        hit = next((c for c in routing.gate_contracts(RCFG, g, ui=ui) if c[1] == d.get("route") and c[2] == d.get("model")), None)
+        if not hit: return "%s is not the %s route" % (g, d.get("route"))
+        if d.get("account") not in hit[4]: return "%s account is not one of the %s instances" % (g, hit[1])
         if g == "epoch":
             t = d.get("tier")
             if t not in ("medium", "high") or RANK[t] < RANK[tr]: return "epoch tier is below the task tier"
             want = routing.effort_for(RCFG, g, t)
             return "" if d.get("effort") == want else "epoch effort does not match its tier"
-        if g == "plan":
-            want = routing.effort_for(RCFG, g, tr)
-            return "" if d.get("effort") == want else "plan effort %r is not %s" % (d.get("effort"), want)
-        if d.get("effort") in routing.allowed_efforts_for(RCFG, g, tr): return ""
+        if d.get("effort") in routing.allowed_efforts_for(RCFG, g, tr, ui=ui, route=hit[1]): return ""
         return "%s effort %r is not allowed at %s" % (g, d.get("effort"), tr)
 
     def gmerge(b, s):

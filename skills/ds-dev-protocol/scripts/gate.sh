@@ -4,11 +4,12 @@ set -euo pipefail
 usage() { cat <<'EOF'
 usage: EVID=<dir> gate.sh <plan|review|security|epoch> <low|medium|high>
          --record <json-file> --child-thread <id> --parent-thread <id>
-         [--trigger] [--diff FILE] [--base REF]
+         [--trigger] [--ui] [--diff FILE] [--base REF]
   plan: key = sha256(EVID/facts.md); thought_level medium on low tier, high on medium/high
   review: key = HEAD or sha256(--diff FILE); effort medium, high on high tier or --trigger
   security: key = HEAD or sha256(--diff FILE); high tier only; effort high
   epoch: key = sha256(EVID/epoch.md); after a round-cap block; max 2 authorized per EVID
+  --ui: plan and review only; requires 'Scope: ui' in the packet and uses the UI tier chain
 exit: 0 pass (or valid plan), 1 verdict fail, 2 usage/precondition/provenance/tree mismatch, 3 blocked, 4 round cap
 EOF
 }
@@ -22,17 +23,19 @@ LIB=$SKILL/scripts/gate_lib.py
 gate=$1; tier=$2; shift 2
 key=""
 refuse() { python3 -I "$LIB" --log-invalid --evid "$EVID" --gate "$gate" --tier "$tier" --key "${key:-}" --reason "$*" >/dev/null 2>&1 || true; die "$*"; }
-record=""; child=""; parent=""; trigger=0; diff=""; base=""
+record=""; child=""; parent=""; trigger=0; ui=0; diff=""; base=""
 while [ $# -gt 0 ]; do case $1 in
   --record|--child-thread|--parent-thread|--diff|--base)
     [ $# -ge 2 ] && [ -n "$2" ] || die "$1 needs a value"
     case $1 in --record) record=$2 ;; --child-thread) child=$2 ;; --parent-thread) parent=$2 ;; --diff) diff=$2 ;; --base) base=$2 ;; esac
     shift ;;
   --trigger) trigger=1 ;;
+  --ui) ui=1 ;;
   *) die "unknown argument: $1" ;;
 esac; shift; done
 case $gate in plan|review|security|epoch) ;; *) die "bad gate: $gate" ;; esac
 case $tier in low|medium|high) ;; *) die "bad tier: $tier" ;; esac
+if [ "$ui" = 1 ] && { [ "$gate" = security ] || [ "$gate" = epoch ]; }; then die "--ui is valid on plan and review only"; fi
 [ -n "$record" ] || die "--record is required"
 [ -f "$record" ] || die "missing record file: $record"
 if printf '%s' "$(basename "$record")" | grep -Eq '^(plan|review|security|epoch)-.*\.json$'; then die "--record must not be a gate output file: $(basename "$record")"; fi
@@ -86,12 +89,14 @@ if [ "$repocheck" = 1 ]; then
 fi
 packet=$EVID/packet-$gate.md
 [ -s "$packet" ] || refuse "missing $packet"
-python3 -I - "$packet" "$gate" "$key" "$want" "$mb" "$tier" "$head" <<'PY' || refuse "packet must bind the key, 'Gate: $gate', 'Tier: $tier', the merge-base, the HEAD and the exact gate source"
+python3 -I - "$packet" "$gate" "$key" "$want" "$mb" "$tier" "$head" "$ui" <<'PY' || refuse "packet must bind the key, 'Gate: $gate', 'Tier: $tier', the merge-base, the HEAD and the exact gate source"
 import sys
-path, gate, key, source, base, tier, head = sys.argv[1:8]
+path, gate, key, source, base, tier, head, ui = sys.argv[1:9]
 text = open(path, encoding="utf-8", errors="replace").read()
 body = open(source, encoding="utf-8", errors="replace").read().strip()
 ok = bool(body) and key in text and "Gate: " + gate in text and "Tier: " + tier in text and body in text
+if ui == "1":
+    ok = ok and "Scope: ui" in text
 if gate in ("review", "security") and base:
     ok = ok and base in text
 if gate in ("plan", "epoch") and len(head) == 40:
@@ -102,7 +107,7 @@ fsha=""
 if [ -f "$EVID/facts.md" ]; then fsha=$(sha "$EVID/facts.md"); fi
 rc=0
 python3 -I "$SKILL/scripts/gate_lib.py" --evid "$EVID" --gate "$gate" --tier "$tier" \
-  --record "$record" --child-thread "$child" --parent-thread "$parent" --trigger "$trigger" \
+  --record "$record" --child-thread "$child" --parent-thread "$parent" --trigger "$trigger" --ui "$ui" \
   --key "$key" --expected-head "$head" --facts-sha "$fsha" --base-ref "$base_ref" --base-sha "$mb" \
   --diff-sha "$dsha" --repo "$reponame" --skill "$SKILL" || rc=$?
 exit "$rc"

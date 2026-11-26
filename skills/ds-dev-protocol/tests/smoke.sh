@@ -29,8 +29,9 @@ chk "line limits: smoke.sh <= 375" bash -c "[ \$(wc -l < '$TESTS/smoke.sh') -le 
 chk "line limits: gate-smoke.sh <= 375" bash -c "[ \$(wc -l < '$TESTS/gate-smoke.sh') -le 375 ]"
 chk "line limits: premerge-smoke.sh <= 375" bash -c "[ \$(wc -l < '$TESTS/premerge-smoke.sh') -le 375 ]"
 chk "line limits: implement-smoke.sh <= 200" bash -c "[ \$(wc -l < '$TESTS/implement-smoke.sh') -le 200 ]"
+chk "line limits: ui-routing-smoke.sh <= 200" bash -c "[ \$(wc -l < '$TESTS/ui-routing-smoke.sh') -le 200 ]"
 # --- SKILL.md size and frontmatter description ---
-chk "SKILL.md <= 23800 bytes" test "$(wc -c < "$ROOT/SKILL.md")" -le 23800
+chk "SKILL.md <= 25600 bytes" test "$(wc -c < "$ROOT/SKILL.md")" -le 25600
 chk "frontmatter description <= 450 chars" bash -c "d=\$(awk -F\"'\" '/^description:/{print \$2; exit}' '$ROOT/SKILL.md'); [ -n \"\$d\" ] && [ \${#d} -le 450 ]"
 # --- forbidden tokens: no cswap, agy, Sonnet, xhigh, provisional, code-review or sandboxed in anything the conductor reads ---
 TOKENS="cswap agy Sonnet xhigh provisional code-review sandboxed"
@@ -57,6 +58,10 @@ chk "reference.md documents T3-verified provenance" bash -c "f='$ROOT/reference.
 chk "all 12 workflow skills in SKILL.md" bash -c "f='$ROOT/SKILL.md'; bt=\$(printf '\\140'); for s in tdd diagnosing-bugs pr retro setup-pre-commit codebase-design writing-for-agents domain-modeling research prototype wizard grilling; do grep -qF -- \"\$s\$bt\" \"\$f\" || exit 1; done"
 chk "P27 shortcuts in SKILL.md" bash -c "grep -qF 'Shortcuts' '$ROOT/SKILL.md' && grep -qF 'shortcut:' '$ROOT/SKILL.md'"
 chk "routing/policy stays High" grep -qF 'routing/policy' "$ROOT/SKILL.md"
+chk "dynamic ds-* skill discovery in SKILL.md" bash -c "f='$ROOT/SKILL.md'; grep -qF '~/.agents/skills/ds-*/SKILL.md' \"\$f\" && grep -qF 'disable-model-invocation: true' \"\$f\" && grep -qF 'names it explicitly' \"\$f\" && grep -qF 'newly added or updated skill is picked up automatically' \"\$f\""
+chk "zero hardcoded sibling ds-* skill names in SKILL.md" bash -c "! grep -oE 'ds-[a-z0-9-]+' '$ROOT/SKILL.md' | grep -vx 'ds-dev-protocol'"
+chk "UI 3-tier plan/review routing in SKILL.md" bash -c "f='$ROOT/SKILL.md'; grep -qF '3-tier chain' \"\$f\" && grep -qF 'Scope: ui' \"\$f\" && grep -qF 'Claude Opus 5.5 (Antigravity)' \"\$f\" && grep -qF 'UI review is' \"\$f\""
+chk "reference.md documents the UI gates" bash -c "f='$ROOT/reference.md'; grep -qF 'ui_gates' \"\$f\" && grep -qF 'catalog-pending' \"\$f\" && grep -qF -- '--ui' \"\$f\" && grep -qF '(model, account)' \"\$f\" && grep -qF '25600' \"\$f\" && grep -qF 'ds-*/SKILL.md' \"\$f\""
 chk "reference.md documents Trail blast" grep -qF 'trail blast --no-owners' "$ROOT/reference.md"
 # --- AC36: HEAD rules SKILL.md must keep ---
 chk "pre-authorized paragraph" grep -qF '**Pre-authorized (MUST).**' "$ROOT/SKILL.md"
@@ -65,7 +70,7 @@ chk "hard boundaries stated" bash -c "for p in 'new spend, purchases, paid usage
 chk "no user authorization left" bash -c "! grep -qE 'only the user|user can authorize|user.s decision|ask the user|user approv' '$ROOT/SKILL.md'"
 chk "delta-round rule stated" grep -qF 'Changes since the last round' "$ROOT/SKILL.md"
 chk "plan risks and RED in SKILL.md" bash -c "grep -qF '## Plan risks' '$ROOT/SKILL.md' && grep -qF 'RED confirmed:' '$ROOT/SKILL.md'"
-chk "brief optional + op record + size" bash -c "grep -qi optional '$ROOT/opus-gate-brief.md' && grep -qF 'op-<name>.md' '$ROOT/SKILL.md' && [ \$(wc -c < '$ROOT/SKILL.md') -le 23800 ]"
+chk "brief optional + op record + size" bash -c "grep -qi optional '$ROOT/opus-gate-brief.md' && grep -qF 'op-<name>.md' '$ROOT/SKILL.md' && [ \$(wc -c < '$ROOT/SKILL.md') -le 25600 ]"
 chk "exit 6 documented" bash -c "bash '$ROOT/scripts/implement.sh' --help | grep -q '6 worktree processes survived' && grep -qF 'Exit 6' '$ROOT/SKILL.md' && ! grep -qF 'stops every process confined' '$ROOT/SKILL.md'"
 chk "rounds and rethink stated" bash -c "grep -qF 'Rounds are counted per gate from EVID/gates.log' '$ROOT/SKILL.md' && grep -qF 'Rounds: 3 per plan' '$ROOT/SKILL.md' && grep -qF -- '- After round 3, rethink:' '$ROOT/SKILL.md'"
 chk "6-lane ceiling stated" grep -qF 'At most 6 concurrent lanes' "$ROOT/SKILL.md"
@@ -106,7 +111,7 @@ chk "routing.json exists" test -s "$ROOT/routing.json"
 chk "routing_lib.py is not executable" bash -c "[ ! -x '$RLIB' ]"
 chk "routing_lib.py check (python3)" python3 -I "$RLIB" check
 if [ -x /usr/bin/python3 ]; then chk "routing_lib.py check (system /usr/bin/python3)" /usr/bin/python3 -I "$RLIB" check; fi
-chk "routing.json contract" bash -c "python3 -I -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d[\"schema_version\"]==1 and d[\"allowed_efforts\"]==[\"medium\",\"high\"] and set(d[\"routes\"])=={\"neon\",\"opus\",\"deepseek\"} and set(d[\"gates\"])=={\"plan\",\"review\",\"security\",\"epoch\"} and d[\"conductor\"]=={\"route\":\"neon\",\"effort\":\"medium\"} and d[\"implementer\"]=={\"route\":\"deepseek\",\"effort\":\"high\"}' '$ROOT/routing.json'"
+chk "routing.json contract" bash -c "python3 -I -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d[\"schema_version\"]==1 and d[\"allowed_efforts\"]==[\"medium\",\"high\"] and set(d[\"routes\"])=={\"neon\",\"opus\",\"opus_antigravity\",\"deepseek\"} and d[\"routes\"][\"opus_antigravity\"][\"model\"] is None and d[\"routes\"][\"opus_antigravity\"][\"option_key\"] is None and set(d[\"gates\"])=={\"plan\",\"review\",\"security\",\"epoch\"} and d[\"conductor\"]=={\"route\":\"neon\",\"effort\":\"medium\"} and d[\"implementer\"]=={\"route\":\"deepseek\",\"effort\":\"high\"} and set(d[\"ui_gates\"])=={\"plan\",\"review\"} and [s[\"route\"] for s in d[\"ui_gates\"][\"plan\"]]==[\"opus\",\"opus_antigravity\",\"neon\"] and [s[\"route\"] for s in d[\"ui_gates\"][\"review\"]]==[\"opus\",\"opus_antigravity\",\"neon\"]' '$ROOT/routing.json'"
 chk "routing_lib derives roles" bash -c "cd '$SCRIPT' && python3 -I -B -c 'import sys; sys.path.insert(0, sys.argv[1]); import routing_lib as r; c=r.load(); i=r.implementer(c); d=r.conductor(c); g=r.gate_contract(c,\"plan\"); assert i[\"pinned\"]==i[\"model\"]+\"#\"+i[\"effort\"] and i[\"account\"]==i[\"accounts\"][0] and d[\"effort\"]==\"medium\" and g[1:3]==(c[\"gates\"][\"plan\"][\"route\"], c[\"routes\"][c[\"gates\"][\"plan\"][\"route\"]][\"model\"]) and r.option_keys(c) and r.allowed_efforts_for(c,\"review\",\"medium\")=={\"medium\",\"high\"} and r.allowed_efforts_for(c,\"review\",\"low\")=={\"medium\"} and r.effort_for(c,\"review\",\"low\",True)==\"medium\"' '$SCRIPT'"
 cat > "$T/guard.py" <<'PY'
 import json, os, re, sys
@@ -115,10 +120,10 @@ cfg = json.load(open(os.path.join(root, "routing.json")))
 tokens = set()
 for route in cfg["routes"].values():
     tokens.add(route["provider"]); tokens.update(route["accounts"])
-    if "model" in route: tokens.add(route["model"])
+    if route.get("model"): tokens.add(route["model"])
     if "model_id" in route: tokens.add(route["model_id"]); tokens.add(route["provider"] + "/" + route["model_id"])
 tokens.discard("opencode")
-pat = re.compile("|".join(sorted(map(re.escape, tokens))))
+pat = re.compile(r"(?<![A-Za-z0-9_-])(?:%s)(?![A-Za-z0-9_-])" % "|".join(sorted(map(re.escape, tokens))))
 paths = [os.path.join(root, n) for n in ("reference.md", "implementer-brief.md", "evals/answer-key.md")]
 for base in (os.path.join(root, "scripts"), os.path.join(root, "tests")):
     paths += [os.path.join(d, f) for d, _, fs in os.walk(base) for f in fs]
@@ -164,13 +169,23 @@ elif case == "conductor-option":
     d["conductor"] = {"route": "solo", "effort": "medium"}; save(d)
 elif case == "allowed-unhashable": d["allowed_efforts"] = [{}]; save(d)
 elif case == "nan-cost": d["routes"][d["implementer"]["route"]]["max_cost_usd"] = float("nan"); save(d)
+elif case == "pending-model": d["routes"]["opus_antigravity"]["model"] = "half-model"; save(d)
+elif case == "pending-option": d["routes"]["opus_antigravity"]["option_key"] = "effort"; save(d)
+elif case == "pending-conductor": d["conductor"] = {"route": "opus_antigravity", "effort": "medium"}; save(d)
+elif case == "pending-gate": d["gates"]["plan"]["route"] = "opus_antigravity"; save(d)
+elif case == "ui-primary": d["ui_gates"]["plan"][0], d["ui_gates"]["plan"][1] = d["ui_gates"]["plan"][1], d["ui_gates"]["plan"][0]; save(d)
+elif case == "ui-missing": del d["ui_gates"]["review"]; save(d)
+elif case == "ui-extra": d["ui_gates"]["security"] = []; save(d)
+elif case == "ui-empty": d["ui_gates"]["plan"] = []; save(d)
+elif case == "ui-dup": d["ui_gates"]["plan"][1]["route"] = "opus"; save(d)
+elif case == "ui-effort": d["ui_gates"]["plan"][0]["efforts"]["low"] = "max"; save(d)
 PY
 invalid_case() { local a b rc1 rc2; mutate "$1"
   a=$(shasum -a 256 "$T/skill/SKILL.md" "$T/skill/opencode/opencode.json" | shasum -a 256 | awk '{print $1}')
   rt2 check >/dev/null 2>"$T/err"; rc1=$?; rt2 sync >/dev/null 2>>"$T/err"; rc2=$?
   b=$(shasum -a 256 "$T/skill/SKILL.md" "$T/skill/opencode/opencode.json" | shasum -a 256 | awk '{print $1}')
   if [ "$rc1" = 2 ] && [ "$rc2" = 2 ] && [ "$a" = "$b" ] && ! grep -q Traceback "$T/err"; then ok "routing invalid: $1"; else bad "routing invalid: $1 (rc $rc1/$rc2, unchanged $([ "$a" = "$b" ] && echo yes || echo no), traceback $(grep -q Traceback "$T/err" && echo yes || echo no))"; fi; }
-for c in missing corrupt schema low max tab-model hash-model nl-account accounts cost symlink no-marker dup-marker desc huge oc conductor-option allowed-unhashable nan-cost; do invalid_case "$c"; done
+for c in missing corrupt schema low max tab-model hash-model nl-account accounts cost symlink no-marker dup-marker desc huge oc conductor-option allowed-unhashable nan-cost pending-model pending-option pending-conductor pending-gate ui-primary ui-missing ui-extra ui-empty ui-dup ui-effort; do invalid_case "$c"; done
 mutate none; python3 -I - "$T/skill" <<'PY'
 import json, os, sys
 s = sys.argv[1]
@@ -334,7 +349,7 @@ chk "pre-commit refuses unstaged edits in a watched file" test "$HRC" = 1
 
 # --- split suites ---
 printf '\n'
-for s in gate-smoke.sh premerge-smoke.sh implement-smoke.sh; do
+for s in gate-smoke.sh premerge-smoke.sh implement-smoke.sh ui-routing-smoke.sh; do
   if bash "$TESTS/$s"; then ok "$s passed"; else bad "$s failed"; fi
 done
 chk "zero __pycache__ after the suites" bash -c "[ -z \"\$(find '$ROOT' -name __pycache__ -print -quit)\" ]"
