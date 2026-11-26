@@ -107,8 +107,9 @@ def render_block(cfg):
     plan, review, sec, epoch = (cfg["gates"][name] for name in GATES)
     planner, reviewer = cfg["routes"][plan["route"]], cfg["routes"][sec["route"]]
     other = [value for value in cfg["allowed_efforts"] if value != cond["effort"]]
-    chains = [chain(route["accounts"]) for route in cfg["routes"].values() if len(route["accounts"]) > 1]
-    solo = ["`%s` alone" % route["accounts"][0] for route in cfg["routes"].values() if len(route["accounts"]) == 1]
+    used = [cfg["routes"][k] for k in dict.fromkeys([cfg["conductor"]["route"], cfg["implementer"]["route"]] + [cfg["gates"][g]["route"] for g in GATES])]
+    chains, solo = [chain(r["accounts"]) for r in used if len(r["accounts"]) > 1], ["`%s` alone" % r["accounts"][0] for r in used if len(r["accounts"]) == 1]
+    non_cond = "/".join(dict.fromkeys(r["label"] for r in (imp, reviewer) if r["label"] != cond["label"]))
     rows = [
         "Four roles, one model each, no substitution:", "",
         "| Role | Model and effort (%s only) | Path |" % "/".join(cfg["allowed_efforts"]), "|---|---|---|",
@@ -122,8 +123,8 @@ def render_block(cfg):
         "enabled same-provider, same-model, same-effort instance: %s. Never cross a provider or model, never ask. When every "
         "instance is exhausted, log `blocked` (exit 3), record `STATUS: blocked external — <model> quota exhausted; waiting for "
         "reset` with `Routes tried:`, finish unaffected work and stop cleanly." % ", ".join(chains + solo),
-        "- **Start check (MUST):** session must be %s at `%s` in T3 Code; any other model or effort stops. %s/%s never conducts: "
-        "runs only its brief, no gate, premerge, git mutation or PR." % (cond["label"], cond["effort"], imp["label"], reviewer["label"]),
+        "- **Start check (MUST):** session must be %s at `%s` in T3 Code; any other model or effort stops. %s never conducts: "
+        "runs only its brief, no gate, premerge, git mutation or PR." % (cond["label"], cond["effort"], non_cond or imp["label"]),
     ]
     return "\n".join([START] + rows + [END])
 def render_skill(text, cfg):

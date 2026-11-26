@@ -195,6 +195,7 @@ p = sys.argv[1]; d = json.load(open(p))
 d["routes"]["neon"].update(label="Alt Planner", provider="alt-provider", model="alt-plan-1", accounts=["alt-plan-a", "alt-plan-b"])
 d["routes"]["opus"].update(label="Alt Reviewer", provider="alt-reviewer", model="alt-review-1", accounts=["alt-review-a"])
 d["routes"]["deepseek"].update(label="Alt Implementer", provider="alt-impl", model_id="alt-code-1", accounts=["alt-code-a"])
+for g in ("review", "security", "epoch"): d["gates"][g]["route"] = "opus"
 open(p, "w").write(json.dumps(d, indent=1) + "\n")
 PY
 rt2 sync || bad "alt routing sync"

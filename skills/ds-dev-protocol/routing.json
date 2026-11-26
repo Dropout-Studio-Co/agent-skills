@@ -28,8 +28,8 @@
  "implementer": {"route": "deepseek", "effort": "high"},
  "gates": {
   "plan": {"route": "neon", "efforts": {"low": "medium", "medium": "high", "high": "high"}},
-  "review": {"route": "opus", "efforts": {"low": "medium", "medium": "medium", "high": "high"}, "trigger_effort": "high"},
-  "security": {"route": "opus", "efforts": {"high": "high"}},
-  "epoch": {"route": "opus", "efforts": {"medium": "medium", "high": "high"}}
+  "review": {"route": "neon", "efforts": {"low": "high", "medium": "high", "high": "high"}, "trigger_effort": "high"},
+  "security": {"route": "neon", "efforts": {"high": "high"}},
+  "epoch": {"route": "neon", "efforts": {"medium": "high", "high": "high"}}
  }
 }
