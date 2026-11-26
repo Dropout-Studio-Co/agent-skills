@@ -74,7 +74,7 @@ skills/ds-dev-protocol/       SKILL.md, routing.json, reference.md, opus-gate-br
                           evals/ (fixtures/, build_fixtures.py, fixture-check.sh, run.sh, score.py,
                           rubric.json, answer-key.md, keys.txt, inputs.sha256, README.md),
                           tests/ (smoke.sh, gate-smoke.sh, implement-smoke.sh, premerge-smoke.sh,
-                          test_evals.py)
+                          ui-routing-smoke.sh, test_evals.py)
 skills/ds-responsive/     SKILL.md, references/ (platforms.md)
 skills/ds-handoff/         SKILL.md
 skills/ds-agent-docs/           SKILL.md, references/ (audit-rubric.md, agent-surfaces.md),
@@ -97,7 +97,7 @@ regions staged together; enable it once per clone with `git config core.hooksPat
   `ds-deps-upgrade` also declares `allowed-tools`, `license` and `disable-model-invocation`.
 - Python helpers are stdlib-only and must run on 3.9+.
 - `skills/ds-dev-protocol/routing.json` (`schema_version` 1) is the only place a model route, provider, option
-  key, account, cost cap or tier/trigger effort is defined. `scripts/routing_lib.py` validates it, fails closed,
+  key, account, cost cap, tier/trigger effort or UI gate chain is defined. `scripts/routing_lib.py` validates it, fails closed,
   and renders the `model` field of `opencode/opencode.json` plus the frontmatter `description` and the single
   `<!-- routing:start -->..<!-- routing:end -->` block of `SKILL.md`. Never hand-edit those derived regions or
   hardcode a model/account in a runtime script: change `routing.json`, then run `routing_lib.py sync`.
@@ -106,7 +106,7 @@ regions staged together; enable it once per clone with `git config core.hooksPat
   `scripts/collect_sessions.py`, `scripts/check_instructions.py`, `ds-dev-protocol`
   `scripts/gate.sh`, `scripts/premerge-and-merge.sh`, `scripts/implement.sh`, `evals/run.sh`,
   `evals/fixture-check.sh`, `evals/score.py`, `tests/smoke.sh`, `tests/gate-smoke.sh`,
-  `tests/implement-smoke.sh` and `tests/premerge-smoke.sh`); the `*_lib.py` helpers stay
+  `tests/implement-smoke.sh`, `tests/premerge-smoke.sh` and `tests/ui-routing-smoke.sh`); the `*_lib.py` helpers stay
   non-executable and are run by their shell script.
 
 ## Always

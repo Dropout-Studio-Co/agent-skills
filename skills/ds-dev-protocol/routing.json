@@ -16,6 +16,13 @@
    "option_key": "effort",
    "accounts": ["claudeAgent", "claudeAgent_2"]
   },
+  "opus_antigravity": {
+   "label": "Claude Opus 5.5 (Antigravity)",
+   "provider": "google-antigravity",
+   "model": null,
+   "option_key": null,
+   "accounts": ["antigravity", "antigravity_2"]
+  },
   "deepseek": {
    "label": "DeepSeek V4.1 Flash 1017",
    "provider": "opencode-go",
@@ -31,5 +38,17 @@
   "review": {"route": "neon", "efforts": {"low": "medium", "medium": "medium", "high": "high"}, "trigger_effort": "high"},
   "security": {"route": "neon", "efforts": {"high": "high"}},
   "epoch": {"route": "neon", "efforts": {"medium": "high", "high": "high"}}
+ },
+ "ui_gates": {
+  "plan": [
+   {"route": "opus", "efforts": {"low": "medium", "medium": "medium", "high": "high"}, "trigger_effort": "high"},
+   {"route": "opus_antigravity", "efforts": {"low": "medium", "medium": "medium", "high": "high"}, "trigger_effort": "high"},
+   {"route": "neon", "efforts": {"low": "high", "medium": "high", "high": "high"}}
+  ],
+  "review": [
+   {"route": "opus", "efforts": {"low": "high", "medium": "high", "high": "high"}},
+   {"route": "opus_antigravity", "efforts": {"low": "high", "medium": "high", "high": "high"}},
+   {"route": "neon", "efforts": {"low": "high", "medium": "high", "high": "high"}}
+  ]
  }
 }

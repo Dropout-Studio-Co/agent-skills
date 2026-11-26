@@ -1,6 +1,6 @@
 ---
 name: ds-dev-protocol
-description: 'ds-dev-protocol: 100% end-to-end completion over presentation. Orchestration V2 4 roles: Gemini 4 Neon conducts (Medium always) and plans (Med/High/High) via gate.sh plan --record; DeepSeek V4.1 Flash 1017 high is sole implementer via implement.sh, no model fallback; Gemini 4 Neon gates review, security, epoch (Med/Med/High, High, High/High). Risk tiers, T3 evidence, head-SHA gates, PR delivery. Always on: every dev task.'
+description: 'ds-dev-protocol: 100% completion over presentation. V2 4 roles: Gemini 4 Neon conducts (Medium always) and plans (Med/High/High) via gate.sh plan --record; DeepSeek V4.1 Flash 1017 high is sole implementer via implement.sh, no model fallback; Gemini 4 Neon gates review, security, epoch (Med/Med/High, High, High/High). UI plan/review 3-tier opus>opus_antigravity>neon, review High. Risk tiers, T3 evidence, PR delivery. Always on: every dev task.'
 ---
 
 ## ds-dev-protocol (applies to the task it accompanies, before or after it)
@@ -37,6 +37,7 @@ Four roles, one model each, no substitution:
 
 - **Same-provider instance failover only:** a child that hits `usage_limit`, or a reviewer child stalled holding a turn open, is `task_cancel`led and re-dispatched as a fresh `delegate_task` with the full packet and schema on the next enabled same-provider, same-model, same-effort instance: `antigravity` → `antigravity_2`, `opencode` alone. Never cross a provider or model, never ask. When every instance is exhausted, log `blocked` (exit 3), record `STATUS: blocked external — <model> quota exhausted; waiting for reset` with `Routes tried:`, finish unaffected work and stop cleanly.
 - **Start check (MUST):** session must be Gemini 4 Neon at `medium` in T3 Code; any other model or effort stops. DeepSeek V4.1 Flash 1017 never conducts: runs only its brief, no gate, premerge, git mutation or PR.
+- **Frontend & UI routing (`--ui`, plan and review only):** with `--ui` and `Scope: ui` in the packet the gate uses this 3-tier chain in priority order: Claude Opus 5.5 `claude-opus-5-5` → Claude Opus 5.5 (Antigravity) → Gemini 4 Neon `gemini-4-neon`. Tiers after the first apply only when the route is live and configured with quota; UI plan is `medium` standard and `high` for complex multi-state work (`--trigger` or High tier), UI review is `high`, and the Neon fallback is `high`. Non-UI gates, security and epoch keep the single route above. If every UI tier is exhausted, log `blocked` (exit 3) and never use another model.
 <!-- routing:end -->
 
 - **No other model, route or account:** no Haiku, GPT, Kimi, Zen/`opencode/`, free models, other DeepSeek variants, API-key accounts, paid usage or new spend; never configure OpenCode's Anthropic provider with subscription OAuth. The conductor never plans, reviews or implements; the planner never reviews its own plan; a gate child never writes code, tests or fixes and runs no git mutation, PR or merge.
@@ -87,6 +88,8 @@ Check the latest official docs for every command, config, API and version; don't
 - `grilling` (method only): order `facts.md` open decisions as a frontier tree for the plan gate, never for Rahi.
 - Formal `gate.sh` gates (step 7) are the only code review; run no in-session review pair.
 
+**Local ds-* skills (MUST).** At task start and whenever the scope changes, dynamically scan `~/.agents/skills/ds-*/SKILL.md` (excluding `ds-dev-protocol` itself) and inspect each YAML frontmatter (`name`, `description`, `disable-model-invocation`); there is no static list, so a newly added or updated skill is picked up automatically. Skip a skill whose frontmatter says `disable-model-invocation: true` unless the request names it explicitly; read and apply a matching skill at its phase. This protocol and the repo `AGENTS.md`/`CLAUDE.md` take precedence, a confirmation pause is pre-authorized, and an installed copy under `~/.agents/skills/` is never edited.
+
 ## 5. Isolate
 
 Never commit to main. One branch and worktree per workstream, cut from the latest default branch; one owner per file set. Independent work runs in parallel, scaled to quota and machine; dependent work in order. Read-only research needs no worktree.
@@ -121,14 +124,14 @@ The brief comes from the last logged plan; attempts log to `EVID/impl.log`. Exit
 
 ```sh
 SKILL=~/.agents/skills/ds-dev-protocol
-EVID=~/.local/state/dev-evidence/<task> "$SKILL/scripts/gate.sh" <plan|review|security|epoch> <low|medium|high> --record EVID/raw-<gate>-<key>.json --child-thread <id> --parent-thread <id> [--trigger] [--diff FILE] [--base REF]
+EVID=~/.local/state/dev-evidence/<task> "$SKILL/scripts/gate.sh" <plan|review|security|epoch> <low|medium|high> --record EVID/raw-<gate>-<key>.json --child-thread <id> --parent-thread <id> [--trigger] [--ui] [--diff FILE] [--base REF]
 ```
 
-`--record` checks the child thread, provenance and tree integrity against T3 Code itself, and refuses a packet missing the key, `Gate: <gate>` or the exact diff. Exit 0 pass or valid `plan`; 1 `fail`; 2 usage, precondition or provenance mismatch; 3 blocked; 4 round cap. Rounds: 3 per plan, 6 per gate/epoch. The log binds merge-base and diff hash, and the merge script accepts a gate only when both match the full PR diff. Agent config (`opencode.json`, `.opencode/`, `.claude/`, `.agents/`, `AGENTS.md`, `CLAUDE.md`) is never Low (`reference.md`).
+`--record` checks the child thread, provenance and tree integrity against T3 Code itself, and refuses a packet missing the key, `Gate: <gate>` or the exact diff. `--ui` is valid on `plan` and `review` only; it requires `Scope: ui` in the packet, routes through Section 1's UI chain, and UI review uses that chain at `high`. `security` and `epoch` never take `--ui`. Exit 0 pass or valid `plan`; 1 `fail`; 2 usage, precondition or provenance mismatch; 3 blocked; 4 round cap. Rounds: 3 per plan, 6 per gate/epoch. The log binds merge-base and diff hash, and the merge script accepts a gate only when both match the full PR diff. Agent config (`opencode.json`, `.opencode/`, `.claude/`, `.agents/`, `AGENTS.md`, `CLAUDE.md`) is never Low (`reference.md`).
 
 **Claude `[cyber]` refusal:** a `stop_reason: refusal` child logs `blocked`, reason `cyber refusal`, exit 3; never retried as invalid JSON, never `pass`.
 
-**Packet** (`EVID/packet-<gate>.md`): gate, tier/triggers, request, acceptance criteria, 40-char base/head SHA (or diff sha256), full diff; review/security also carry the plan's `risks` verbatim under `## Plan risks`, `REVIEW.md` and a Trail blast (`reference.md`). NEVER include implementer summaries, rationales or secrets (remove and rotate, never redact).
+**Packet** (`EVID/packet-<gate>.md`): gate, tier/triggers, request, acceptance criteria, 40-char base/head SHA (or diff sha256), full diff; with `--ui` it also carries `Scope: ui`; review/security also carry the plan's `risks` verbatim under `## Plan risks`, `REVIEW.md` and a Trail blast (`reference.md`). NEVER include implementer summaries, rationales or secrets (remove and rotate, never redact).
 
 Every reviewer checks the claimed tier against the diff; an under-classified tier is `important` and re-enters at the correct tier. Never resume a gate session; a `fail` verdict is a valid run, and a malformed command is rerun.
 
@@ -160,7 +163,7 @@ It runs `reference.md`'s checks, writes them into the PR body and squash-merges 
 
 ## 9. Clean up
 
-Remove only branches, worktrees and processes you created and verified as merged; never touch unrelated or unmerged work. If lasting lessons came up, run `ds-agent-docs`; run `ds-consolidate` only for repo-wide stray-work reconciliation.
+Remove only branches, worktrees and processes you created and verified as merged; never touch unrelated or unmerged work. If lasting lessons came up, run the matching discovered local ds-* skill from Section 4; use the repo-wide reconciliation skill from that same discovery only for stray-work reconciliation.
 
 ## 10. Report in a few lines
 

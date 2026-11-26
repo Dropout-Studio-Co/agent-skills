@@ -47,12 +47,14 @@ if cmd == "laststart":
     r = [d for d in rows(os.path.join(a[1], "impl.log"))]
     sys.exit(0 if r and isinstance(r[-1], dict) and r[-1].get("status") == "start" else 1)
 if cmd == "plan":
-    # Only a T3-verified Neon plan counts: route, model, effort, provenance and engine are checked before the file hash.
+    # Only a T3-verified plan counts: route, model, effort, ui flag, provenance and engine are checked before the file hash.
     ev, step = a[1:3]; pl = [d for d in rows(os.path.join(ev, "gates.log")) if isinstance(d, dict) and d.get("gate") == "plan" and d.get("status") == "ok"]
     if not pl: sys.exit(1)
-    p = pl[-1]; gr = routing.gate_contract(RCFG, "plan")
-    if (p.get("route") != gr[1] or p.get("model") != gr[2] or p.get("account") not in gr[4]
-            or p.get("effort") not in set(RCFG["gates"]["plan"]["efforts"].values()) or p.get("provenance_mode") != "t3-verified" or p.get("engine") != "t3-delegate"): sys.exit(1)
+    p = pl[-1]; ui = p.get("ui", False)
+    if not isinstance(ui, bool): sys.exit(1)
+    hit = next((c for c in routing.gate_contracts(RCFG, "plan", ui=ui) if c[1] == p.get("route") and c[2] == p.get("model") and p.get("account") in c[4]), None)
+    allowed = set().union(*(routing.allowed_efforts_for(RCFG, "plan", t, ui=ui, route=hit[1]) for t in routing.TIERS["plan"])) if hit else set()
+    if not hit or p.get("effort") not in allowed or p.get("provenance_mode") != "t3-verified" or p.get("engine") != "t3-delegate": sys.exit(1)
     f = os.path.join(ev, os.path.basename(str(p.get("file") or "-")))
     if not os.path.isfile(f) or sha(f) != p.get("file_sha256"): sys.exit(1)
     try: plan(f)
