@@ -1,6 +1,6 @@
 # agent-skills
 
-A collection of 8 Dropout Studio (`ds-*`) skills for AI coding assistants (like Claude Code and OpenCode). Each skill works across web, mobile, native, desktop, TV, CLI, and backend projects — teaching your AI assistant how to handle a specific job from start to finish.
+A collection of 9 Dropout Studio (`ds-*`) skills for AI coding assistants (like Claude Code and OpenCode). Each skill works across web, mobile, native, desktop, TV, CLI, and backend projects — teaching your AI assistant how to handle a specific job from start to finish.
 
 > This is a personal workflow collection shared as-is, not a commercial product.
 
@@ -14,7 +14,7 @@ Install all skills from https://github.com/Dropout-Studio-Co/agent-skills onto m
 1. Download or clone the repository to a temporary folder, copy every folder inside `skills/` into `~/.agents/skills/` (keep all skill folders together in that same directory), and remove the temporary folder when done.
 2. If I use Claude Code (or `~/.claude` exists), create a symlink in `~/.claude/skills/<skill-name>` pointing to `~/.agents/skills/<skill-name>` for each individual skill folder — do not symlink the whole `skills` directory.
 3. Check that `git` and `python3` (3.9 or newer) are installed, and tell me if anything is missing.
-4. Confirm when all 8 skills are installed and ready to use.
+4. Confirm when all 9 skills are installed and ready to use.
 ```
 
 That's it. Your AI assistant will download the files, put them in the right folders, and let you know when everything is ready.
@@ -50,6 +50,7 @@ Once installed, type the phrase in the right column whenever you want to use a s
 | Skill | What it does | What to type |
 | --- | --- | --- |
 | [`ds-media-cleanup`](skills/ds-media-cleanup/) | Cleans up movie and TV libraries — standardizes movie, TV show, and episode filenames (and season folders), infers your library's naming style, and flags duplicates with quality-to-size keep/remove recommendations without deleting files. | `/ds-media-cleanup` or `/ds-media-cleanup <path or drive>` |
+| [`ds-storage-audit`](skills/ds-storage-audit/) | Audits your computer's storage — finds what is safe to remove, explains what each item is, and reports how much each one frees plus the total reclaimable space, without deleting anything. | `/ds-storage-audit` or `/ds-storage-audit <path or drive>` |
 
 ### Good to Know
 
