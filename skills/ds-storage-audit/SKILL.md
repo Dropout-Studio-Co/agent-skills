@@ -9,7 +9,7 @@ license: MIT
 
 Find the storage that can be safely reclaimed on this machine and report it in plain language. This skill is strictly read-only: it inspects sizes and names only and never deletes, moves, renames, truncates, or writes anything.
 
-**Input:** an optional path, drive, or volume. **Output:** one plain-language report of safe-to-remove items, presented as one sorted Markdown table where each row gives what to delete, what it is, and how much space it frees.
+**Input:** an optional path, drive, or volume. **Output:** one plain-language report of safe-to-remove items, presented as one sorted numbered (ordered) list where each item gives what to delete, what it is, and how much space it frees.
 
 Consult [`references/os-locations.md`](references/os-locations.md) for the exhaustive per-OS inventory and read-only probe commands, and [`references/safety-classification.md`](references/safety-classification.md) for the safe/never-recommend rules, sizing rules, and jargon translation.
 
@@ -82,60 +82,58 @@ Measure on-disk blocks on a single filesystem (`-x`, `du -P`). Do not use appare
 
 ## 4. Present the Plain-Language Report
 
-Return one plain-language report built around a single Markdown table. Do not dump raw command output, file listings, or technical jargon.
+Return one plain-language report built around a single numbered (ordered) list. Do not dump raw command output, file listings, or technical jargon.
 
-### Table presentation
+### List presentation
 
-Every audit that has at least one qualifying item renders exactly one GitHub-Flavored Markdown table with these three columns and alignments:
+Every audit that has at least one qualifying item renders exactly one sequential 1-based Markdown numbered (ordered) list (`1.`, `2.`, `3.`, ...) with one single-line item per entry, formatted as:
 
-| What to delete | What it is | Space freed |
-| :--- | :--- | ---: |
+`1. **<What to delete>** — <What it is> — **<Space freed>**`
 
-- **What to delete** (left-aligned, `:---`): the recognizable name plus a concise location or path, for example "Chrome's web page cache (`~/Library/Caches/Google/Chrome`)". Never show a raw bare path on its own. On a multi-volume audit, include the volume name so every row stays unambiguous.
-- **What it is** (left-aligned, `:---`): one concise plain-language sentence explaining what the item is and why removing it is safe. No jargon.
-- **Space freed** (right-aligned, `---:`): the reclaimable size in consistent human units such as `6.2 GB` or `420 MB`.
+- **What to delete**: the recognizable name plus a concise location or path, for example "Chrome's web page cache (`~/Library/Caches/Google/Chrome`)". Never show a raw bare path on its own. On a multi-volume audit, include the volume name so every item stays unambiguous.
+- **What it is**: one concise plain-language sentence explaining what the item is and why removing it is safe. No jargon.
+- **Space freed**: the reclaimable size in consistent human units such as `6.2 GB` or `420 MB`.
 
 ### Report order
 
 1. **Open with context:** state the total space that could be reclaimed, then the current free and total space for each audited local volume.
 2. **Confirm the boundary:** state explicitly that nothing was deleted and that this was an inspection only.
-3. **Present the table:** one 3-column table whose rows are sorted strictly descending by exact reclaimable bytes (largest to smallest), breaking ties in alphabetical order by item name. On multi-volume audits, merge every volume's items into this one sorted table; do not emit one table per volume.
-4. **Add the Total row:** finish the table with a single bold `**Total**` row whose size equals the sum of the displayed item rows and matches the opening reclaimable total. The Total row always stays last and is never sorted into the item rows.
-5. **Close with limitations:** add one brief closing note below the table only when some areas could not be inspected, naming the permission-restricted or timed-out locations plainly. Those areas appear only in that note, never as rows in the safe-to-delete table, and the note is omitted when everything was readable.
+3. **Present the list:** one unified numbered list whose items are sorted strictly descending by exact reclaimable bytes (largest to smallest), breaking ties in alphabetical order by item name. On multi-volume audits, merge every volume's items into this one sorted list; do not emit one list per volume.
+4. **Add the Total line:** finish with a single unnumbered bold `**Total**` line directly below the list — `**Total** — Sum of the listed items — **<size>**` — whose size equals the sum of the displayed items and matches the opening reclaimable total. The Total line always stays below the list and is never numbered or sorted into the items.
+5. **Close with limitations:** add one brief closing note below the list only when some areas could not be inspected, naming the permission-restricted or timed-out locations plainly. Those areas appear only in that note, never as items in the safe-to-delete list, and the note is omitted when everything was readable.
 
-### Cell discipline
+### Item discipline
 
-Keep every cell single-line and scannable:
+Keep every item single-line and scannable:
 
-- Escape a literal `|` in a discovered name as `\|`.
-- Collapse newlines and control characters in discovered names to single spaces so each cell stays on one line.
-- Use no raw command output, nested blocks, or multi-line text inside a cell.
+- Collapse newlines and control characters in discovered names to single spaces so a name cannot split an item or inject extra list items.
+- Escape or neutralize Markdown formatting characters such as `*`, backticks, or a leading list marker so a discovered name cannot alter the list structure.
+- Use no raw command output, nested blocks, or multi-line text inside an item.
 
 ### Example shape
 
 ```text
 You can free about 14.7 GB. This disk has 42 GB free of 250 GB. Nothing was deleted — this was an inspection only.
 
-| What to delete | What it is | Space freed |
-| :--- | :--- | ---: |
-| Chrome's web page cache | Temporary copies of web pages Chrome keeps to load sites faster; Chrome rebuilds them automatically. | 6.2 GB |
-| Old iPhone development support files | Copies of device support files from older Xcode versions; Xcode recreates them when needed. | 5.4 GB |
-| Downloaded app updates no longer needed | Installer packages for updates that have already been installed. | 3.1 GB |
-| **Total** | **Sum of the listed items** | **14.7 GB** |
+1. **Chrome's web page cache** — Temporary copies of web pages Chrome keeps to load sites faster; Chrome rebuilds them automatically. — **6.2 GB**
+2. **Old iPhone development support files** — Copies of device support files from older Xcode versions; Xcode recreates them when needed. — **5.4 GB**
+3. **Downloaded app updates no longer needed** — Installer packages for updates that have already been installed. — **3.1 GB**
+
+**Total** — Sum of the listed items — **14.7 GB**
 ```
 
 ### Edge and failure cases
 
-- **Clean machine (0 qualifying items):** omit the table entirely — never render an empty or placeholder table. Say the storage is already clean, report the free/total context, confirm nothing was deleted, and name any restricted locations.
-- **Single qualifying item:** still render the full 3-column table with its header and the bold Total row.
-- **Multi-volume audits:** merge every volume's items into one sorted table and include volume context in the "What to delete" cell.
-- **Restricted, permission-denied, or timed-out areas:** finish the accessible audit first, then name them only in the brief closing note below the table. Never add them as rows and never escalate privileges.
-- **Vanished items:** re-check each path before totaling; drop anything that vanished so the Total reflects only items that still exist.
-- **Large item counts:** keep everything in one unified descending table; never silently truncate the list.
-- **Invalid explicit target:** fail once in plain language before scanning and render no table.
+- **Clean machine (0 qualifying items):** omit the numbered list and the Total line entirely — never render an empty or placeholder list. Say the storage is already clean, report the free/total context, confirm nothing was deleted, and name any restricted locations.
+- **Single qualifying item:** render the list with its single `1.` item and the unnumbered bold `**Total**` line.
+- **Multi-volume audits:** merge every volume's items into one sorted numbered list and include volume context in the "What to delete" part.
+- **Restricted, permission-denied, or timed-out areas:** finish the accessible audit first, then name them only in the brief closing note below the list. Never add them as list items and never escalate privileges.
+- **Vanished items:** re-check each path before numbering and totaling; drop anything that vanished so the numbering stays sequential and the Total reflects only items that still exist.
+- **Large item counts:** keep everything in one unified descending numbered list; never silently truncate the list.
+- **Invalid explicit target:** fail once in plain language before scanning and render no list.
 - **Interrupted run:** the audit is stateless and read-only, so cancelling leaves zero leftovers and a re-run is safe and idempotent.
 
-**Completion criteria:** every qualifying item appears as a single-line row in one 3-column table sorted strictly descending by exact bytes with alphabetical tie-breaking; the bold Total row equals both the sum of the displayed rows and the opening reclaimable total; total reclaimable, free/total context, and the no-deletion confirmation are present; restricted or timed-out areas appear only in the closing note; a clean machine renders no table at all.
+**Completion criteria:** every qualifying item appears as a single-line numbered entry in one sequential list sorted strictly descending by exact bytes with alphabetical tie-breaking; the unnumbered bold Total line equals both the sum of the displayed items and the opening reclaimable total; total reclaimable, free/total context, and the no-deletion confirmation are present; restricted or timed-out areas appear only in the closing note below the list; a clean machine renders no list at all.
 
 ## Hard Guardrails
 

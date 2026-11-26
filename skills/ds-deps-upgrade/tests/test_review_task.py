@@ -283,75 +283,101 @@ class ProfileAndAgnosticComplianceTests(TaskCase):
         for sizing in ('docker system df', '25 MB', '1 MB', '-P'):
             self.assertIn(sizing, classification)
 
-        # Presentation contract: one GFM table owns every qualifying audit result.
-        table_header = '| What to delete | What it is | Space freed |'
-        self.assertIn(table_header, parts[2],
-                      'SKILL.md must define the 3-column GFM table header')
-        self.assertIn('| :--- | :--- | ---: |', parts[2],
-                      'SKILL.md must left-align text columns and right-align the size column')
-        self.assertIn('**Total**', parts[2], 'the example needs a bold Total summary row')
-        self.assertNotIn('1. What to delete:', parts[2],
-                         'the legacy numbered-block example must be gone')
-        self.assertNotIn('What to delete:', parts[2],
-                         'the numbered item blocks must be replaced by the table')
-
+        # Presentation contract: one sequential numbered list owns every qualifying audit result.
+        self.assertIn('numbered (ordered) list', lower_skill,
+                      'SKILL.md must define the numbered (ordered) list presentation')
+        for marker in ('1.', '2.', '3.'):
+            self.assertIn(marker, parts[2],
+                          'SKILL.md must show sequential %s numbering' % marker)
+        self.assertIn('unnumbered', lower_skill,
+                      'the Total line must be unnumbered, never a list item')
+        self.assertIn('**Total**', parts[2],
+                      'the report needs a bold Total summary line')
+        for part in ('What to delete', 'What it is', 'Space freed'):
+            self.assertIn(part, parts[2],
+                          'SKILL.md must define the report part: %s' % part)
         self.assertIn('strictly descending by exact reclaimable bytes', lower_skill,
-                      'rows must sort by exact bytes, not the displayed label')
+                      'items must sort by exact bytes, not the displayed label')
         self.assertIn('alphabetical', lower_skill,
                       'ties must break deterministically by alphabetical order')
-        for discipline in ('single-line', '\\|', 'newline', 'control character'):
+        for discipline in ('single-line', 'newline', 'control character', 'markdown formatting'):
             self.assertIn(discipline, lower_skill,
-                          'cells must stay single-line and sanitize %s' % discipline)
+                          'items must stay single-line and sanitize %s' % discipline)
 
-        for boundary in ('0 qualifying items', 'omit the table', 'placeholder table',
-                         'single qualifying item', 'closing note below the table',
-                         'vanished', 're-check', 'multi-volume', 'no table'):
+        for stale in ('| What to delete | What it is | Space freed |',
+                      '| :--- | :--- | ---: |', '### Table presentation',
+                      '### Cell discipline', '1. What to delete:'):
+            self.assertNotIn(stale, parts[2],
+                             'the stale table-era marker must be gone: %s' % stale)
+
+        for boundary in ('0 qualifying items', 'omit the numbered list', 'placeholder list',
+                         'single qualifying item', 'closing note below the list',
+                         'vanished', 're-check', 'multi-volume', 'no list'):
             self.assertIn(boundary, lower_skill,
                           'SKILL.md must define boundary behavior: %s' % boundary)
 
-        # The worked example's arithmetic must be internally consistent.
+        # The worked example's numbering and arithmetic must be internally consistent.
         example_blocks = re.findall(r'```[^\n]*\n(.*?)```', parts[2], re.S)
-        table_blocks = [block for block in example_blocks if table_header in block]
-        self.assertEqual(len(table_blocks), 1,
-                         'SKILL.md needs exactly one fenced example containing the table')
-        example = table_blocks[0]
+        list_blocks = [block for block in example_blocks if re.search(r'(?m)^1\. ', block)]
+        self.assertEqual(len(list_blocks), 1,
+                         'SKILL.md needs exactly one fenced example containing the numbered list')
+        example = list_blocks[0]
+        self.assertNotIn('|', example, 'the worked example must not contain a GFM table row')
         size_re = re.compile(r'^(\d+(?:\.\d+)?)\s*(B|KB|MB|GB|TB)$')
         scale = {'B': 1, 'KB': 10 ** 3, 'MB': 10 ** 6, 'GB': 10 ** 9, 'TB': 10 ** 12}
 
-        def as_bytes(cell):
-            match = size_re.match(cell.strip().strip('*').strip())
-            self.assertIsNotNone(match, 'unparseable example size: %r' % cell)
+        def as_bytes(value):
+            match = size_re.match(value.strip().strip('*').strip())
+            self.assertIsNotNone(match, 'unparseable example size: %r' % value)
             return float(match.group(1)) * scale[match.group(2)]
 
-        rows = [line.strip() for line in example.splitlines() if line.strip().startswith('|')]
-        body_rows = rows[2:]
-        item_rows = [row for row in body_rows if '**Total**' not in row]
-        total_rows = [row for row in body_rows if '**Total**' in row]
-        self.assertEqual(len(total_rows), 1, 'the example needs exactly one bold Total row')
-        item_sizes = [as_bytes(row.strip('|').split('|')[-1]) for row in item_rows]
-        self.assertGreaterEqual(len(item_sizes), 2, 'the example should show several items')
+        item_re = re.compile(r'^(\d+)\. (.+)$')
+        lines = [line.strip() for line in example.splitlines()]
+        item_lines = [line for line in lines if item_re.match(line)]
+        self.assertGreaterEqual(len(item_lines), 2,
+                                'the example should show several numbered items')
+        self.assertEqual([int(item_re.match(line).group(1)) for line in item_lines],
+                         list(range(1, len(item_lines) + 1)),
+                         'example numbering must be sequential and start at 1')
+        item_sizes = []
+        for line in item_lines:
+            pieces = line.split(' — ')
+            self.assertEqual(len(pieces), 3,
+                             'each numbered item must fill the three report parts: %r' % line)
+            self.assertRegex(pieces[0], r'^\d+\. \*\*.+\*\*$',
+                             'each item must start with a bold name: %r' % line)
+            item_sizes.append(as_bytes(pieces[-1]))
         for left, right in zip(item_sizes, item_sizes[1:]):
             self.assertGreaterEqual(left, right,
-                                    'example rows must be sorted largest to smallest')
+                                    'example items must be sorted largest to smallest')
+        total_lines = [line for line in lines if line.startswith('**Total**')]
+        self.assertEqual(len(total_lines), 1,
+                         'the example needs exactly one unnumbered bold Total line')
+        self.assertIsNone(item_re.match(total_lines[0]),
+                          'the Total line must never be numbered')
+        last_item = max(lines.index(line) for line in item_lines)
+        self.assertGreater(lines.index(total_lines[0]), last_item,
+                           'the Total line must sit below the numbered list')
         summed = round(sum(item_sizes))
-        self.assertEqual(summed, round(as_bytes(total_rows[0].strip('|').split('|')[-1])),
-                         'the example Total must equal the sum of its item rows')
+        self.assertEqual(summed, round(as_bytes(total_lines[0].split(' — ')[-1])),
+                         'the example Total must equal the sum of its numbered items')
         opening = re.search(r'free about ([\d.]+)\s*(B|KB|MB|GB|TB)', example)
         self.assertIsNotNone(opening, 'the example must open with the reclaimable total')
         self.assertEqual(summed, round(as_bytes('%s %s' % (opening.group(1), opening.group(2)))),
-                         'the example opening total must match the table Total')
+                         'the example opening total must match the summed items')
 
-        # safety-classification.md must defer table layout to SKILL.md and stop describing blocks.
+        # safety-classification.md must defer list layout to SKILL.md and describe list entries.
         lower_classification = classification.lower()
-        self.assertNotIn('one item per block', lower_classification,
-                         'the block-per-item wording conflicts with the table contract')
-        self.assertIn('one item per row', lower_classification,
-                      'plain-language guidance must describe table rows')
+        self.assertIn('one item per numbered list entry', lower_classification,
+                      'plain-language guidance must describe numbered list entries')
         self.assertIn('SKILL.md', classification,
                       'layout details must defer to SKILL.md')
-        for column in ('What to delete', 'What it is', 'Space freed'):
-            self.assertIn(column, classification,
-                          'plain-language guidance must name the report column: %s' % column)
+        for part in ('What to delete', 'What it is', 'Space freed'):
+            self.assertIn(part, classification,
+                          'plain-language guidance must name the report part: %s' % part)
+        for stale in ('one item per block', 'one item per row', 'report table'):
+            self.assertNotIn(stale, lower_classification,
+                             'stale table wording must be gone: %s' % stale)
 
         # Review round 1: only cache directories, never installed app trees or credential-bearing roots.
         self.assertNotIn(r'%LOCALAPPDATA%\Microsoft\Teams\`', os_locations,
