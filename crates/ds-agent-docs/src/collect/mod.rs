@@ -537,31 +537,42 @@ fn write_evidence(path: &Path, data: &Value) -> i32 {
     0
 }
 
-/// `O_NOFOLLOW` for the platforms this crate targets.
-#[cfg(all(
-    unix,
-    any(
-        target_os = "macos",
-        target_os = "ios",
-        target_os = "freebsd",
-        target_os = "openbsd",
-        target_os = "netbsd"
-    )
-))]
+/// `O_NOFOLLOW` for the current Unix platform.
+///
+/// Linux aarch64/arm/powerpc define `O_NOFOLLOW` as `0o400000`, the same value
+/// that is `O_DIRECT` there, so the constant must come from libc rather than a
+/// hard-coded number.
+#[cfg(unix)]
 fn no_follow_flag() -> i32 {
-    0x0100
+    libc::O_NOFOLLOW
 }
 
-#[cfg(all(
-    unix,
-    not(any(
-        target_os = "macos",
-        target_os = "ios",
-        target_os = "freebsd",
-        target_os = "openbsd",
-        target_os = "netbsd"
-    ))
-))]
-fn no_follow_flag() -> i32 {
-    0o400000
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn no_follow_flag_is_o_nofollow_and_refuses_a_symlink() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let target = temp.path().join("target.json");
+        std::fs::write(&target, "x").expect("target file");
+        let link = temp.path().join("link.json");
+        std::os::unix::fs::symlink(&target, &link).expect("symlink");
+
+        assert_eq!(no_follow_flag(), libc::O_NOFOLLOW);
+
+        use std::os::unix::fs::OpenOptionsExt;
+        let error = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(no_follow_flag())
+            .open(&link)
+            .expect_err("O_NOFOLLOW must refuse to follow the symlink");
+        assert_eq!(error.raw_os_error(), Some(libc::ELOOP), "{error}");
+
+        std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(no_follow_flag())
+            .open(&target)
+            .expect("a regular file must still open");
+    }
 }

@@ -1,9 +1,13 @@
 name: release-ds-agent-docs
 
 # Standard GitHub-hosted runners only (free tier); no paid or third-party runners.
-#   pull_request / push to main  -> test
-#   tag ds-agent-docs-v*         -> build (4 targets) -> publish GitHub Release
-#   workflow_dispatch            -> build (4 targets), no release
+#   pull_request                 -> test (path-filtered)
+#   tag ds-agent-docs-v*         -> test -> build (4 targets) -> publish GitHub Release
+#   workflow_dispatch            -> test -> build (4 targets), no release
+#
+# `paths:` intentionally lives only on `pull_request`: combining it with a tag push
+# makes GitHub skip the run when the tagged commit does not touch those paths.
+# `push` carries tags only, so a `ds-agent-docs-v*` tag always runs `test` and `build`.
 
 on:
   pull_request:
@@ -12,12 +16,7 @@ on:
       - "skills/ds-agent-docs/**"
       - ".github/workflows/release-ds-agent-docs.yml"
   push:
-    branches: [main]
     tags: ["ds-agent-docs-v*"]
-    paths:
-      - "crates/ds-agent-docs/**"
-      - "skills/ds-agent-docs/**"
-      - ".github/workflows/release-ds-agent-docs.yml"
   workflow_dispatch:
 
 permissions:
@@ -34,7 +33,6 @@ env:
 jobs:
   test:
     name: Test (fmt, clippy, cargo, python)
-    if: ${{ !startsWith(github.ref, 'refs/tags/') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -70,7 +68,7 @@ jobs:
   build:
     name: Build ${{ matrix.target }}
     needs: test
-    if: ${{ always() && (needs.test.result == 'success' || needs.test.result == 'skipped') && (startsWith(github.ref, 'refs/tags/ds-agent-docs-v') || github.event_name == 'workflow_dispatch') }}
+    if: ${{ needs.test.result == 'success' && (startsWith(github.ref, 'refs/tags/ds-agent-docs-v') || github.event_name == 'workflow_dispatch') }}
     strategy:
       fail-fast: false
       matrix:

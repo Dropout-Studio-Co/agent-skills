@@ -20,26 +20,36 @@ platform- or domain-specific detail. Keep the change inside the skill it belongs
   states what the skill does and when to use it.
 - **No machine-specific paths.** Document the canonical install root (`~/.agents/skills/<skill>`,
   `~/.claude/skills/<skill>`); never commit a home directory, transcript, or run state.
-- **No new dependencies** without a clear need. The helpers are stdlib-only Python.
+- **No new dependencies** without a clear need. Helpers under `skills/` are stdlib-only Python
+  (3.9+, no third-party packages). `crates/ds-agent-docs/` is the explicit exception: it is a Rust
+  crate with its own `Cargo.toml`, `Cargo.lock` and dependencies, kept outside `skills/` so the
+  text-only skill sync never carries build output.
 
 ## Checks
 
 ```sh
 python3 -m unittest discover -s skills/ds-deps-upgrade/tests -t skills/ds-deps-upgrade
 python3 -m unittest discover -s skills/ds-agent-docs/tests -t skills/ds-agent-docs
+cargo test --manifest-path crates/ds-agent-docs/Cargo.toml
+cargo clippy --manifest-path crates/ds-agent-docs/Cargo.toml --all-targets -- -D warnings
+cargo fmt --manifest-path crates/ds-agent-docs/Cargo.toml --check
 bash skills/ds-dev-protocol/tests/smoke.sh
 ```
 
 Run the `ds-deps-upgrade` suite after any change to `ds-deps-upgrade` scripts, tests or any `task-profile.json`
 (this also validates the `ds-consolidate` and `ds-ui-overhaul` profiles). Run the collector and checker
-suite after changes to `ds-agent-docs` scripts or tests, and run `bash skills/ds-dev-protocol/tests/smoke.sh`
-after changes to `ds-dev-protocol` scripts or tests.
+suite after changes to `ds-agent-docs` scripts or tests, run the Cargo commands above after changes to
+`crates/ds-agent-docs/`, and run `bash skills/ds-dev-protocol/tests/smoke.sh` after changes to
+`ds-dev-protocol` scripts or tests.
 
-`ds-agent-docs` ships two stdlib-only helpers. `scripts/collect_sessions.py` collects and redacts session
-evidence; `scripts/check_instructions.py` runs a read-only cross-agent instruction and documentation audit
-(`audit --repo R [--scope P]`) and never modifies a repository. Both scripts keep their executable bit,
-require Python 3.9+, and their tests use scratch repositories with no network, credentials or outside
-paths. Also re-read the file you edited: commands, paths and script names must match the repository.
+`ds-agent-docs` ships two stdlib-only helpers under `skills/ds-agent-docs/scripts/`.
+`collect_sessions.py` collects and redacts session evidence; `check_instructions.py` runs a read-only
+cross-agent instruction and documentation audit (`audit --repo R [--scope P]`) and never modifies a
+repository. Both keep their executable bit, require Python 3.9+, and their tests use scratch
+repositories with no network, credentials or outside paths. The Rust CLI in `crates/ds-agent-docs/`
+provides the same `audit` and `collect` commands and is what `SKILL.md` invokes; the Python helpers
+stay as the fallback. Also re-read the file you edited: commands, paths and script names must match
+the repository.
 
 ## Installing a change locally
 

@@ -19,7 +19,7 @@ use super::classify::{
 };
 use super::{HumanItem, Session, SessionInput};
 use crate::redact::redact;
-use crate::repo::Repo;
+use crate::repo::{Repo, home_directory};
 
 /// Characters Python's `quote()` leaves untouched (letters, digits and `_.-~/`).
 const URI_SET: &AsciiSet = &NON_ALPHANUMERIC
@@ -29,12 +29,6 @@ const URI_SET: &AsciiSet = &NON_ALPHANUMERIC
     .remove(b'~')
     .remove(b'/');
 
-fn home_directory() -> PathBuf {
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_default()
-}
-
 /// Absolute path of the OpenCode SQLite store.
 pub fn opencode_store() -> PathBuf {
     let data_home = match std::env::var_os("XDG_DATA_HOME") {
@@ -42,6 +36,31 @@ pub fn opencode_store() -> PathBuf {
         _ => home_directory().join(".local").join("share"),
     };
     data_home.join("opencode").join("opencode.db")
+}
+
+/// Split a Windows drive prefix (`C:/`) off a `/`-separated path.
+fn drive_prefix(text: &str) -> Option<(&str, &str)> {
+    let bytes = text.as_bytes();
+    if bytes.len() < 3 || !bytes[0].is_ascii_alphabetic() || bytes[1] != b':' || bytes[2] != b'/' {
+        return None;
+    }
+    Some(text.split_at(3))
+}
+
+/// SQLite URI for a read-only handle on `path`.
+///
+/// Backslashes become `/`. A Windows drive path becomes a `file:///C:/...`
+/// URI whose drive letter and colon stay literal; everything else, including
+/// spaces and `#`/`?`, is percent-encoded so SQLite never reads them as URI
+/// syntax.
+fn sqlite_uri(path: &std::path::Path) -> String {
+    let text = path.to_string_lossy().replace('\\', "/");
+    match drive_prefix(&text) {
+        Some((drive, rest)) => {
+            format!("file:///{drive}{}", utf8_percent_encode(rest, URI_SET))
+        }
+        None => format!("file:{}", utf8_percent_encode(&text, URI_SET)),
+    }
 }
 
 fn with_suffix(path: &std::path::Path, suffix: &str) -> PathBuf {
@@ -217,11 +236,11 @@ fn opencode_errors(data: &Map<String, Value>) -> Vec<String> {
             }
             Some(Value::String(text)) if !text.is_empty() => text.clone(),
             _ => {
-                let fallback = ["output", "name"]
-                    .iter()
-                    .filter_map(|key| item.get(*key))
-                    .find(|value| truthy(value));
-                match fallback {
+                let detail = state
+                    .get("output")
+                    .filter(|value| truthy(value))
+                    .or_else(|| item.get("name").filter(|value| truthy(value)));
+                match detail {
                     Some(Value::String(text)) => text.clone(),
                     Some(other) => python_json(other),
                     None => "tool error".to_string(),
@@ -285,8 +304,8 @@ pub fn opencode_sessions(repo: &Repo, cutoff: f64) -> (Vec<Session>, u64, Option
         );
         return (Vec::new(), 0, None);
     }
-    let quoted = utf8_percent_encode(&db.to_string_lossy(), URI_SET).to_string();
-    let base = format!("file:{quoted}?mode=ro");
+    let store_uri = sqlite_uri(&db);
+    let base = format!("{store_uri}?mode=ro");
     let wal = with_suffix(&db, "-wal");
     let shm = with_suffix(&db, "-shm");
     let uri = if !wal.exists() {
@@ -558,4 +577,69 @@ fn count_v1_only(
         return 0;
     }
     count
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn error_content(item: Value) -> Map<String, Value> {
+        serde_json::from_value(serde_json::json!({
+            "content": [item],
+        }))
+        .expect("assistant content object")
+    }
+
+    #[test]
+    fn windows_store_paths_become_read_only_uris() {
+        assert_eq!(
+            sqlite_uri(std::path::Path::new(
+                r"C:\work\alice\AppData\Local\opencode\opencode.db"
+            )),
+            "file:///C:/work/alice/AppData/Local/opencode/opencode.db"
+        );
+        assert_eq!(
+            sqlite_uri(std::path::Path::new(
+                r"C:\work\al ice\opencode #1?\opencode.db"
+            )),
+            "file:///C:/work/al%20ice/opencode%20%231%3F/opencode.db"
+        );
+    }
+
+    #[test]
+    fn unix_store_paths_keep_the_file_prefix_and_encode_specials() {
+        assert_eq!(
+            sqlite_uri(std::path::Path::new("/srv/state/opencode/opencode.db")),
+            "file:/srv/state/opencode/opencode.db"
+        );
+        assert_eq!(
+            sqlite_uri(std::path::Path::new("/srv/open code/opencode.db")),
+            "file:/srv/open%20code/opencode.db"
+        );
+    }
+
+    #[test]
+    fn a_tool_error_prefers_state_output_over_the_tool_name() {
+        let data = error_content(serde_json::json!({
+            "type": "tool",
+            "name": "bash",
+            "state": {"status": "error", "output": "boom"},
+        }));
+        assert_eq!(opencode_errors(&data), vec!["boom".to_string()]);
+    }
+
+    #[test]
+    fn a_tool_error_falls_back_to_the_name_then_the_default() {
+        let named = error_content(serde_json::json!({
+            "type": "tool",
+            "name": "bash",
+            "state": {"status": "error"},
+        }));
+        assert_eq!(opencode_errors(&named), vec!["bash".to_string()]);
+        let bare = error_content(serde_json::json!({
+            "type": "tool",
+            "state": {"status": "error"},
+        }));
+        assert_eq!(opencode_errors(&bare), vec!["tool error".to_string()]);
+    }
 }

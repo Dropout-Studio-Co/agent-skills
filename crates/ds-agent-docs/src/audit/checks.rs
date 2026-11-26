@@ -111,7 +111,7 @@ fn pr_no() -> &'static Regex {
     static PATTERN: OnceLock<Regex> = OnceLock::new();
     PATTERN.get_or_init(|| {
         Regex::new(
-            r"(?i)(\bno\b|\bnever\b|\bnot\b|\bdon'?t\b|\bdo not\b|\bforbid\w*\b|\bmust not\b).{0,60}\b(direct(?:ly)?\s+)?(push|commit)\b",
+            r"(?i)(\bno\b|\bnever\b|\bnot\b|\bdon'?t\b|\bdo not\b|\bforbid\w*\b|\bmust not\b).{0,60}\b(direct(?:ly)?\s+)?(push|commit)",
         )
         .expect("no-push pattern must compile")
     })
@@ -718,6 +718,8 @@ mod tests {
         assert!(pr_yes().is_match("Open a PR first."));
         assert!(pr_no().is_match("Never push directly to main."));
         assert!(pr_no().is_match("Do not commit to the default branch."));
+        assert!(pr_no().is_match("No direct commits to main."));
+        assert!(pr_no().is_match("Never pushing directly to main."));
         assert!(!pr_yes().is_match("Use the documented commands."));
         assert!(!pr_no().is_match("Use the documented commands."));
     }

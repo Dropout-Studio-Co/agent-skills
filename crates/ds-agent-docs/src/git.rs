@@ -32,13 +32,26 @@ pub fn run_git(args: &[&str], cwd: &Path, input: Option<&str>) -> Option<Output>
         command.env_remove(key);
     }
     let mut child = command.spawn().ok()?;
-    if let Some(data) = input
-        && let Some(mut stdin) = child.stdin.take()
-    {
-        // A git process that stops reading is reported by its exit status.
-        let _ = stdin.write_all(data.as_bytes());
+    match input {
+        Some(data) => {
+            let Some(mut stdin) = child.stdin.take() else {
+                return child.wait_with_output().ok();
+            };
+            let data = data.as_bytes().to_vec();
+            // Feed stdin from another thread so this thread drains stdout and
+            // stderr at the same time: a caller that fills the stdin pipe with
+            // more than one buffer while git refills stdout would otherwise
+            // deadlock. A git process that stops reading is reported by its
+            // exit status, and the pipe is closed when the thread returns.
+            std::thread::scope(|scope| {
+                scope.spawn(move || {
+                    let _ = stdin.write_all(&data);
+                });
+                child.wait_with_output().ok()
+            })
+        }
+        None => child.wait_with_output().ok(),
     }
-    child.wait_with_output().ok()
 }
 
 /// Trimmed stdout of a successful `git` invocation, or an empty string.
@@ -80,5 +93,43 @@ mod tests {
                 "GIT_COMMON_DIR"
             ]
         );
+    }
+
+    /// A stdin payload larger than a pipe buffer must not deadlock against a
+    /// stdout payload larger than a pipe buffer.
+    #[test]
+    fn large_stdin_is_written_while_stdout_is_drained() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path();
+        let status = std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(root)
+            .status()
+            .expect("git init must run");
+        assert!(status.success(), "git init failed");
+        std::fs::write(root.join(".gitignore"), "ignored/\n").expect("gitignore");
+        let names: Vec<String> = (0..6000)
+            .map(|index| format!("ignored/some-rather-long-transcript-name-{index:05}.md"))
+            .collect();
+        let input = format!("{}\0", names.join("\0"));
+        assert!(
+            input.len() > 64 * 1024,
+            "stdin fixture is {} bytes",
+            input.len()
+        );
+
+        let output =
+            run_git(&["check-ignore", "--stdin", "-z"], root, Some(&input)).expect("git must run");
+        assert!(
+            output.status.success(),
+            "git check-ignore failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(output.stdout.len() > 32 * 1024, "stdout stayed small");
+        let reported = String::from_utf8_lossy(&output.stdout)
+            .split('\0')
+            .filter(|token| !token.is_empty())
+            .count();
+        assert_eq!(reported, names.len());
     }
 }

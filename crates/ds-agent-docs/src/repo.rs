@@ -37,6 +37,45 @@ pub fn norm_rel(value: &str) -> String {
     }
 }
 
+/// The current user's home directory.
+///
+/// `HOME` wins on Unix; Windows environments that only set `USERPROFILE`, or
+/// only `HOMEDRIVE`+`HOMEPATH`, still resolve instead of yielding an empty path.
+pub fn home_directory() -> PathBuf {
+    pick_home(
+        std::env::var_os("HOME"),
+        std::env::var_os("USERPROFILE"),
+        std::env::var_os("HOMEDRIVE"),
+        std::env::var_os("HOMEPATH"),
+    )
+}
+
+fn non_empty(value: Option<OsString>) -> Option<PathBuf> {
+    value.filter(|text| !text.is_empty()).map(PathBuf::from)
+}
+
+fn pick_home(
+    home: Option<OsString>,
+    user_profile: Option<OsString>,
+    drive: Option<OsString>,
+    path: Option<OsString>,
+) -> PathBuf {
+    if let Some(found) = non_empty(home) {
+        return found;
+    }
+    if let Some(found) = non_empty(user_profile) {
+        return found;
+    }
+    match (non_empty(drive), non_empty(path)) {
+        (Some(drive), Some(path)) => {
+            let mut joined = drive.into_os_string();
+            joined.push(path.as_os_str());
+            PathBuf::from(joined)
+        }
+        _ => PathBuf::new(),
+    }
+}
+
 /// Absolute path with every existing symlink resolved, tolerating a missing
 /// tail (equivalent to Python's `Path.resolve()` / `os.path.realpath`).
 pub fn resolve_lenient(path: &Path) -> PathBuf {
@@ -391,6 +430,34 @@ mod tests {
         )
         .expect("git commit must run");
         assert!(output.status.success(), "git commit failed");
+    }
+
+    #[test]
+    fn pick_home_prefers_home_and_falls_back_to_windows_variables() {
+        let home = |value: &str| Some(OsString::from(value));
+        assert_eq!(
+            pick_home(
+                home("/home/alice"),
+                home(r"C:\Users\alice"),
+                home("C:"),
+                home(r"\Users\alice")
+            ),
+            PathBuf::from("/home/alice")
+        );
+        assert_eq!(
+            pick_home(None, home(r"C:\Users\alice"), None, None),
+            PathBuf::from(r"C:\Users\alice")
+        );
+        assert_eq!(
+            pick_home(None, None, home("C:"), home(r"\Users\bob")),
+            PathBuf::from(r"C:\Users\bob")
+        );
+        assert_eq!(pick_home(None, None, home("C:"), None), PathBuf::new());
+        assert_eq!(
+            pick_home(home(""), None, None, None),
+            PathBuf::new(),
+            "an empty HOME is skipped rather than used as the home path"
+        );
     }
 
     #[test]

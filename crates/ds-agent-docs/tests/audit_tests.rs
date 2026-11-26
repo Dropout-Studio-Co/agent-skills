@@ -794,6 +794,51 @@ fn catches_broken_links_paths_and_manifest_targets() {
 }
 
 #[test]
+fn mdc_cfg_ini_and_env_references_classify_as_stale() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "AGENTS.md",
+        &format!(
+            "{DEFAULT_AGENTS}\n- [style](rules/style.mdc)\n- [config](config/app.env)\n- `settings/app.cfg`\n- `settings/app.ini`\n"
+        ),
+    );
+    fixture.commit();
+    let stale = stale_refs(&fixture.ok_audit(&[]));
+    for bad in [
+        "rules/style.mdc",
+        "config/app.env",
+        "settings/app.cfg",
+        "settings/app.ini",
+    ] {
+        assert!(
+            stale.contains(&bad.to_string()),
+            "{bad} missing from {stale:?}"
+        );
+    }
+}
+
+#[test]
+fn stated_no_push_rules_use_a_worktree() {
+    let fixture = Fixture::new();
+    for rule in [
+        "No direct commits to main",
+        "Never pushing directly to main",
+    ] {
+        fixture.write("AGENTS.md", &format!("{DEFAULT_AGENTS}\n{rule}.\n"));
+        fixture.commit();
+        let data = fixture.ok_audit(&[]);
+        assert_eq!(
+            data["delivery"]["action"], "worktree",
+            "{rule} must use a worktree: {data}"
+        );
+        assert_eq!(
+            data["delivery"]["reason"], "default branch with a written PR rule",
+            "{rule}"
+        );
+    }
+}
+
+#[test]
 fn high_precision_avoids_common_false_positives() {
     let fixture = Fixture::new();
     base_manifest(&fixture);

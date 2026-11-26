@@ -24,10 +24,10 @@ use super::discover::{Sources, join_python, splitlines};
 const SHELLS: [&str; 5] = ["sh", "bash", "zsh", "shell", "console"];
 
 /// Extensions that make a bare path look like a real file reference.
-const KNOWN_EXT: [&str; 26] = [
+const KNOWN_EXT: [&str; 30] = [
     ".md", ".py", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".json", ".jsonc", ".yaml", ".yml",
     ".toml", ".sh", ".bash", ".zsh", ".svelte", ".css", ".html", ".rs", ".go", ".rb", ".php",
-    ".sql", ".xml", ".txt",
+    ".sql", ".xml", ".txt", ".mdc", ".cfg", ".ini", ".env",
 ];
 
 /// Package-manager subcommands that are not user scripts.

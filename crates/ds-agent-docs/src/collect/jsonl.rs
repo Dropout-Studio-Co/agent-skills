@@ -21,7 +21,7 @@ use super::classify::{
 };
 use super::{HumanItem, ScanStats, Session, SessionInput};
 use crate::redact::redact;
-use crate::repo::Repo;
+use crate::repo::{Repo, home_directory};
 
 /// Sessions plus their format-drift counters.
 pub type SessionScan = (Vec<Session>, ScanStats);
@@ -34,12 +34,6 @@ fn system_time_secs(time: SystemTime) -> f64 {
     }
 }
 
-fn home_directory() -> PathBuf {
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_default()
-}
-
 /// Claude Code's configuration directory.
 fn claude_home() -> PathBuf {
     match std::env::var_os("CLAUDE_CONFIG_DIR") {
@@ -48,18 +42,23 @@ fn claude_home() -> PathBuf {
     }
 }
 
+/// Expand a leading `~`, accepting both `~/` and the Windows `~\` separator.
 fn expand_user(path: &Path) -> PathBuf {
+    expand_user_with(path, &home_directory())
+}
+
+fn expand_user_with(path: &Path, home: &Path) -> PathBuf {
     let text = path.to_string_lossy();
-    if let Some(rest) = text.strip_prefix('~') {
-        let home = home_directory();
-        if rest.is_empty() {
-            return home;
-        }
-        if let Some(after) = rest.strip_prefix('/') {
-            return home.join(after);
-        }
+    let Some(rest) = text.strip_prefix('~') else {
+        return path.to_path_buf();
+    };
+    if rest.is_empty() {
+        return home.to_path_buf();
     }
-    path.to_path_buf()
+    match rest.strip_prefix('/').or_else(|| rest.strip_prefix('\\')) {
+        Some(tail) => home.join(tail),
+        None => path.to_path_buf(),
+    }
 }
 
 fn path_string(path: &Path) -> String {
@@ -363,4 +362,36 @@ pub fn extra_sessions(repo: &Repo, extra_dirs: &[PathBuf], cutoff: f64) -> Sessi
         }
     }
     scan_targets(&targets, "extra", repo)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn expand_user_accepts_forward_and_windows_separators() {
+        let home = Path::new("/srv/alice");
+        assert_eq!(
+            expand_user_with(Path::new("~/state/sessions"), home),
+            PathBuf::from("/srv/alice/state/sessions")
+        );
+        assert_eq!(
+            expand_user_with(Path::new(r"~\state\sessions"), home),
+            PathBuf::from("/srv/alice/state\\sessions")
+        );
+        assert_eq!(expand_user_with(Path::new("~"), home), home.to_path_buf());
+        assert_eq!(
+            expand_user_with(Path::new("/absolute/path"), home),
+            PathBuf::from("/absolute/path")
+        );
+        assert_eq!(
+            expand_user_with(Path::new("relative/path"), home),
+            PathBuf::from("relative/path")
+        );
+        assert_eq!(
+            expand_user_with(Path::new("~alice/notes"), home),
+            PathBuf::from("~alice/notes"),
+            "a bare user name is not an expansion this collector performs"
+        );
+    }
 }
