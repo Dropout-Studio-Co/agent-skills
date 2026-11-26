@@ -54,11 +54,11 @@ Report each reclaimable byte exactly once:
 
 ## 4. Plain-Language Translation
 
-The report must be readable by someone who does not know systems jargon. Translate each item into three parts:
+The report must be readable by someone who does not know systems jargon. Translate each item into the three report table columns:
 
-| Part | Write it like this | Avoid |
+| Report column | Write it like this | Avoid |
 | --- | --- | --- |
-| **What to delete** | The recognizable name and its location, e.g. "Chrome's saved web page cache" | Raw paths alone, checksums, inode numbers |
+| **What to delete** | The recognizable name paired with a concise location or path, e.g. "Chrome's saved web page cache (`~/Library/Caches/Google/Chrome`)" | Raw paths alone, checksums, inode numbers |
 | **What it is** | One plain sentence: "Temporary copies of web pages Chrome keeps to load sites faster; Chrome rebuilds them automatically." | "Blob store", "inode", "CoW clone", "LRU eviction" |
 | **Space freed** | A human size: "1.4 GB" | Byte counts, `du` output columns |
 
@@ -71,4 +71,4 @@ Terms to translate:
 - "log" → "a record of past activity the app no longer needs".
 - "recycle bin" / "trash" → "files you already deleted that still take up space until the bin is emptied".
 
-Keep the list compact: one item per block, largest first, with the three parts clearly labeled. Do not add technical asides or command output.
+Keep the list compact: write one item per row of the report table, largest first, with the three columns clearly filled. Keep every cell to a single line of plain language with no technical asides or command output, and defer table layout, alignment, sorting, and sanitization details to [`SKILL.md`](../SKILL.md).
