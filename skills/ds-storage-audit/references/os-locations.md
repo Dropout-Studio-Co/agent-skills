@@ -83,7 +83,7 @@ Every Pass B probe stays on one filesystem (`-x` / `-xdev`) and caps depth (`-d 
 - JS: `~/.npm/_cacache/`, `~/.pnpm-store/`, `~/.cache/yarn/`, `~/.bun/install/cache/`, `~/.cache/deno/`, `~/.cache/ms-playwright/`, `~/.cache/Cypress/`.
 - Python: `~/.cache/pip/`, `~/.cache/uv/`, `~/.cache/pypoetry/`, `~/.cache/conda/`, `~/miniconda3/pkgs/`.
 - Native and JVM: `~/.cargo/registry/cache/`, `~/.cache/go-build/`, `~/.gradle/caches/`, `~/.m2/repository/` (cache only), `~/.cache/JetBrains/`.
-- Android: `~/.android/cache/`, `~/.gradle/`, `~/Android/Sdk/.temp/`, `~/Android/Sdk/system-images/` (only unused images the user confirms).
+- Android: `~/.android/cache/`, `~/Android/Sdk/.temp/`, `~/Android/Sdk/system-images/` (only unused images the user confirms).
 - Containers: `docker system df` for reclaimable build cache and dangling images; `podman system df` when Podman is present. **Never recommend an active volume or the raw storage file.**
 - AI and ML: `~/.cache/huggingface/`, `~/.cache/torch/`, `~/.ollama/models/` (only clearly unused model downloads).
 
@@ -105,14 +105,14 @@ Every Pass B probe stays on one filesystem (`-x` / `-xdev`) and caps depth (`-d 
 - `C:\Windows\Logs\`, `%LOCALAPPDATA%\CrashDumps\` — logs and crash dumps.
 - `%USERPROFILE%\Downloads\` — leftover installers by extension `.msi`, `.exe`, `.iso`, `.msix`, `.zip` only when clearly a setup installer.
 - `C:\hiberfil.sys`, `C:\pagefile.sys`, `C:\swapfile.sys` — **never recommend removing these**; offer the supported settings path instead.
-- `Get-Volume` — free/total per local volume; `Get-ChildItem -Directory | Measure-Object -Property Length -Sum` sizes folders.
+- `Get-Volume` — free/total per local volume; size each folder by summing `Length` only for non-reparse-point, non-offline files inside it (for example `Get-ChildItem -LiteralPath <folder> -Recurse -File -Force -ErrorAction SilentlyContinue | Where-Object { -not ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -and -not ($_.Attributes -band ([IO.FileAttributes]::Offline -bor 0x00400000)) } | Measure-Object Length -Sum`).
 
 **Browsers — cache folders only, never profiles, cookies, history, bookmarks, or passwords**
 - Chrome/Chromium/Edge/Brave: `%LOCALAPPDATA%\Google\Chrome\User Data\Default\Cache\`, `%LOCALAPPDATA%\Chromium\User Data\Default\Cache\`, `%LOCALAPPDATA%\Microsoft\Edge\User Data\Default\Cache\`, `%LOCALAPPDATA%\BraveSoftware\Brave-Browser\User Data\Default\Cache\`.
 - Firefox: `%LOCALAPPDATA%\Mozilla\Firefox\Profiles\*\cache2\`.
 
 **Apps (caches only)**
-- Electron and messaging: `%APPDATA%\Slack\Cache\`, `%APPDATA%\discord\Cache\`, `%APPDATA%\Microsoft\Teams\Cache\`, `%LOCALAPPDATA%\Microsoft\Teams\`.
+- Electron and messaging: `%APPDATA%\Slack\Cache\`, `%APPDATA%\discord\Cache\`, `%APPDATA%\Microsoft\Teams\Cache\`, `%LOCALAPPDATA%\Packages\MSTeams_*\LocalCache\`.
 - Media: `%LOCALAPPDATA%\Spotify\Data\`, `%LOCALAPPDATA%\Microsoft\Windows\Explorer\thumbcache_*.db`.
 
 **Developer, SDK, and package caches**
@@ -120,16 +120,16 @@ Every Pass B probe stays on one filesystem (`-x` / `-xdev`) and caps depth (`-d 
 - Xcode is not applicable; Apple tooling runs only on macOS.
 - Python: `%LOCALAPPDATA%\pip\Cache\`, `%LOCALAPPDATA%\uv\cache\`, `%LOCALAPPDATA%\pypoetry\Cache\`, `%USERPROFILE%\miniconda3\pkgs\`.
 - Native and JVM: `%USERPROFILE%\.cargo\registry\cache\`, `%LOCALAPPDATA%\go-build\`, `%USERPROFILE%\.gradle\caches\`, `%USERPROFILE%\.m2\repository\` (cache only), `%LOCALAPPDATA%\JetBrains\`.
-- Android: `%USERPROFILE%\.android\cache\`, `%USERPROFILE%\.gradle\`, `%LOCALAPPDATA%\Android\Sdk\.temp\`.
+- Android: `%USERPROFILE%\.android\cache\`, `%LOCALAPPDATA%\Android\Sdk\.temp\`.
 - Containers: `docker system df` for reclaimable build cache and dangling images; `podman system df` when Podman is present. **Never recommend an active volume or the virtual disk file.**
 - AI and ML: `%USERPROFILE%\.cache\huggingface\`, `%USERPROFILE%\.cache\torch\`, `%USERPROFILE%\.ollama\models\` (only clearly unused model downloads).
 
 **Pass B probe (bounded)**
-- `Get-ChildItem -Path C:\ -Directory -Force -ErrorAction SilentlyContinue | ForEach-Object { [PSCustomObject]@{ Path = $_.FullName; GB = [math]::Round((Get-ChildItem -LiteralPath $_.FullName -Recurse -File -Force -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum / 1GB, 1) } } | Sort-Object GB -Descending | Select-Object -First 20`.
-- `Get-ChildItem -Path $env:USERPROFILE -Directory -Force -ErrorAction SilentlyContinue | ForEach-Object { [PSCustomObject]@{ Path = $_.FullName; GB = [math]::Round((Get-ChildItem -LiteralPath $_.FullName -Recurse -File -Force -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum / 1GB, 1) } } | Sort-Object GB -Descending | Select-Object -First 20`.
+- `Get-ChildItem -Path C:\ -Directory -Force -ErrorAction SilentlyContinue | Where-Object { -not ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) } | ForEach-Object { [PSCustomObject]@{ Path = $_.FullName; GB = [math]::Round((Get-ChildItem -LiteralPath $_.FullName -Recurse -Depth 3 -File -Force -ErrorAction SilentlyContinue | Where-Object { -not ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -and -not ($_.Attributes -band ([IO.FileAttributes]::Offline -bor 0x00400000)) } | Measure-Object Length -Sum).Sum / 1GB, 1) } } | Sort-Object GB -Descending | Select-Object -First 20`.
+- `Get-ChildItem -Path $env:USERPROFILE -Directory -Force -ErrorAction SilentlyContinue | Where-Object { -not ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) } | ForEach-Object { [PSCustomObject]@{ Path = $_.FullName; GB = [math]::Round((Get-ChildItem -LiteralPath $_.FullName -Recurse -Depth 3 -File -Force -ErrorAction SilentlyContinue | Where-Object { -not ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -and -not ($_.Attributes -band ([IO.FileAttributes]::Offline -bor 0x00400000)) } | Measure-Object Length -Sum).Sum / 1GB, 1) } } | Sort-Object GB -Descending | Select-Object -First 20`.
 
 ## 5. WSL and Secondary Local Volumes
 
 - **WSL:** run the Linux section inside the distro for caches, Package manager caches, logs, and trash; the distro's `ext4.vhdx` is **never** a safe recommendation. On the Windows side, check `%TEMP%`, `%LOCALAPPDATA%\Temp`, browser caches, Package manager caches, and `%USERPROFILE%\Downloads\` installers.
-- **Secondary or external local volumes:** mount read-only if possible, then run a bounded Pass B rooted at the mount (`du -x -d 3 <mount>`, `-x` keeps the scan on that volume). Include only local writable filesystems the user owns; never scan network shares, cloud mounts, or FUSE filesystems unless explicitly targeted.
+- **Secondary or external local volumes:** inspect only volumes that are already mounted and locally writable; never mount, remount, or unmount any volume. Run a bounded Pass B rooted at the mount (`du -x -d 3 <mount>`, `-x` keeps the scan on that volume). Include only local writable filesystems the user owns; never scan network shares, cloud mounts, or FUSE filesystems unless explicitly targeted.
 - **Time Machine / backup destinations:** list sizes only. Never recommend removing a backup volume's contents.

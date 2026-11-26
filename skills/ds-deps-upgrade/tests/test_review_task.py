@@ -283,6 +283,18 @@ class ProfileAndAgnosticComplianceTests(TaskCase):
         for sizing in ('docker system df', '25 MB', '1 MB', '-P'):
             self.assertIn(sizing, classification)
 
+        # Review round 1: only cache directories, never installed app trees or credential-bearing roots.
+        self.assertNotIn(r'%LOCALAPPDATA%\Microsoft\Teams\`', os_locations,
+                         'Teams Classic is an installed app directory, not a cache')
+        self.assertIsNone(re.search(r'~/\.gradle/(?!caches)', os_locations),
+                          'Gradle cleanup must stay scoped to caches/, never the bare ~/.gradle/')
+        self.assertIsNone(re.search(r'%USERPROFILE%\.gradle\\(?!caches)', os_locations),
+                          'Gradle cleanup must stay scoped to caches/, never the bare %USERPROFILE%\\.gradle\\')
+        self.assertNotIn('mount read-only', os_locations.lower())
+        for window_bound in ('-Depth 3', 'ReparsePoint', 'Offline'):
+            self.assertIn(window_bound, os_locations,
+                          'Windows Pass B must be depth-bounded and skip junctions and cloud-only placeholders')
+
         repo_root = os.path.dirname(SKILLS)
         readme = os.path.join(repo_root, 'README.md')
         if os.path.isfile(readme):

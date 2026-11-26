@@ -39,7 +39,7 @@ Walk the OS, user, app, browser, developer, container, SDK, package, and install
 
 ### Pass B — bounded whole-disk discovery
 
-Run a top-down, depth-limited scan of the local filesystems in scope to catch large non-standard candidates outside the checklist — for example an old project export, an abandoned virtual-machine image, or a forgotten archive:
+Run a top-down, depth-limited scan of the local filesystems in scope to catch large non-standard candidates outside the checklist — for example a stale build cache in a non-standard folder, an orphaned log directory, or a leftover setup installer:
 
 - Stay on one filesystem (`-x` or `-xdev`), cap depth (`-d 3` or `--max-depth=3`), and aggregate by directory rather than listing individual files.
 - Compare what you find against the safe categories and the hard exclusions in [`references/safety-classification.md`](references/safety-classification.md). Large alone is never enough to recommend something.
