@@ -123,7 +123,7 @@ def render_block(cfg):
     planner, reviewer = cfg["routes"][plan["route"]], cfg["routes"][sec["route"]]; other = [value for value in cfg["allowed_efforts"] if value != cond["effort"]]
     non_cond = "/".join(dict.fromkeys(r["label"] for r in (imp, reviewer) if r["label"] != cond["label"]))
     ui = cfg["ui_gates"]; ui_routes = [cfg["routes"][spec["route"]] for spec in ui["plan"]]; ui_names = " → ".join(r["label"] if r.get("model") is None else "%s `%s`" % (r["label"], r["model"]) for r in ui_routes)
-    ui_plan = effort_text(ui["plan"][0], TIERS["plan"], False) + (", fallback %s" % effort_text(ui["plan"][-1], TIERS["plan"], False) if len(ui["plan"]) > 1 and effort_text(ui["plan"][-1], TIERS["plan"], False) != effort_text(ui["plan"][0], TIERS["plan"], False) else "")
+    ui_plan, ui_review = (effort_text(specs[0], TIERS[gate], False) + (", fallback %s" % effort_text(specs[-1], TIERS[gate], False) if len(specs) > 1 and effort_text(specs[-1], TIERS[gate], False) != effort_text(specs[0], TIERS[gate], False) else "") for gate, specs in (("plan", ui["plan"]), ("review", ui["review"])))
     rows = [
         "Four roles, one model each, no substitution:", "",
         "| Role | Model and effort (%s only) | Path |" % "/".join(cfg["allowed_efforts"]), "|---|---|---|",
@@ -134,7 +134,7 @@ def render_block(cfg):
         "",
         "- **Dynamic `driver_kind` failover:** call `orchestrator_capabilities`; use only live `providerInstanceId` serial IDs (never display names or emails). A child hitting `usage_limit` is `task_cancel`led and re-dispatched as a fresh `delegate_task` on the next live instance of the same `driver_kind`, model and effort: never cross a `driver_kind` or model, never ask. When every live pair is tried, log `blocked` (exit 3), record `STATUS: blocked external — <model> quota exhausted; waiting for reset` with `Routes tried:`, stop cleanly.",
         "- **Start check (MUST):** session must be %s at `%s` in T3 Code; any other model or effort stops. %s never conducts: runs only its brief, no gate, premerge, git mutation or PR." % (cond["label"], cond["effort"], non_cond or imp["label"]),
-        "- **Frontend & UI routing (`--ui`, plan and review only):** with `--ui` and `Scope: ui` in the packet the gate uses this %d-tier chain in priority order: %s. A tier applies when a live `orchestrator_capabilities` instance of its `driver_kind` runs its model; a `ui_gates` route with zero live instances is skipped automatically. UI plan: %s; UI review %s. Non-UI gates keep the single route above. If every UI tier is exhausted, log `blocked` (exit 3) and never use another model." % (len(ui_routes), ui_names, ui_plan, effort_text(ui["review"][0], TIERS["plan"], False)),
+        "- **Frontend & UI routing (`--ui`, plan and review only):** with `--ui` and `Scope: ui` in the packet the gate uses this %d-tier chain in priority order: %s. A tier applies when a live `orchestrator_capabilities` instance of its `driver_kind` runs its model; a `ui_gates` route with zero live instances is skipped automatically. UI plan: %s; UI review %s. Non-UI gates keep the single route above. If every UI tier is exhausted, log `blocked` (exit 3) and never use another model." % (len(ui_routes), ui_names, ui_plan, ui_review),
     ]
     return "\n".join([START] + rows + [END])
 def render_skill(text, cfg):
@@ -177,7 +177,9 @@ def main(argv):
         if cmd == "check":
             drifted = [path for path, current, wanted in inspect()[1] if current != wanted]; return (sys.stderr.write("routing_lib: drifted: %s\n" % ", ".join(drifted)), 1)[1] if drifted else 0
         if cmd == "sync": sync(); return 0
-        if cmd == "check-triggers" and len(argv) in (3, 4): print(",".join(parse_triggers(argv[2], argv[3] if len(argv) == 4 else ""))); return 0
+        if cmd == "check-triggers":
+            if len(argv) != 4 or not argv[3]: raise ValueError("check-triggers needs GATE and a non-empty RAW")
+            print(",".join(parse_triggers(argv[2], argv[3]))); return 0
         if cmd == "opencode-config": text = render_opencode(read(os.path.join(SKILL_DIR, "opencode", "opencode.json")), load()); sys.stdout.write(text if text.endswith("\n") else text + "\n"); return 0
         cfg = load()
         if cmd == "impl-tsv": imp = implementer(cfg); print(tsv(imp["route"], imp["provider"], imp["model"], imp["model_id"], imp["effort"], imp["pinned"], imp["driver_kind"], imp["max_cost_usd"])); return 0

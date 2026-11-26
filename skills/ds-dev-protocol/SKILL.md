@@ -52,7 +52,7 @@ Four roles, one model each, no substitution:
 
 **Risk tier.** Set the tier from the request and the code it will touch, writing it to `PLAN.md` (step 3); when in doubt, pick the higher. A repo tier or risk-floor command applies to the touched paths before the first plan, goes in `facts.md`, reruns at each re-check, and the tier is never below it.
 
-**Tier re-check (MUST, before any review gate and again before merge):** re-apply the rules to the actual diff. A High area, behavior change in a task marked Low or a new effort trigger raises the tier: record why, rerun every gate and a fresh Planner plan, and never lower a tier. `EVID/tier-recheck-<head-sha>.md` (full 40-char SHA) holds the diff stat, changed paths, each rule's result, `Tier: <low|medium|high>` and `Effort-Triggers: none | <tags>`.
+**Tier re-check (MUST, before any review gate and again before merge):** re-apply the rules to the actual diff. A High area or a behavior change in a task marked Low raises the tier: record why, rerun every gate and a fresh Planner plan, and never lower a tier. A new effort trigger raises only that gate's effort through `--high-effort`: it never changes the risk tier and needs no fresh Planner plan. `EVID/tier-recheck-<head-sha>.md` (full 40-char SHA) holds the diff stat, changed paths, each rule's result, `Tier: <low|medium|high>` and `Effort-Triggers: none | <tags>`.
 
 - **High:** auth, sessions, permissions, tenancy, payments, billing, webhooks, money, inventory, migrations, stored data, secrets, signing/entitlements, CI/CD, deploy, infrastructure or legal text.
 - **Medium:** ordinary product code that is not High.

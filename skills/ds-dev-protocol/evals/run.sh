@@ -81,7 +81,7 @@ record() {
     --evid|--tier|--record|--child-thread|--parent-thread|--gate|--diff|--high-effort)
       [ $# -ge 2 ] && [ -n "$2" ] || die "$1 needs a value"
       case $1 in --evid) evid=$2 ;; --tier) tier=$2 ;; --record) rec=$2 ;; --gate) gate=$2 ;;
-        --child-thread) child=$2 ;; --parent-thread) parent=$2 ;; --diff) diff=$2 ;; --high-effort) high_effort=$2 ;; esac
+        --child-thread) child=$2 ;; --parent-thread) parent=$2 ;; --diff) diff=$2 ;; --high-effort) high_effort=${high_effort:+$high_effort,}$2 ;; esac
       shift ;;
     --trigger) trigger=1 ;;
     --force) force=1 ;;

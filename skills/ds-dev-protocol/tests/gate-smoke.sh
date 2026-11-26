@@ -103,7 +103,7 @@ printf 'feat\n' > "$R/g.txt"; git -C "$R" add g.txt; git -C "$R" commit -qm feat
 H=$(git -C "$R" rev-parse HEAD); B=$(git -C "$R" merge-base origin/main "$H")
 new_ev() { E=$T/$1; rm -rf "$E"; mkdir -p "$E"; }
 # pkt GATE KEY [BASE]: packet with the gate, tier, key, HEAD, optional merge-base and the exact source body.
-pkt() { { printf 'Gate: %s\nkey: %s\nhead: %s\nTier: low\nTier: medium\nTier: high\n' "$1" "$2" "$H"; [ -z "${3:-}" ] || printf 'base: %s\n' "$3"
+pkt() { { printf 'Gate: %s\nTier: low\nTier: medium\nTier: high\n' "$1"; [ -z "${4:-}" ] || printf 'Effort: %s\n' "$4"; printf 'key: %s\nhead: %s\n' "$2" "$H"; [ -z "${3:-}" ] || printf 'base: %s\n' "$3"
   if [ "$1" = plan ]; then cat "$E/facts.md"; elif [ "$1" = epoch ]; then cat "$E/epoch.md"; else git -C "$R" diff --no-color "$3" HEAD; fi; } > "$E/packet-$1.md"; }
 rec_review() { printf '{"gate":"%s","head_sha":"%s","verdict":"%s","summary":"ok","findings":%s}\n' "$1" "$2" "$3" "${4:-[]}" > "$E/rec.json"; }
 rec_plan() { printf '{"gate":"plan","tier":"%s","acceptance_criteria":["a"],"design":"d","files":["f"],"tests":["t"],"risks":[],"rollback":"r"}\n' "$1" > "$E/rec.json"; }
@@ -175,6 +175,14 @@ fresh; new_ev sh; pkt security "$H" "$B"; rec_review security "$H" pass; opusenv
 g "$E" security high --high-effort attack-surface --record "$E/rec.json"; chk "security --high-effort attack-surface exit0 effort=high with triggers" bash -c "[ $GRC = 0 ] && tail -1 '$E/gates.log' | grep -q '\"effort\": \"high\"' && grep -q '\"attack-surface\"' '$E/security-$H.json'"
 fresh; new_ev sec; pkt security "$H" "$B"; rec_review security "$H" pass; SW=$(rt effort security high); opusenv "$SW"; export FAKE_RECORD=$E/rec.json
 g "$E" security high --record "$E/rec.json"; chk "security high exit0 effort=$SW" bash -c "[ $GRC = 0 ] && test -s '$E/security-$H.json' && tail -1 '$E/gates.log' | grep -q '\"effort\": \"$SW\"'"
+fresh; new_ev eh1; pkt security "$H" "$B" "high (attack-surface)"; rec_review security "$H" pass; opusenv "$(rt effort security high)"; export FAKE_RECORD=$E/rec.json
+g "$E" security high --record "$E/rec.json"; chk "packet Effort high (attack-surface) with child medium exit2" bash -c "[ $GRC = 2 ] && grep -q 'packet Effort header' '$E/gates.log' && ! ls '$E'/security-*.json 2>/dev/null"
+fresh; new_ev eh2; pkt review "$H" "$B" "medium"; rec_review review "$H" pass; opusenv high; export FAKE_RECORD=$E/rec.json
+g "$E" review high --high-effort diff-large --record "$E/rec.json"; chk "packet Effort medium with verified high exit2" bash -c "[ $GRC = 2 ] && grep -q 'packet Effort header' '$E/gates.log' && ! ls '$E'/review-*.json 2>/dev/null"
+fresh; new_ev eh3; pkt security "$H" "$B" "high (attack-surface)"; rec_review security "$H" pass; opusenv high; export FAKE_RECORD=$E/rec.json
+g "$E" security high --high-effort attack-surface --record "$E/rec.json"; chk "matching packet Effort high (attack-surface) exit0" bash -c "[ $GRC = 0 ] && test -s '$E/security-$H.json' && tail -1 '$E/gates.log' | grep -q '\"attack-surface\"'"
+fresh; new_ev eh4; pkt security "$H" "$B"; rec_review security "$H" pass; opusenv high; export FAKE_RECORD=$E/rec.json
+g "$E" security high --high-effort attack-surface --record "$E/rec.json"; chk "packet without Effort header still exit0" bash -c "[ $GRC = 0 ] && test -s '$E/security-$H.json'"
 fresh; new_ev slope; pkt security "$H" "$B"; rec_review security "$H" pass; export FAKE_RECORD=$E/rec.json; g "$E" security low --record "$E/rec.json"; chk "security low exit2 no t3" bash -c "[ $GRC = 2 ] && [ ! -s '$T/t3.calls' ]"
 fresh; new_ev smed; pkt security "$H" "$B"; rec_review security "$H" pass; opusenv "$(rt effort review medium)"; export FAKE_RECORD=$E/rec.json; g "$E" security medium --record "$E/rec.json"; chk "security medium exit2 no t3" bash -c "[ $GRC = 2 ] && [ ! -s '$T/t3.calls' ] && grep -q 'security gate requires tier high' '$T/out'"
 fresh; new_ev rej; printf '{}' > "$E/rec.json"; : > "$T/t3.calls"

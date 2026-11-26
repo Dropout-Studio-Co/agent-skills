@@ -18,9 +18,8 @@ def git(*argv):
     try: return subprocess.run(("git",) + argv, capture_output=True, text=True).stdout.strip()
     except OSError: return None
 def load_rows(evid):
-    try: lines = open(os.path.join(evid, "gates.log"), errors="replace").read().splitlines()
+    try: return [row for row in map(parse, open(os.path.join(evid, "gates.log"), errors="replace").read().splitlines()) if isinstance(row, dict)]
     except OSError: return []
-    return [row for row in map(parse, lines) if isinstance(row, dict)]
 def unwrap(value):
     if isinstance(value, str): value = parse(value)
     if isinstance(value, list): value = next((item for item in value if isinstance(item, dict)), {})
@@ -28,8 +27,7 @@ def unwrap(value):
     for key in ("structuredContent", "result", "data"):
         if isinstance(value.get(key), dict): return unwrap(value[key])
     parsed = [parse(item.get("text")) if isinstance(item, dict) else None for item in value.get("content") or []]
-    nested = next((entry for entry in parsed if isinstance(entry, dict)), None)
-    return unwrap(nested) if nested is not None else value
+    nested = next((entry for entry in parsed if isinstance(entry, dict)), None); return unwrap(nested) if nested is not None else value
 def t3(tool, payload):
     node = os.environ.get("T3_ACP_MCP_NODE", "").strip(); entry = os.environ.get("T3_ACP_MCP_ENTRYPOINT", "").strip()
     if not node: return None
@@ -98,8 +96,7 @@ def validate(schema, value, path="$"):
     if schema.get("type") == "object" or schema.get("required"):
         if not isinstance(value, dict): return path + " must be an object"
         problems = [path + " missing " + name for name in schema.get("required", []) if name not in value]; problems += ["%s unexpected key %s" % (path, name) for name in value if schema.get("additionalProperties") is False and name not in (schema.get("properties") or {})]
-        problems += [validate(sub, value[key], path + "." + key) for key, sub in (schema.get("properties") or {}).items() if key in value]
-        return next((problem for problem in problems if problem), "")
+        problems += [validate(sub, value[key], path + "." + key) for key, sub in (schema.get("properties") or {}).items() if key in value]; return next((problem for problem in problems if problem), "")
     if schema.get("type") == "array": return path + " must be an array" if not isinstance(value, list) else next((problem for problem in (validate(schema.get("items") or {}, item, "%s[%d]" % (path, index)) for index, item in enumerate(value)) if problem), "")
     if schema.get("type") == "string" and not isinstance(value, str): return path + " must be a string"
     if schema.get("type") == "string" and "enum" in schema and value not in schema["enum"]: return "%s must be one of %s" % (path, schema["enum"])
@@ -116,8 +113,7 @@ def log_metrics(evid, args, payload, model, round_no):
 def main():
     parser = argparse.ArgumentParser(add_help=False)
     for name in "evid gate tier record child-thread parent-thread key expected-head facts-sha base-ref base-sha diff-sha repo skill trigger ui high-effort reason".split(): parser.add_argument("--" + name, default="")
-    parser.add_argument("--log-invalid", action="store_true")
-    args = parser.parse_args(); rows = load_rows(args.evid); trigger = args.trigger.strip() not in ("", "0"); ui = args.ui.strip() not in ("", "0"); triggers = []
+    parser.add_argument("--log-invalid", action="store_true"); args = parser.parse_args(); rows = load_rows(args.evid); trigger = args.trigger.strip() not in ("", "0"); ui = args.ui.strip() not in ("", "0"); triggers = []
     def authorized(row):
         path = os.path.join(args.evid, os.path.basename(row.get("file") or "-")); return row.get("gate") == "epoch" and row.get("status") == "ok" and row.get("verdict") == "pass" and os.path.isfile(path) and row.get("file_sha256") == sha_file(path)
     epochs = [index for index, row in enumerate(rows) if authorized(row)]; plans = [index for index, row in enumerate(rows) if row.get("gate") == "plan" and row.get("status") == "ok"]
@@ -150,11 +146,15 @@ def main():
     info = thread_info(read, cfg, routing.option_keys(RCFG)); contracts = routing.gate_contracts(RCFG, args.gate, ui=ui)
     live_map = {c[1]: live_instances(caps, c[4], c[2]) for c in contracts}; inst_dk = {p["providerInstanceId"]: p["driverKind"] for p in caps["providers"] if isinstance(p, dict) and isinstance(p.get("providerInstanceId"), str) and isinstance(p.get("driverKind"), str)}
     hit = next((c for c in contracts if c[2] == info["model"] and info["instance"] in live_map[c[1]]), None) or next((c for c in contracts if c[2] == info["model"]), None) or next((c for c in contracts if live_map[c[1]]), contracts[0]); provider, route, model, option, dk = hit; live = live_map[route]
-    effort = routing.effort_for(RCFG, args.gate, args.tier, bool(triggers), ui=ui, route=route); chosen = info["options"].get(option) or ""
-    obs = dict(model=info["model"], effort=chosen, account=info["instance"], driver_kind=inst_dk.get(info["instance"], ""))
+    effort = routing.effort_for(RCFG, args.gate, args.tier, bool(triggers), ui=ui, route=route); chosen = info["options"].get(option) or ""; obs = dict(model=info["model"], effort=chosen, account=info["instance"], driver_kind=inst_dk.get(info["instance"], ""))
+    htext = ""
+    try: htext = open(os.path.join(args.evid, "packet-%s.md" % args.gate), encoding="utf-8", errors="replace").read().split("key:", 1)[0]
+    except OSError: pass
+    hv = next((line.split(":", 1)[1].strip() for line in htext.splitlines() if line.startswith("Effort:")), None)
+    tags = [t.strip() for t in hv[6:-1].split(",") if t.strip()] if hv and hv.startswith("high (") and hv.endswith(")") else []
+    if hv is not None and ((effort == "high" and not (hv == "high" or (tags and all(t in triggers for t in tags)))) or (effort == "medium" and hv != "medium")): return stop(2, reason="packet Effort header %r does not match verified effort %s" % (hv, effort), **obs)
     def bad(reason):
-        prior = any(row.get("gate") == args.gate and row.get("key") == args.key and row.get("status") == "invalid" and str(row.get("reason", "")).startswith("invalid output") for row in rows[last_ok + 1:])
-        return stop(3, status="blocked", reason="invalid output after retry", **obs) if prior else stop(2, reason="invalid output: " + reason, **obs)
+        prior = any(row.get("gate") == args.gate and row.get("key") == args.key and row.get("status") == "invalid" and str(row.get("reason", "")).startswith("invalid output") for row in rows[last_ok + 1:]); return stop(3, status="blocked", reason="invalid output after retry", **obs) if prior else stop(2, reason="invalid output: " + reason, **obs)
     if not info["parent"] or info["parent"] != args.parent_thread: return stop(2, reason="child thread parent %r does not match --parent-thread" % (info["parent"],), **obs)
     if info["refusal"]: return stop(3, status="blocked", reason="safety refusal", **obs)
     if any(pattern in info["meta"] or pattern in info["notice"] for pattern in USAGE_PAT):

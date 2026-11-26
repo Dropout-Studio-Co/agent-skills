@@ -5,7 +5,7 @@ usage() { cat <<'EOF'
 usage: EVID=<dir> build-packet.sh <plan|review|security|epoch> <low|medium|high> [--high-effort <tags>] [--ui] [--base REF] [--diff FILE]
   plan/epoch: body EVID/facts.md or EVID/epoch.md
   review/security: git diff against origin/<base> (default origin/HEAD or origin/main), or --diff FILE
-  writes EVID/packet-<gate>.md; gate.sh binds its key, Gate:, Tier:, Effort:, merge-base, HEAD and exact source
+  writes EVID/packet-<gate>.md; gate.sh binds its key, Gate:, Tier:, optional Effort:, merge-base, HEAD and exact source
 EOF
 }
 die() { printf 'build-packet: %s\n' "$*" >&2; exit 2; }
