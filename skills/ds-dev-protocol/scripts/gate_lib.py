@@ -115,27 +115,27 @@ def log_metrics(evid, args, payload, model, round_no):
     except OSError: return
 def main():
     parser = argparse.ArgumentParser(add_help=False)
-    for name in "evid gate tier record child-thread parent-thread key expected-head facts-sha base-ref base-sha diff-sha repo skill trigger ui reason".split(): parser.add_argument("--" + name, default="")
+    for name in "evid gate tier record child-thread parent-thread key expected-head facts-sha base-ref base-sha diff-sha repo skill trigger ui high-effort reason".split(): parser.add_argument("--" + name, default="")
     parser.add_argument("--log-invalid", action="store_true")
-    args = parser.parse_args(); rows = load_rows(args.evid); trigger = args.trigger.strip() not in ("", "0"); ui = args.ui.strip() not in ("", "0")
+    args = parser.parse_args(); rows = load_rows(args.evid); trigger = args.trigger.strip() not in ("", "0"); ui = args.ui.strip() not in ("", "0"); triggers = []
     def authorized(row):
         path = os.path.join(args.evid, os.path.basename(row.get("file") or "-")); return row.get("gate") == "epoch" and row.get("status") == "ok" and row.get("verdict") == "pass" and os.path.isfile(path) and row.get("file_sha256") == sha_file(path)
     epochs = [index for index, row in enumerate(rows) if authorized(row)]; plans = [index for index, row in enumerate(rows) if row.get("gate") == "plan" and row.get("status") == "ok"]
-    epoch_start = epochs[-1] + 1 if epochs else 0; plan_start = max(epoch_start, plans[-1] + 1 if plans else 0)
-    last_ok = max((index for index, row in enumerate(rows) if row.get("gate") == args.gate and row.get("status") == "ok"), default=-1)
+    epoch_start = epochs[-1] + 1 if epochs else 0; plan_start = max(epoch_start, plans[-1] + 1 if plans else 0); last_ok = max((index for index, row in enumerate(rows) if row.get("gate") == args.gate and row.get("status") == "ok"), default=-1)
     used = sum(1 for index, row in enumerate(rows) if index >= plan_start and row.get("gate") == args.gate and row.get("status") == "ok"); total = sum(1 for index, row in enumerate(rows) if index >= epoch_start and row.get("gate") == args.gate and row.get("status") == "ok")
     round_no = len(plans) + 1 if args.gate == "plan" else used + 1
+    prior_fail = any(r.get("gate") == args.gate and r.get("status") == "ok" and r.get("verdict") == "fail" for r in rows[plan_start:]); reactive = args.gate in ("review", "security") and (bool(epochs) or (round_no >= 2 and prior_fail))
     def emit(**fields):
-        row = dict(ts=now(), task_id=os.path.basename(os.path.abspath(args.evid)), gate=args.gate, tier=args.tier, round=round_no, key=args.key, facts_sha256=args.facts_sha, base_ref=args.base_ref, base_sha=args.base_sha, diff_sha256=args.diff_sha, head_sha=args.expected_head, status="invalid", provenance_mode="", engine="t3-delegate", provider="", route="", model="", effort="", driver_kind="", ui=ui, session_id=args.child_thread, parent_thread_id=args.parent_thread, account="", input_tokens=0, output_tokens=0, cost_usd=0, verdict="", reason="", file="", file_sha256="")
+        row = dict(ts=now(), task_id=os.path.basename(os.path.abspath(args.evid)), gate=args.gate, tier=args.tier, round=round_no, key=args.key, facts_sha256=args.facts_sha, base_ref=args.base_ref, base_sha=args.base_sha, diff_sha256=args.diff_sha, head_sha=args.expected_head, status="invalid", provenance_mode="", engine="t3-delegate", provider="", route="", model="", effort="", effort_triggers=triggers, driver_kind="", ui=ui, session_id=args.child_thread, parent_thread_id=args.parent_thread, account="", input_tokens=0, output_tokens=0, cost_usd=0, verdict="", reason="", file="", file_sha256="")
         row.update(fields); open(os.path.join(args.evid, "gates.log"), "a").write(json.dumps(row, sort_keys=True) + "\n")
     def stop(code, **fields): emit(**fields); return code
     if args.log_invalid: return stop(2, reason=args.reason or "gate.sh refused")
     if ui and args.gate not in routing.UI_GATES: return stop(2, reason="--ui is valid on plan and review only")
-    try: RCFG = routing.load()
-    except ValueError as problem: return stop(2, reason="invalid routing.json: %s" % problem)
+    try: RCFG = routing.load(); triggers = routing.parse_triggers(args.gate, args.high_effort, legacy=trigger)
+    except ValueError as problem: return stop(2, reason="invalid routing.json or effort triggers: %s" % problem)
+    if reactive and "reactive-round" not in triggers: triggers.append("reactive-round")
     if args.gate == "epoch":
-        caps = [row for row in rows[epoch_start:] if row.get("gate") in ("review", "security") and row.get("status") == "blocked" and row.get("reason") == "round cap after re-plan"]
-        if not caps: return stop(2, reason="epoch needs a review/security round-cap block")
+        if not (caps := [row for row in rows[epoch_start:] if row.get("gate") in ("review", "security") and row.get("status") == "blocked" and row.get("reason") == "round cap after re-plan"]): return stop(2, reason="epoch needs a review/security round-cap block")
         if RANK.get(args.tier, 0) < RANK.get(caps[-1].get("tier", ""), 0): return stop(2, reason="epoch tier is below the blocked gate tier")
         if any(row.get("gate") == "epoch" and row.get("status") == "ok" and row.get("verdict") == "fail" for row in rows[epoch_start:]): return stop(3, status="blocked", reason="epoch denied for this block")
         if len(epochs) >= 2: return stop(3, status="blocked", reason="epoch ceiling: 2 authorized per task")
@@ -150,12 +150,11 @@ def main():
     info = thread_info(read, cfg, routing.option_keys(RCFG)); contracts = routing.gate_contracts(RCFG, args.gate, ui=ui)
     live_map = {c[1]: live_instances(caps, c[4], c[2]) for c in contracts}; inst_dk = {p["providerInstanceId"]: p["driverKind"] for p in caps["providers"] if isinstance(p, dict) and isinstance(p.get("providerInstanceId"), str) and isinstance(p.get("driverKind"), str)}
     hit = next((c for c in contracts if c[2] == info["model"] and info["instance"] in live_map[c[1]]), None) or next((c for c in contracts if c[2] == info["model"]), None) or next((c for c in contracts if live_map[c[1]]), contracts[0]); provider, route, model, option, dk = hit; live = live_map[route]
-    effort = routing.effort_for(RCFG, args.gate, args.tier, trigger or (args.gate == "review" and round_no >= 3), ui=ui, route=route); chosen = info["options"].get(option) or ""
+    effort = routing.effort_for(RCFG, args.gate, args.tier, bool(triggers), ui=ui, route=route); chosen = info["options"].get(option) or ""
     obs = dict(model=info["model"], effort=chosen, account=info["instance"], driver_kind=inst_dk.get(info["instance"], ""))
     def bad(reason):
         prior = any(row.get("gate") == args.gate and row.get("key") == args.key and row.get("status") == "invalid" and str(row.get("reason", "")).startswith("invalid output") for row in rows[last_ok + 1:])
-        if prior: return stop(3, status="blocked", reason="invalid output after retry", **obs)
-        return stop(2, reason="invalid output: " + reason, **obs)
+        return stop(3, status="blocked", reason="invalid output after retry", **obs) if prior else stop(2, reason="invalid output: " + reason, **obs)
     if not info["parent"] or info["parent"] != args.parent_thread: return stop(2, reason="child thread parent %r does not match --parent-thread" % (info["parent"],), **obs)
     if info["refusal"]: return stop(3, status="blocked", reason="safety refusal", **obs)
     if any(pattern in info["meta"] or pattern in info["notice"] for pattern in USAGE_PAT):
@@ -170,7 +169,8 @@ def main():
     if args.expected_head and git("status", "--porcelain", "--untracked-files=all"): return stop(2, reason="worktree is dirty after the gate run", **obs)
     if info["instance"] not in live: return stop(2, reason="child account %r is not a live %s instance" % (info["instance"], dk), **obs)
     if info["model"] != model: return stop(2, reason="child model is %r, expected %s" % (info["model"], model), **obs)
-    if chosen != effort: return stop(2, reason="child %s is %r, expected %s" % (option, chosen, effort), **obs)
+    if chosen != effort:
+        return stop(2, reason="child %s is missing (pass target.options.%s=%s), expected %s" % (option, option, effort, effort) if not chosen else "child %s is %r, expected %s" % (option, chosen, effort), **obs)
     for seen in info["seen"]:
         for field, expected, label in (("model", model, "model"), ("executed", model, "executed model"), ("effort", effort, option)):
             if seen[field] and seen[field] != expected: return stop(2, reason="observed %s is %r, expected %s" % (label, seen[field], expected), **obs)
@@ -190,7 +190,7 @@ def main():
     verdict = payload.get("verdict", "pass")
     if verdict == "pass" and any(isinstance(item, dict) and item.get("severity") == "important" for item in payload.get("findings") or []): return bad("verdict pass is invalid alongside an Important finding")
     name = "%s-%s.json" % (args.gate, args.key)
-    provenance = dict(provenance_mode="t3-verified", engine="t3-delegate", provider=provider, route=route, model=model, effort=effort, driver_kind=dk, ui=ui, session_id=args.child_thread, parent_thread_id=args.parent_thread, account=info["instance"], verified_at=now())
+    provenance = dict(provenance_mode="t3-verified", engine="t3-delegate", provider=provider, route=route, model=model, effort=effort, effort_triggers=triggers, driver_kind=dk, ui=ui, session_id=args.child_thread, parent_thread_id=args.parent_thread, account=info["instance"], verified_at=now())
     target = os.path.join(args.evid, name); open(target, "w").write(json.dumps({"structured_output": payload, "provenance": provenance}, indent=2, sort_keys=True) + "\n")
     usage = info["usage"]; count = lambda *keys: next((usage[key] for key in keys if isinstance(usage.get(key), (int, float)) and not isinstance(usage.get(key), bool)), 0)
     emit(status="ok", verdict=verdict, file=name, file_sha256=sha_file(target), input_tokens=count("inputTokens", "input_tokens"), output_tokens=count("outputTokens", "output_tokens"), cost_usd=count("costUsd", "cost_usd", "totalCostUsd"), provenance_mode="t3-verified", provider=provider, route=route, model=model, effort=effort, driver_kind=dk, account=info["instance"])

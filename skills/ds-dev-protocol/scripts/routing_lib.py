@@ -1,14 +1,11 @@
 #!/usr/bin/env python3
-"""routing_lib.py - the ds-dev-protocol routing source of truth reader/validator/syncer (stdlib only, Python 3.9+).
-routing.json holds every route, model, provider, option key, driver kind, cost cap, tier/trigger effort and the UI gate chains.
-This module validates it, derives roles, pinned specs and gate contracts, and syncs opencode/opencode.json and SKILL.md;
-paths are anchored to this file, and every error exits 2 without writing."""
+"""routing_lib.py - routing.json reader/validator/syncer for ds-dev-protocol (stdlib only, Python 3.9+)."""
 import json, math, os, re, sys, tempfile
 SKILL_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 START, END = "<!-- routing:start -->", "<!-- routing:end -->"
 GATES, MAX_BYTES, MAX_SKILL, MAX_DESC = ("plan", "review", "security", "epoch"), 65536, 25600, 450
-UI_GATES = ("plan", "review")
-TIERS = {"plan": ("low", "medium", "high"), "review": ("low", "medium", "high"), "security": ("high",), "epoch": ("medium", "high")}
+UI_GATES = ("plan", "review"); TIERS = {"plan": ("low", "medium", "high"), "review": ("low", "medium", "high"), "security": ("high",), "epoch": ("medium", "high")}
+TRIGGERS = {"plan": ("arch-trust-state", "scope-multi", "arch-ambiguous", "reactive-replan"), "review": ("diff-large", "contract-or-guard", "ui-overhaul", "reactive-round"), "security": ("attack-surface", "reactive-round"), "epoch": ()}; EFFORT_RANK = {"medium": 0, "high": 1}
 ROUTE_KEY, SHORT = re.compile(r"^[a-z0-9][a-z0-9_-]*$"), {"medium": "Med", "high": "High"}
 def read(path):
     if os.path.islink(path): raise ValueError("%s is a symlink" % os.path.basename(path))
@@ -19,8 +16,7 @@ def read(path):
     except UnicodeDecodeError: raise ValueError("%s is not UTF-8" % os.path.basename(path))
 def ident(value, what, slash=False):
     if not isinstance(value, str) or not value: raise ValueError("%s must be a non-empty string" % what)
-    if any(ord(ch) < 32 or ch.isspace() or ch == "#" for ch in value): raise ValueError("%s has whitespace, a control character or '#'" % what)
-    if slash and "/" in value: raise ValueError("%s must not contain '/'" % what)
+    if any(ord(ch) < 32 or ch.isspace() or ch == "#" for ch in value) or (slash and "/" in value): raise ValueError("%s has whitespace, a control character, '#' or '/'" % what)
     return value
 def label(value, what):
     if not isinstance(value, str) or not value.strip() or any(ord(ch) < 32 or ch in "'|`" for ch in value):
@@ -30,6 +26,22 @@ def effort(value, allowed, what):
     if not isinstance(value, str) or value not in allowed: raise ValueError("%s %r is not in allowed_efforts" % (what, value))
     return value
 def pending(route): return "model_id" not in route and route.get("model") is None and route.get("option_key") is None
+def check_efforts(spec, gate, allowed):
+    values = spec.get("efforts")
+    if not isinstance(values, dict) or set(values) != set(TIERS[gate]): raise ValueError("%s efforts must be %s" % (gate, "/".join(TIERS[gate])))
+    for tier, value in values.items(): effort(value, allowed, "%s %s effort" % (gate, tier))
+    if any(EFFORT_RANK[values[low]] > EFFORT_RANK[values[high]] for low, high in zip(TIERS[gate], TIERS[gate][1:])): raise ValueError("%s efforts must not fall across %s" % (gate, "/".join(TIERS[gate])))
+    if "trigger_effort" in spec: effort(spec["trigger_effort"], allowed, "%s trigger_effort" % gate)
+    if "trigger_effort" in spec and EFFORT_RANK[spec["trigger_effort"]] < max(EFFORT_RANK[value] for value in values.values()): raise ValueError("%s trigger_effort is below its tier efforts" % gate)
+def parse_triggers(gate, raw="", legacy=False):
+    if gate not in TRIGGERS: raise ValueError("unknown gate %s" % gate)
+    tags = (raw.split(",") if raw else []) + (["legacy-trigger"] if legacy else [])
+    if legacy and not TRIGGERS[gate]: raise ValueError("gate %s takes no trigger" % gate)
+    for pos, tag in enumerate(tags):
+        if not tag or tag != tag.strip() or any(ch.isspace() for ch in tag): raise ValueError("invalid --high-effort tag %r" % tag)
+        if tag == "legacy-trigger" and (not legacy or pos != len(tags) - 1): raise ValueError("legacy-trigger is not an --high-effort tag")
+        if tag != "legacy-trigger" and tag not in TRIGGERS[gate]: raise ValueError("effort trigger %r is not valid for %s" % (tag, gate))
+    return list(dict.fromkeys(tags))
 def load(skill_dir=None):
     cfg = json.loads(read(os.path.join(os.path.abspath(skill_dir or SKILL_DIR), "routing.json")))
     if not isinstance(cfg, dict) or isinstance(cfg.get("schema_version"), bool) or cfg.get("schema_version") != 1: raise ValueError("routing.json must be an object with schema_version 1")
@@ -48,8 +60,7 @@ def load(skill_dir=None):
         else: ident(model, "route %s model" % key); ident(option, "route %s option_key" % key)
         if "accounts" in route: raise ValueError("route %s must use driver_kind, never legacy accounts" % key)
         ident(route.get("driver_kind"), "route %s driver_kind" % key)
-        cost = route.get("max_cost_usd")
-        if "max_cost_usd" in route and (isinstance(cost, bool) or not isinstance(cost, (int, float)) or not math.isfinite(cost) or cost < 0): raise ValueError("route %s max_cost_usd must be a non-negative number" % key)
+        if "max_cost_usd" in route and (isinstance(route["max_cost_usd"], bool) or not isinstance(route["max_cost_usd"], (int, float)) or not math.isfinite(route["max_cost_usd"]) or route["max_cost_usd"] < 0): raise ValueError("route %s max_cost_usd must be a non-negative number" % key)
     for role, fields in (("conductor", ("model", "option_key")), ("implementer", ("model_id",))):
         spec = cfg.get(role); route = routes.get(spec.get("route")) if isinstance(spec, dict) and isinstance(spec.get("route"), str) else None
         if not isinstance(route, dict) or any(field not in route for field in fields) or pending(route) or not effort(spec.get("effort"), allowed, "%s effort" % role): raise ValueError("%s must name an active route with %s" % (role, " and ".join(fields)))
@@ -60,22 +71,15 @@ def load(skill_dir=None):
     for gate in GATES:
         spec = gates[gate]; route = routes.get(spec.get("route")) if isinstance(spec, dict) and isinstance(spec.get("route"), str) else None
         if not isinstance(route, dict) or "model" not in route or "option_key" not in route or pending(route): raise ValueError("gate %s needs an active route with model and option_key" % gate)
-        if not isinstance(spec.get("efforts"), dict) or set(spec["efforts"]) != set(TIERS[gate]): raise ValueError("gate %s efforts must be %s" % (gate, "/".join(TIERS[gate])))
-        for tier, value in spec["efforts"].items(): effort(value, allowed, "gate %s %s effort" % (gate, tier))
-        if "trigger_effort" in spec: effort(spec["trigger_effort"], allowed, "gate %s trigger_effort" % gate)
+        check_efforts(spec, gate, allowed)
     ui = cfg.get("ui_gates")
     if not isinstance(ui, dict) or set(ui) != set(UI_GATES): raise ValueError("ui_gates must be exactly plan, review")
     for gate in UI_GATES:
-        if not isinstance((specs := ui[gate]), list) or not specs: raise ValueError("ui_gates %s must be a non-empty list" % gate)
-        seen = set()
+        if not isinstance((specs := ui[gate]), list) or not specs or len({spec.get("route") if isinstance(spec, dict) else None for spec in specs}) != len(specs): raise ValueError("ui_gates %s must be a non-empty list with unique routes" % gate)
         for pos, spec in enumerate(specs):
             name = spec.get("route") if isinstance(spec, dict) else None; route = routes.get(name) if isinstance(name, str) else None
             if not isinstance(route, dict) or (not pending(route) and ("model" not in route or "option_key" not in route)) or (pos == 0 and pending(route)): raise ValueError("ui_gates %s route %r is not an active model/option_key route or is a pending primary" % (gate, name))
-            if name in seen: raise ValueError("ui_gates %s has a duplicate route %s" % (gate, name))
-            seen.add(name)
-            if not isinstance(spec.get("efforts"), dict) or set(spec["efforts"]) != set(TIERS[gate]): raise ValueError("ui_gates %s efforts must be %s" % (gate, "/".join(TIERS[gate])))
-            for tier, value in spec["efforts"].items(): effort(value, allowed, "ui_gates %s %s effort" % (gate, tier))
-            if "trigger_effort" in spec: effort(spec["trigger_effort"], allowed, "ui_gates %s trigger_effort" % gate)
+            check_efforts(spec, gate, allowed)
     return cfg
 def gate_contracts(cfg, gate, ui=False):
     if ui and gate not in UI_GATES: raise ValueError("gate %s has no ui route" % gate)
@@ -84,54 +88,53 @@ def gate_contracts(cfg, gate, ui=False):
 def gate_contract(cfg, gate): return gate_contracts(cfg, gate)[0]
 def spec_for(cfg, gate, ui=False, route=None):
     if ui and gate not in UI_GATES: raise ValueError("gate %s has no ui route" % gate)
-    specs = cfg["ui_gates"][gate] if ui else [cfg["gates"][gate]]
-    specs = [spec for spec in specs if spec["route"] == route] if route is not None else specs
+    specs = [spec for spec in (cfg["ui_gates"][gate] if ui else [cfg["gates"][gate]]) if route is None or spec["route"] == route]
     if not specs: raise ValueError("gate %s has no route %r" % (gate, route))
     return specs[0]
 def option_keys(cfg): return tuple(dict.fromkeys(route["option_key"] for route in cfg["routes"].values() if route.get("option_key")))
 def effort_for(cfg, gate, tier, trigger=False, ui=False, route=None):
     spec = spec_for(cfg, gate, ui, route)
-    if trigger and tier == "medium" and spec.get("trigger_effort"): return spec["trigger_effort"]
     if tier not in spec["efforts"]: raise ValueError("gate %s has no %s tier" % (gate, tier))
-    return spec["efforts"][tier]
+    return spec["trigger_effort"] if trigger and spec.get("trigger_effort") else spec["efforts"][tier]
 def allowed_efforts_for(cfg, gate, tier, ui=False, route=None):
-    spec = spec_for(cfg, gate, ui, route); out = {effort_for(cfg, gate, tier, False, ui, route)}
-    if spec.get("trigger_effort") and tier == "medium": out.add(spec["trigger_effort"])
-    return out
+    spec = spec_for(cfg, gate, ui, route); base = effort_for(cfg, gate, tier, False, ui, route)
+    return {base, spec["trigger_effort"]} if spec.get("trigger_effort") else {base}
 def implementer(cfg):
     spec = cfg["implementer"]; route = cfg["routes"][spec["route"]]; model = "%s/%s" % (route["provider"], route["model_id"])
     return dict(route=spec["route"], provider=route["provider"], model_id=route["model_id"], model=model, effort=spec["effort"], pinned="%s#%s" % (model, spec["effort"]), driver_kind=route["driver_kind"], max_cost_usd=route["max_cost_usd"], label=route["label"])
 def conductor(cfg):
     spec = cfg["conductor"]; route = cfg["routes"][spec["route"]]
     return dict(route=spec["route"], provider=route["provider"], model=route["model"], option_key=route["option_key"], driver_kind=route["driver_kind"], effort=spec["effort"], label=route["label"])
+def effort_text(spec, tiers, short=True):
+    values = [spec["efforts"][tier] for tier in tiers]; trigger = spec.get("trigger_effort")
+    base = "/".join(dict.fromkeys((SHORT[value] if short else value) for value in values)) if len(set(values)) > 1 else (SHORT[values[0]] if short else values[0])
+    return base + ("+%s" % SHORT[trigger] if trigger and trigger not in values else "") if short else "`%s`" % base + (" (`%s` on `--high-effort`)" % trigger if trigger else "")
+def ui_summary(specs):
+    out, tail = effort_text(specs[0], TIERS["plan"]), effort_text(specs[-1], TIERS["plan"])
+    return out if tail == out else "%s/%s" % (out, tail)
 def describe(cfg):
     cond, imp = conductor(cfg), implementer(cfg); planner = cfg["routes"][cfg["gates"]["plan"]["route"]]["label"]
-    who = cond["label"] if planner == cond["label"] else "%s and %s" % (cond["label"], planner)
-    efforts = lambda gate: "/".join(SHORT[cfg["gates"][gate]["efforts"][tier]] for tier in TIERS[gate])
-    ui = cfg["ui_gates"]; ui_eff = lambda gate: "/".join(SHORT[ui[gate][0]["efforts"][tier]] for tier in TIERS["plan"])
+    who = cond["label"] if planner == cond["label"] else "%s and %s" % (cond["label"], planner); gate = lambda name: effort_text(cfg["gates"][name], TIERS[name]); ui = cfg["ui_gates"]
     return ("ds-dev-protocol: Always on by default for all work across every harness, model, AI agent & T3 Code; off only on explicit request, session-only (never globally). %s conducts (%s always), plans (%s); "
             "%s %s implementer (implement.sh, no model fallback); %s review/security/epoch (%s, %s, %s); UI %s (plan %s, review %s)."
-            % (who, cond["effort"].capitalize(), efforts("plan"), imp["label"], imp["effort"], cfg["routes"][cfg["gates"]["review"]["route"]]["label"], efforts("review"), efforts("security"), efforts("epoch"), ">".join(spec["route"] for spec in ui["plan"]), ui_eff("plan"), ui_eff("review")))
-def ui_efforts(specs): return ["/".join(spec["efforts"][tier] for tier in TIERS["plan"]) for spec in specs]
+            % (who, cond["effort"].capitalize(), gate("plan"), imp["label"], imp["effort"], cfg["routes"][cfg["gates"]["review"]["route"]]["label"], gate("review"), gate("security"), gate("epoch"), ">".join(spec["route"] for spec in ui["plan"]), ui_summary(ui["plan"]), ui_summary(ui["review"])))
 def render_block(cfg):
     cond, imp = conductor(cfg), implementer(cfg); plan, review, sec, epoch = (cfg["gates"][name] for name in GATES)
     planner, reviewer = cfg["routes"][plan["route"]], cfg["routes"][sec["route"]]; other = [value for value in cfg["allowed_efforts"] if value != cond["effort"]]
     non_cond = "/".join(dict.fromkeys(r["label"] for r in (imp, reviewer) if r["label"] != cond["label"]))
     ui = cfg["ui_gates"]; ui_routes = [cfg["routes"][spec["route"]] for spec in ui["plan"]]; ui_names = " → ".join(r["label"] if r.get("model") is None else "%s `%s`" % (r["label"], r["model"]) for r in ui_routes)
-    plan_eff, review_eff = ui_efforts(ui["plan"]), ui_efforts(ui["review"]); trig = ui["plan"][0].get("trigger_effort")
-    ui_plan = "UI plan (Low/Med/High): `%s`%s" % (plan_eff[0], " (`%s` `--trigger`)" % trig if trig else "") + (", fallback `%s`" % plan_eff[-1] if len(plan_eff) > 1 else "")
-    ui_review = "`%s`" % review_eff[0] + (" (fallback `%s`)" % review_eff[-1] if len(review_eff) > 1 and review_eff[-1] != review_eff[0] else "")
+    ui_plan = effort_text(ui["plan"][0], TIERS["plan"], False) + (", fallback %s" % effort_text(ui["plan"][-1], TIERS["plan"], False) if len(ui["plan"]) > 1 and effort_text(ui["plan"][-1], TIERS["plan"], False) != effort_text(ui["plan"][0], TIERS["plan"], False) else "")
     rows = [
         "Four roles, one model each, no substitution:", "",
         "| Role | Model and effort (%s only) | Path |" % "/".join(cfg["allowed_efforts"]), "|---|---|---|",
         "| Conductor | %s `%s`, `%s` always (never `%s` or other) | this T3 Code thread (`%s`) |" % (cond["label"], cond["model"], cond["effort"], other[0] if other else "any other", cond["driver_kind"]),
-        "| Architect & Planner | %s `%s`, `%s` Low, `%s` Medium, `%s` High | fresh `delegate_task` on a live `%s` instance, then `gate.sh plan --record` |" % (planner["label"], planner["model"], plan["efforts"]["low"], plan["efforts"]["medium"], plan["efforts"]["high"], planner["driver_kind"]),
+        "| Architect & Planner | %s `%s`, %s | fresh `delegate_task` on a live `%s` instance, then `gate.sh plan --record` |" % (planner["label"], planner["model"], effort_text(plan, TIERS["plan"], False), planner["driver_kind"]),
         "| Implementer | %s `%s`, `variant: %s` always | `scripts/implement.sh`, the documented mechanical runner, no OS sandbox; sole implementer, no fallback |" % (imp["label"], imp["pinned"], imp["effort"]),
-        "| Reviewer, Security & Epoch | %s `%s`, review `%s`/`%s` Low/Medium and `%s` High (`%s` with `--trigger`); security `%s`; epoch `%s`/`%s` | fresh `delegate_task` on a live `%s` instance, then `gate.sh <gate> --record` |" % (reviewer["label"], reviewer["model"], review["efforts"]["low"], review["efforts"]["medium"], review["efforts"]["high"], review.get("trigger_effort", review["efforts"]["high"]), sec["efforts"]["high"], epoch["efforts"]["medium"], epoch["efforts"]["high"], reviewer["driver_kind"]),
+        "| Reviewer, Security & Epoch | %s `%s`, review %s; security %s; epoch %s | fresh `delegate_task` on a live `%s` instance, then `gate.sh <gate> --record` |" % (reviewer["label"], reviewer["model"], effort_text(review, TIERS["review"], False), effort_text(sec, TIERS["security"], False), effort_text(epoch, TIERS["epoch"], False), reviewer["driver_kind"]),
         "",
         "- **Dynamic `driver_kind` failover:** call `orchestrator_capabilities`; use only live `providerInstanceId` serial IDs (never display names or emails). A child hitting `usage_limit` is `task_cancel`led and re-dispatched as a fresh `delegate_task` on the next live instance of the same `driver_kind`, model and effort: never cross a `driver_kind` or model, never ask. When every live pair is tried, log `blocked` (exit 3), record `STATUS: blocked external — <model> quota exhausted; waiting for reset` with `Routes tried:`, stop cleanly.",
         "- **Start check (MUST):** session must be %s at `%s` in T3 Code; any other model or effort stops. %s never conducts: runs only its brief, no gate, premerge, git mutation or PR." % (cond["label"], cond["effort"], non_cond or imp["label"]),
-        "- **Frontend & UI routing (`--ui`, plan and review only):** with `--ui` and `Scope: ui` in the packet the gate uses this %d-tier chain in priority order: %s. A tier applies when a live `orchestrator_capabilities` instance of its `driver_kind` runs its model; a `ui_gates` route with zero live instances is skipped automatically. %s Non-UI gates keep the single route above. If every UI tier is exhausted, log `blocked` (exit 3) and never use another model." % (len(ui_routes), ui_names, ui_plan + "; UI review " + ui_review + "."),
+        "- **Frontend & UI routing (`--ui`, plan and review only):** with `--ui` and `Scope: ui` in the packet the gate uses this %d-tier chain in priority order: %s. A tier applies when a live `orchestrator_capabilities` instance of its `driver_kind` runs its model; a `ui_gates` route with zero live instances is skipped automatically. UI plan: %s; UI review %s. Non-UI gates keep the single route above. If every UI tier is exhausted, log `blocked` (exit 3) and never use another model." % (len(ui_routes), ui_names, ui_plan, effort_text(ui["review"][0], TIERS["plan"], False)),
     ]
     return "\n".join([START] + rows + [END])
 def render_skill(text, cfg):
@@ -150,10 +153,8 @@ def render_opencode(text, cfg):
     try: data = json.loads(text)
     except ValueError: raise ValueError("opencode/opencode.json is not valid JSON")
     if not isinstance(data, dict) or not isinstance(data.get("agents"), dict) or "implementer" not in data["agents"]: raise ValueError("opencode/opencode.json needs an agents.implementer entry")
-    pinned = implementer(cfg)["pinned"]
-    if data.get("model") == pinned: return text
-    data["model"] = pinned
-    return json.dumps(data, indent=1) + "\n"
+    if data.get("model") == (pinned := implementer(cfg)["pinned"]): return text
+    return json.dumps(dict(data, model=pinned), indent=1) + "\n"
 def inspect(skill_dir=None):
     base = os.path.abspath(skill_dir or SKILL_DIR); cfg = load(base); pairs = []
     for rel, render in (("opencode/opencode.json", render_opencode), ("SKILL.md", render_skill)):
@@ -174,27 +175,18 @@ def main(argv):
     cmd = argv[1] if len(argv) > 1 else ""
     try:
         if cmd == "check":
-            drifted = [path for path, current, wanted in inspect()[1] if current != wanted]
-            return (sys.stderr.write("routing_lib: drifted: %s\n" % ", ".join(drifted)), 1)[1] if drifted else 0
+            drifted = [path for path, current, wanted in inspect()[1] if current != wanted]; return (sys.stderr.write("routing_lib: drifted: %s\n" % ", ".join(drifted)), 1)[1] if drifted else 0
         if cmd == "sync": sync(); return 0
-        if cmd == "opencode-config":
-            text = render_opencode(read(os.path.join(SKILL_DIR, "opencode", "opencode.json")), load())
-            sys.stdout.write(text if text.endswith("\n") else text + "\n"); return 0
+        if cmd == "check-triggers" and len(argv) in (3, 4): print(",".join(parse_triggers(argv[2], argv[3] if len(argv) == 4 else ""))); return 0
+        if cmd == "opencode-config": text = render_opencode(read(os.path.join(SKILL_DIR, "opencode", "opencode.json")), load()); sys.stdout.write(text if text.endswith("\n") else text + "\n"); return 0
         cfg = load()
-        if cmd == "impl-tsv":
-            imp = implementer(cfg); print(tsv(imp["route"], imp["provider"], imp["model"], imp["model_id"], imp["effort"], imp["pinned"], imp["driver_kind"], imp["max_cost_usd"])); return 0
-        if cmd == "gate-tsv" and len(argv) == 3:
-            provider, route, model, option, driver_kind = gate_contract(cfg, argv[2]); print(tsv(provider, route, model, option, driver_kind)); return 0
-        if cmd == "ui-gate-tsv" and len(argv) == 3:
-            for provider, route, model, option, driver_kind in gate_contracts(cfg, argv[2], ui=True): print(tsv(provider, route, model, option, driver_kind))
-            return 0
-        if cmd == "conductor-tsv":
-            cond = conductor(cfg); print(tsv(cond["provider"], cond["route"], cond["model"], cond["option_key"], cond["effort"], cond["label"], cond["driver_kind"])); return 0
-        if cmd == "effort" and len(argv) in (4, 5):
-            print(effort_for(cfg, argv[2], argv[3], len(argv) == 5 and argv[4] not in ("", "0"))); return 0
-        if cmd == "ui-effort" and len(argv) in (4, 5, 6):
-            print(effort_for(cfg, argv[2], argv[3], len(argv) >= 5 and argv[4] not in ("", "0"), ui=True, route=argv[5] if len(argv) == 6 else None)); return 0
+        if cmd == "impl-tsv": imp = implementer(cfg); print(tsv(imp["route"], imp["provider"], imp["model"], imp["model_id"], imp["effort"], imp["pinned"], imp["driver_kind"], imp["max_cost_usd"])); return 0
+        if cmd == "gate-tsv" and len(argv) == 3: print(tsv(*gate_contract(cfg, argv[2]))); return 0
+        if cmd == "ui-gate-tsv" and len(argv) == 3: [print(tsv(*contract)) for contract in gate_contracts(cfg, argv[2], ui=True)]; return 0
+        if cmd == "conductor-tsv": cond = conductor(cfg); print(tsv(cond["provider"], cond["route"], cond["model"], cond["option_key"], cond["effort"], cond["label"], cond["driver_kind"])); return 0
+        if cmd == "effort" and len(argv) in (4, 5): print(effort_for(cfg, argv[2], argv[3], len(argv) == 5 and argv[4] not in ("", "0"))); return 0
+        if cmd == "ui-effort" and len(argv) in (4, 5, 6): print(effort_for(cfg, argv[2], argv[3], len(argv) >= 5 and argv[4] not in ("", "0"), ui=True, route=argv[5] if len(argv) == 6 else None)); return 0
     except (ValueError, OSError) as problem:
         sys.stderr.write("routing_lib: %s\n" % problem); return 2
-    sys.stderr.write("usage: routing_lib.py <check|sync|opencode-config|impl-tsv|gate-tsv GATE|ui-gate-tsv GATE|conductor-tsv|effort GATE TIER [trigger]|ui-effort GATE TIER [trigger] [route]>\n"); return 2
+    sys.stderr.write("usage: routing_lib.py <check|sync|check-triggers GATE RAW|opencode-config|impl-tsv|gate-tsv GATE|ui-gate-tsv GATE|conductor-tsv|effort GATE TIER [trigger]|ui-effort GATE TIER [trigger] [route]>\n"); return 2
 if __name__ == "__main__": sys.exit(main(sys.argv))

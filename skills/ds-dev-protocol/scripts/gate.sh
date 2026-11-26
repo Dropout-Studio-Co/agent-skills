@@ -4,11 +4,12 @@ set -euo pipefail
 usage() { cat <<'EOF'
 usage: EVID=<dir> gate.sh <plan|review|security|epoch> <low|medium|high>
          --record <json-file> --child-thread <id> --parent-thread <id>
-         [--trigger] [--ui] [--diff FILE] [--base REF]
-  plan: key = sha256(EVID/facts.md); thought_level medium on low/medium tier, high on high
-  review: key = HEAD or sha256(--diff FILE); effort medium, high on high tier or --trigger
-  security: key = HEAD or sha256(--diff FILE); high tier only; effort high
-  epoch: key = sha256(EVID/epoch.md); after a round-cap block; max 2 authorized per EVID
+         [--high-effort <tags>] [--trigger] [--ui] [--diff FILE] [--base REF]
+  plan: key = sha256(EVID/facts.md); base effort medium on every tier, high on --high-effort
+  review: key = HEAD or sha256(--diff FILE); base effort medium on every tier, high on --high-effort
+  security: key = HEAD or sha256(--diff FILE); high tier only; base effort medium, high on --high-effort
+  epoch: key = sha256(EVID/epoch.md); after a round-cap block; effort high always; max 2 authorized per EVID
+  --high-effort: comma-separated allowlisted tags; --trigger is the backward-compatible alias
   --ui: plan and review only; requires 'Scope: ui' in the packet and uses the UI tier chain
 exit: 0 pass (or valid plan), 1 verdict fail, 2 usage/precondition/provenance/tree mismatch, 3 blocked, 4 round cap
 EOF
@@ -23,11 +24,15 @@ LIB=$SKILL/scripts/gate_lib.py
 gate=$1; tier=$2; shift 2
 key=""
 refuse() { python3 -I "$LIB" --log-invalid --evid "$EVID" --gate "$gate" --tier "$tier" --key "${key:-}" --ui "${ui:-0}" --reason "$*" >/dev/null 2>&1 || true; die "$*"; }
-record=""; child=""; parent=""; trigger=0; ui=0; diff=""; base=""
+record=""; child=""; parent=""; trigger=0; ui=0; diff=""; base=""; high_effort=""
 while [ $# -gt 0 ]; do case $1 in
   --record|--child-thread|--parent-thread|--diff|--base)
     [ $# -ge 2 ] && [ -n "$2" ] || die "$1 needs a value"
     case $1 in --record) record=$2 ;; --child-thread) child=$2 ;; --parent-thread) parent=$2 ;; --diff) diff=$2 ;; --base) base=$2 ;; esac
+    shift ;;
+  --high-effort)
+    [ $# -ge 2 ] && [ -n "$2" ] || die "--high-effort needs a value"
+    high_effort=${high_effort:+$high_effort,}$2
     shift ;;
   --trigger) trigger=1 ;;
   --ui) ui=1 ;;
@@ -45,6 +50,10 @@ if [ "$tier" = low ] && { [ "$gate" = security ] || [ "$gate" = epoch ]; }; then
 if [ "$gate" = security ] && [ "$tier" != high ]; then die "security gate requires tier high"; fi
 if [ "$gate" = plan ] && [ -n "$diff${base:-}" ]; then die "plan reads EVID/facts.md; no --diff or --base"; fi
 if [ "$gate" = epoch ] && [ -n "$diff${base:-}" ]; then die "epoch reads EVID/epoch.md; no --diff or --base"; fi
+if [ "$gate" = epoch ] && [ "$trigger" = 1 ]; then die "--trigger is not valid with epoch"; fi
+if [ -n "$high_effort" ]; then
+  python3 -I "$SKILL/scripts/routing_lib.py" check-triggers "$gate" "$high_effort" >/dev/null || die "invalid --high-effort tags: $high_effort"
+fi
 repo=0; git rev-parse --git-dir >/dev/null 2>&1 && repo=1 || true
 reponame=outside; head=""; base_ref=""; mb=""; dsha=""; repocheck=0
 tmpd=$(mktemp -d "${TMPDIR:-/tmp}/gate.XXXXXX"); trap 'rm -rf "$tmpd"' EXIT; want=$tmpd/source
@@ -109,7 +118,7 @@ fsha=""
 if [ -f "$EVID/facts.md" ]; then fsha=$(sha "$EVID/facts.md"); fi
 rc=0
 python3 -I "$SKILL/scripts/gate_lib.py" --evid "$EVID" --gate "$gate" --tier "$tier" \
-  --record "$record" --child-thread "$child" --parent-thread "$parent" --trigger "$trigger" --ui "$ui" \
+  --record "$record" --child-thread "$child" --parent-thread "$parent" --trigger "$trigger" --ui "$ui" --high-effort "$high_effort" \
   --key "$key" --expected-head "$head" --facts-sha "$fsha" --base-ref "$base_ref" --base-sha "$mb" \
   --diff-sha "$dsha" --repo "$reponame" --skill "$SKILL" || rc=$?
 exit "$rc"

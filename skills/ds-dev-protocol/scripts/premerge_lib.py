@@ -19,10 +19,9 @@ def ep(d):
     try: return calendar.timegm(time.strptime(str(d.get("ts", "")), "%Y-%m-%dT%H:%M:%SZ"))
     except Exception: return None
 def logrow(ev, **d):
-    r = dict((k, 0 if k in ("round", "input_tokens", "output_tokens") else "") for k in FIELDS)
+    r = dict((k, 0 if k in ("round", "input_tokens", "output_tokens") else "") for k in FIELDS); r["effort_triggers"] = []
     r["ts"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()); r.update(d)
     open(os.path.join(ev, "gates.log"), "a").write(json.dumps(r) + "\n")
-
 def tiers(plan, recheck):
     def t(p):
         try: return [x.lower() for x in re.findall(r"\bTier:\s*\**\s*(low|medium|high)\b", open(p, errors="replace").read(), re.I)]
@@ -30,7 +29,6 @@ def tiers(plan, recheck):
     pl, rc = t(plan), t(recheck); pt = max(pl, key=lambda x: RANK[x]) if pl else ""; rt = rc[-1] if rc else ""
     f = max(pt, rt, key=lambda x: RANK[x]) if (pt and rt) else "none"
     print(f, rt or "none", pt or "none", 1 if rt and pt and RANK[rt] < RANK[pt] else 0)
-
 def evidence(ev, key, tier, base, mode):
     if RCFG is None: print("FAIL invalid routing.json: " + ROUTING_ERROR); return
     out = []
@@ -44,15 +42,12 @@ def evidence(ev, key, tier, base, mode):
         if not s or not p or s == p: F("gates.log row %d (%s) is not a child thread run" % (n, d.get("gate")))
         elif s in ids: F("gates.log row %d reuses the child session of row %d" % (n, ids[s]))
         else: ids[s] = n
-
     def fileof(d, g):
         f = os.path.join(ev, os.path.basename(str(d.get("file") or "-"))); return f if os.path.isfile(f) and d.get("file_sha256") == sha(f) and re.fullmatch(g + r"-[^.]+\.json", os.path.basename(f)) else None
-
     def sop(f):
         try: o = json.load(open(f)); o = o.get("structured_output", o) if isinstance(o, dict) else None; return o if isinstance(o, dict) else {}
         except Exception: return {}
-
-    def prov(d, g, tr=None):
+    def prov(d, g, tr=None, reactive=False):
         tr = tr or tier
         ui = d.get("ui", False)
         if not isinstance(ui, bool) or (ui and g not in routing.UI_GATES): return "%s ui flag is not valid for this gate" % g
@@ -64,23 +59,26 @@ def evidence(ev, key, tier, base, mode):
         acct = d.get("account")
         if not isinstance(acct, str) or not acct.strip() or any(ch.isspace() or ord(ch) < 32 for ch in acct): return "%s account is missing or invalid" % g
         if "driver_kind" in d and d.get("driver_kind") != hit[4]: return "%s driver_kind is not %s" % (g, hit[4])
+        if "effort_triggers" in d:
+            et = d.get("effort_triggers"); allowed = set(routing.TRIGGERS[g]) | {"legacy-trigger"} if g != "epoch" else ()
+            if not isinstance(et, list) or not all(isinstance(x, str) and x in allowed for x in et): return "%s effort_triggers is malformed" % g
+            if et and g != "epoch" and d.get("effort") != routing.effort_for(RCFG, g, tr, True, ui=ui, route=hit[1]): return "%s effort_triggers require the trigger effort" % g
         if g == "epoch":
             t = d.get("tier")
             if t not in ("medium", "high") or RANK[t] < RANK[tr]: return "epoch tier is below the task tier"
             want = routing.effort_for(RCFG, g, t)
             return "" if d.get("effort") == want else "epoch effort does not match its tier"
+        if reactive:
+            want = routing.effort_for(RCFG, g, tr, True, ui=ui, route=hit[1]); return "" if d.get("effort") == want else "%s reactive effort %r is not %s" % (g, d.get("effort"), want)
         if d.get("effort") in routing.allowed_efforts_for(RCFG, g, tr, ui=ui, route=hit[1]): return ""
         return "%s effort %r is not allowed at %s" % (g, d.get("effort"), tr)
-
     def gmerge(b, s):
         mb = subprocess.run(["git", "merge-base", "origin/" + b, s], capture_output=True).stdout.decode().strip()
         return (mb, hashlib.sha256(subprocess.run(["git", "diff", "--no-color", "--full-index", mb, s], capture_output=True).stdout).hexdigest()) if mb else None
-
     def bound(d, k):
         if d.get("head_sha") not in ("", None, k) or (base and d.get("head_sha") != k): return False
         if not base: return True
         m = gmerge(base, k); return bool(m) and d.get("base_ref") == "origin/" + base and d.get("base_sha") == m[0] and d.get("diff_sha256") == m[1]
-
     def jsonok(d, g, k):
         f = fileof(d, g)
         if not f: return None
@@ -88,12 +86,10 @@ def evidence(ev, key, tier, base, mode):
         if o.get("gate") != g or o.get("verdict") != "pass" or str(o.get("head_sha", "")) != k: return None
         if not isinstance(fs, list) or any(not isinstance(x, dict) or x.get("severity") == "important" for x in fs): return None
         return f
-
     def gdiff(s):
         m = gmerge(base, s) if base else None
         if not m: return None
         return "\n".join(re.sub(r"^@@ .* @@.*$", "@@", l) for l in subprocess.run(["git", "diff", "--no-color", "--full-index", "--binary", m[0], s], capture_output=True).stdout.decode("utf-8", "surrogateescape").split("\n"))
-
     auth = []
     for i, d in [(i, d) for i, d in R if d.get("gate") == "epoch" and d.get("status") == "ok" and d.get("verdict") == "pass"]:
         e = prov(d, "epoch")
@@ -102,6 +98,11 @@ def evidence(ev, key, tier, base, mode):
         else: auth.append((i, d))
     E = auth[-1][0] if auth else -1
     plans = [(i, d) for i, d in R if d.get("gate") == "plan" and d.get("status") == "ok"]
+    def is_reactive(idx, g):
+        if g not in ("review", "security"): return False
+        if E >= 0 and idx > E: return True
+        start = max(E + 1, max((j for j, _ in plans if E < j < idx), default=-1) + 1)
+        return any(start <= j < idx and r.get("gate") == g and r.get("status") == "ok" and r.get("verdict") == "fail" for j, r in R)
     pd = plans[-1][1] if plans else None; P2 = next((i for i, d in plans if i > E), None); pt = ep(pd) if pd else None
     def pf(i, d):
         b = "plan-%s.json" % str(d.get("key") or "")
@@ -119,14 +120,13 @@ def evidence(ev, key, tier, base, mode):
         if not os.path.isfile(fd): F("missing facts.md")
         elif pd.get("facts_sha256") != sha(fd): F("facts.md does not match plan.facts_sha256")
         else: P("facts.md matches plan.facts_sha256")
-
     res = {}; hd = gdiff(key) if mode == "repo" and base else None
     for g in ("review", "security") if tier == "high" else ("review",):
         gk = [(i, d) for i, d in R if d.get("gate") == g and d.get("key") == key]
         cand = [(i, d) for i, d in gk if d.get("status") in ("ok", "fail") and live(i)]
         pick, reason, fails, src = None, None, set(), None
         if cand:
-            i, d = cand[-1]; e = prov(d, g)
+            i, d = cand[-1]; e = prov(d, g, reactive=is_reactive(i, g))
             if d.get("status") != "ok": reason = "the last %s run at %s did not pass" % (g, key)
             elif d.get("verdict") != "pass" or not jsonok(d, g, key): reason = "%s-%s.json is missing, failing, or has an important finding" % (g, key)
             elif e: reason = "%s provenance: %s" % (g, e)
@@ -144,13 +144,12 @@ def evidence(ev, key, tier, base, mode):
             for i, d in R:
                 x = d.get("key")
                 if d.get("gate") != g or d.get("status") != "ok" or d.get("verdict") != "pass" or not x or x == key or not live(i): continue
-                if RANK.get(d.get("tier", ""), -1) < RANK[tier] or prov(d, g) or not jsonok(d, g, x) or not bound(d, x) or x in fails or gdiff(x) != hd: continue
+                if RANK.get(d.get("tier", ""), -1) < RANK[tier] or prov(d, g, reactive=is_reactive(i, g)) or not jsonok(d, g, x) or not bound(d, x) or x in fails or gdiff(x) != hd: continue
                 src = d; break
             if fails: src = None; reason = "%s failed on this exact diff at an earlier head; never carried" % g
         if src:
             out.append("CARRY %s %s -> %s" % (g, src.get("key"), key)); logrow(ev, gate=g, tier=tier, key=key, status="carry", provider="", task_id=tid, reason="carried from " + str(src.get("key"))); res[g] = (ep(src), src)
         else: F(reason or "missing passing %s-%s.json" % (g, key))
-
     IL = [d for d in rows(os.path.join(ev, "impl.log")) if isinstance(d, dict)]; CS = [d for d in IL if d.get("status") != "start"]
     fc = None
     if mode == "repo" and base:
@@ -175,7 +174,6 @@ def evidence(ev, key, tier, base, mode):
     if late: F("code after the gate: the last completed implementation row is later than %s" % ",".join(sorted(late)))
     elif early: F("plan after the gate: the plan row is later than %s" % ",".join(sorted(early)))
     elif done: P("code precedes %s" % " and ".join(sorted(res)))
-
     s = plans[-1][0] + 1 if plans else 0; e0 = auth[-1][0] + 1 if auth else 0
     for g in ("review", "security") if tier == "high" else ("review",):
         n = len([1 for i, d in R if i >= s and live(i) and d.get("gate") == g and d.get("status") == "ok"])

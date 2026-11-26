@@ -27,19 +27,19 @@
  "conductor": {"route": "neon", "effort": "medium"},
  "implementer": {"route": "deepseek", "effort": "high"},
  "gates": {
-  "plan": {"route": "neon", "efforts": {"low": "medium", "medium": "medium", "high": "high"}},
-  "review": {"route": "neon", "efforts": {"low": "medium", "medium": "medium", "high": "high"}, "trigger_effort": "high"},
-  "security": {"route": "neon", "efforts": {"high": "high"}},
+  "plan": {"route": "neon", "efforts": {"low": "medium", "medium": "medium", "high": "medium"}, "trigger_effort": "high"},
+  "review": {"route": "neon", "efforts": {"low": "medium", "medium": "medium", "high": "medium"}, "trigger_effort": "high"},
+  "security": {"route": "neon", "efforts": {"high": "medium"}, "trigger_effort": "high"},
   "epoch": {"route": "neon", "efforts": {"medium": "high", "high": "high"}}
  },
  "ui_gates": {
   "plan": [
-   {"route": "opus", "efforts": {"low": "medium", "medium": "medium", "high": "high"}, "trigger_effort": "high"},
-   {"route": "neon", "efforts": {"low": "high", "medium": "medium", "high": "high"}}
+   {"route": "opus", "efforts": {"low": "medium", "medium": "medium", "high": "medium"}, "trigger_effort": "high"},
+   {"route": "neon", "efforts": {"low": "medium", "medium": "medium", "high": "medium"}, "trigger_effort": "high"}
   ],
   "review": [
-   {"route": "opus", "efforts": {"low": "high", "medium": "medium", "high": "high"}},
-   {"route": "neon", "efforts": {"low": "high", "medium": "medium", "high": "high"}}
+   {"route": "opus", "efforts": {"low": "medium", "medium": "medium", "high": "medium"}, "trigger_effort": "high"},
+   {"route": "neon", "efforts": {"low": "medium", "medium": "medium", "high": "medium"}, "trigger_effort": "high"}
   ]
  }
 }

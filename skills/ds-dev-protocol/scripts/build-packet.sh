@@ -2,29 +2,33 @@
 # build-packet.sh - atomically assemble EVID/packet-<gate>.md for gate.sh --record (no model, no network).
 set -euo pipefail
 usage() { cat <<'EOF'
-usage: EVID=<dir> build-packet.sh <plan|review|security|epoch> <low|medium|high> [--ui] [--base REF] [--diff FILE]
+usage: EVID=<dir> build-packet.sh <plan|review|security|epoch> <low|medium|high> [--high-effort <tags>] [--ui] [--base REF] [--diff FILE]
   plan/epoch: body EVID/facts.md or EVID/epoch.md
   review/security: git diff against origin/<base> (default origin/HEAD or origin/main), or --diff FILE
-  writes EVID/packet-<gate>.md; gate.sh binds its key, Gate:, Tier:, merge-base, HEAD and exact source
+  writes EVID/packet-<gate>.md; gate.sh binds its key, Gate:, Tier:, Effort:, merge-base, HEAD and exact source
 EOF
 }
 die() { printf 'build-packet: %s\n' "$*" >&2; exit 2; }
 [ "${1:-}" = --help ] && { usage; exit 0; }
 [ -n "${EVID:-}" ] && [ -d "$EVID" ] || die "EVID must name an existing directory"
 [ $# -ge 2 ] || { usage >&2; exit 2; }
+SKILL=${SKILL:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}
 gate=$1 tier=$2; shift 2
 case $gate in plan|review|security|epoch) ;; *) die "bad gate: $gate" ;; esac
 case $tier in low|medium|high) ;; *) die "bad tier: $tier" ;; esac
-ui=0 base="" diff=""
+ui=0 base="" diff="" high_effort=""
 while [ $# -gt 0 ]; do case $1 in
   --ui) ui=1 ;;
   --base|--diff) [ $# -ge 2 ] && [ -n "$2" ] || die "$1 needs a value"; if [ "$1" = --base ]; then base=$2; else diff=$2; fi; shift ;;
+  --high-effort) [ $# -ge 2 ] && [ -n "$2" ] || die "--high-effort needs a value"; high_effort=${high_effort:+$high_effort,}$2; shift ;;
   *) die "unknown argument: $1" ;;
 esac; shift; done
 [ "$ui" = 1 ] && case $gate in plan|review) ;; *) die "--ui is valid on plan and review only" ;; esac
 [ "$gate" = security ] && [ "$tier" != high ] && die "security gate requires tier high"
 { [ "$gate" = security ] || [ "$gate" = epoch ]; } && [ "$tier" = low ] && die "low tier is not valid with $gate"
 case $gate in plan|epoch) [ -z "$diff$base" ] || die "$gate reads EVID/facts.md or EVID/epoch.md; no --diff or --base" ;; esac
+normalized=""
+if [ -n "$high_effort" ]; then normalized=$(python3 -I "$SKILL/scripts/routing_lib.py" check-triggers "$gate" "$high_effort") || die "invalid --high-effort tags: $high_effort"; fi
 repo=0; git rev-parse --git-dir >/dev/null 2>&1 && repo=1
 top=""; [ "$repo" = 0 ] || top=$(git rev-parse --show-toplevel)
 sha() { shasum -a 256 "$1" | awk '{print $1}'; }
@@ -32,6 +36,7 @@ head=""; base_ref=""; mb=""
 tmp=$(mktemp "$EVID/.packet-$gate.XXXXXX"); trap 'rm -f "$tmp" "$tmp.diff"' EXIT
 {
   printf 'Gate: %s\nTier: %s\n' "$gate" "$tier"
+  if [ "$gate" = epoch ]; then printf 'Effort: high\n'; elif [ -n "$high_effort" ]; then printf 'Effort: high (%s)\n' "$normalized"; else printf 'Effort: medium\n'; fi
   [ "$ui" = 0 ] || printf 'Scope: ui\n'
   if [ "$gate" = plan ]; then [ -s "$EVID/facts.md" ] || die "missing $EVID/facts.md"; body=$EVID/facts.md
   elif [ "$gate" = epoch ]; then [ -s "$EVID/epoch.md" ] || die "missing $EVID/epoch.md"; body=$EVID/epoch.md
