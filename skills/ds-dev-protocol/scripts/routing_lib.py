@@ -74,12 +74,12 @@ def option_keys(cfg):
     return tuple(dict.fromkeys(route["option_key"] for route in cfg["routes"].values() if route.get("option_key")))
 def effort_for(cfg, gate, tier, trigger=False):
     spec = cfg["gates"][gate]
-    if trigger and spec.get("trigger_effort"): return spec["trigger_effort"]
+    if trigger and tier == "medium" and spec.get("trigger_effort"): return spec["trigger_effort"]
     if tier not in spec["efforts"]: raise ValueError("gate %s has no %s tier" % (gate, tier))
     return spec["efforts"][tier]
 def allowed_efforts_for(cfg, gate, tier):
     out = {effort_for(cfg, gate, tier)}
-    if cfg["gates"][gate].get("trigger_effort") and tier != "high": out.add(cfg["gates"][gate]["trigger_effort"])
+    if cfg["gates"][gate].get("trigger_effort") and tier == "medium": out.add(cfg["gates"][gate]["trigger_effort"])
     return out
 def implementer(cfg):
     spec = cfg["implementer"]; route = cfg["routes"][spec["route"]]

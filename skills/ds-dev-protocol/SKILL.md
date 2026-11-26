@@ -56,7 +56,7 @@ The conductor sets the tier from the request and the code it will touch, writing
 - **High:** touches auth, sessions, permissions, tenancy, payments, billing, webhooks, money, inventory, migrations, stored data, secrets, signing/entitlements, CI/CD, deploy, infrastructure or legal text.
 - **Medium:** ordinary product code that is not High.
 - **Low:** docs, comments, copy, config typos, or a small isolated change with no behavior change.
-- **Review triggers** (raise Medium review to `high`): a new dependency; a public API, schema or contract change; a plan over ~8 files or one package; review round 2 still disputed.
+- **Review triggers** (raise Medium review to `high`): a new dependency; a public API or wire/data contract change; a diff over 8 files or 1 package; round 2 failed (round 3+ auto-enforced by `gate.sh`).
 
 ## 3. Plan (Planner, every tier)
 
