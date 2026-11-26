@@ -129,6 +129,7 @@ def main():
         row.update(fields); open(os.path.join(args.evid, "gates.log"), "a").write(json.dumps(row, sort_keys=True) + "\n")
     def stop(code, **fields): emit(**fields); return code
     if args.log_invalid: return stop(2, reason=args.reason or "gate.sh refused")
+    if ui and args.gate not in routing.UI_GATES: return stop(2, reason="--ui is valid on plan and review only")
     try: RCFG = routing.load()
     except ValueError as problem: return stop(2, reason="invalid routing.json: %s" % problem)
     if args.gate == "epoch":
@@ -153,7 +154,7 @@ def main():
         if prior: return stop(3, status="blocked", reason="invalid output after retry", **obs)
         return stop(2, reason="invalid output: " + reason, **obs)
     if not info["parent"] or info["parent"] != args.parent_thread: return stop(2, reason="child thread parent %r does not match --parent-thread" % (info["parent"],), **obs)
-    if args.gate != "plan" and (info["refusal"] or info["cyber"]): return stop(3, status="blocked", reason="cyber refusal", **obs)
+    if (args.gate != "plan" or ui) and (info["refusal"] or info["cyber"]): return stop(3, status="blocked", reason="cyber refusal", **obs)
     if any(pattern in info["meta"] or pattern in info["notice"] for pattern in USAGE_PAT):
         tried = {(row.get("model"), row.get("account")) for row in rows[last_ok + 1:] if (row.get("gate"), row.get("key"), row.get("status"), row.get("reason")) == (args.gate, args.key, "invalid", "usage_limit")} | {(info["model"], info["instance"])}
         rest = [pair for pair in [(c[2], acct) for c in contracts for acct in c[4]] if pair not in tried]

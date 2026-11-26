@@ -178,6 +178,7 @@ elif case == "ui-missing": del d["ui_gates"]["review"]; save(d)
 elif case == "ui-extra": d["ui_gates"]["security"] = []; save(d)
 elif case == "ui-empty": d["ui_gates"]["plan"] = []; save(d)
 elif case == "ui-dup": d["ui_gates"]["plan"][1]["route"] = "opus"; save(d)
+elif case == "ui-model-id": d["ui_gates"]["plan"][1]["route"] = "deepseek"; save(d)
 elif case == "ui-effort": d["ui_gates"]["plan"][0]["efforts"]["low"] = "max"; save(d)
 PY
 invalid_case() { local a b rc1 rc2; mutate "$1"
@@ -185,7 +186,7 @@ invalid_case() { local a b rc1 rc2; mutate "$1"
   rt2 check >/dev/null 2>"$T/err"; rc1=$?; rt2 sync >/dev/null 2>>"$T/err"; rc2=$?
   b=$(shasum -a 256 "$T/skill/SKILL.md" "$T/skill/opencode/opencode.json" | shasum -a 256 | awk '{print $1}')
   if [ "$rc1" = 2 ] && [ "$rc2" = 2 ] && [ "$a" = "$b" ] && ! grep -q Traceback "$T/err"; then ok "routing invalid: $1"; else bad "routing invalid: $1 (rc $rc1/$rc2, unchanged $([ "$a" = "$b" ] && echo yes || echo no), traceback $(grep -q Traceback "$T/err" && echo yes || echo no))"; fi; }
-for c in missing corrupt schema low max tab-model hash-model nl-account accounts cost symlink no-marker dup-marker desc huge oc conductor-option allowed-unhashable nan-cost pending-model pending-option pending-conductor pending-gate ui-primary ui-missing ui-extra ui-empty ui-dup ui-effort; do invalid_case "$c"; done
+for c in missing corrupt schema low max tab-model hash-model nl-account accounts cost symlink no-marker dup-marker desc huge oc conductor-option allowed-unhashable nan-cost pending-model pending-option pending-conductor pending-gate ui-primary ui-missing ui-extra ui-empty ui-dup ui-model-id ui-effort; do invalid_case "$c"; done
 mutate none; python3 -I - "$T/skill" <<'PY'
 import json, os, sys
 s = sys.argv[1]

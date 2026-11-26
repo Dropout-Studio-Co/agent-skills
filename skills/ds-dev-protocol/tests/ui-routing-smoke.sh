@@ -57,23 +57,24 @@ rec_review() { printf '{"gate":"%s","head_sha":"%s","verdict":"pass","summary":"
 run() { ( cd "$R" && EVID="$E" bash "$GATE" "$@" >"$T/out" 2>&1 ); RC=$?; }
 gcase() { local n=$1 want=$2 g=$3 tier=$4 model=$5 inst=$6 opt=$7 eff=$8 trig=${9:-}; setc "$model" "$inst" "$opt" "$eff"
   run "$g" "$tier" --ui ${trig:+--trigger} --record "$E/rec.json" --child-thread "c$N" --parent-thread p1; N=$((N + 1))
-  if [ "$want" = 0 ]; then chk "$n" bash -c "[ $RC = 0 ] && tail -1 '$E/gates.log' | grep -q '\"ui\": true'"; else chk "$n" test "$RC" = "$want"; fi; }
+  if [ "$want" = 0 ]; then chk "$n" bash -c "[ $RC = 0 ] && tail -1 '$E/gates.log' | grep -q '\"ui\": true'"; else chk "$n" bash -c "[ $RC = $want ] && tail -1 '$E/gates.log' | grep -qE 'child (model|effort|account)|observed|expected'"; fi; }
 factev() { mk_ev "$1"; printf 'facts\n' > "$E/facts.md"; K=$(shasum -a 256 "$E/facts.md" | awk '{print $1}'); pkt plan "$K"; }
 rvev() { mk_ev "$1"; pkt review "$H" "$B"; }
 # --- plan: Opus tier effort by tier/trigger; Neon fallback is high ---
 factev u-plan-low; rec_plan low; gcase "ui plan low accepts Opus medium" 0 plan low "$P1MODEL" "${P1_ALL[0]}" "$P1OPT" "$(rt ui-effort plan low '' "$P1ROUTE")"
-fresh; gcase "ui plan low rejects Opus low" 2 plan low "$P1MODEL" "${P1_ALL[0]}" "$P1OPT" low
-factev u-plan-trigger; rec_plan medium; gcase "ui plan medium --trigger accepts Opus high" 0 plan medium "$P1MODEL" "${P1_ALL[0]}" "$P1OPT" "$(rt ui-effort plan medium 1 "$P1ROUTE")" 1
-fresh; gcase "ui plan medium without --trigger rejects Opus medium" 2 plan medium "$P1MODEL" "${P1_ALL[0]}" "$P1OPT" "$(rt ui-effort plan medium '' "$P1ROUTE")"
+fresh; rec_plan low; gcase "ui plan low rejects Opus low" 2 plan low "$P1MODEL" "${P1_ALL[0]}" "$P1OPT" low
+factev u-plan-med; rec_plan medium; gcase "ui plan medium accepts Opus medium" 0 plan medium "$P1MODEL" "${P1_ALL[0]}" "$P1OPT" "$(rt ui-effort plan medium '' "$P1ROUTE")"
+fresh; rec_plan medium; gcase "ui plan medium --trigger accepts Opus high" 0 plan medium "$P1MODEL" "${P1_ALL[0]}" "$P1OPT" "$(rt ui-effort plan medium 1 "$P1ROUTE")" 1
+fresh; rec_plan medium; gcase "ui plan medium --trigger rejects Opus medium" 2 plan medium "$P1MODEL" "${P1_ALL[0]}" "$P1OPT" "$(rt ui-effort plan medium '' "$P1ROUTE")" 1
 factev u-plan-high; rec_plan high; gcase "ui plan high accepts Opus high" 0 plan high "$P1MODEL" "${P1_ALL[0]}" "$P1OPT" "$(rt ui-effort plan high '' "$P1ROUTE")"
-fresh; gcase "ui plan high rejects Opus medium" 2 plan high "$P1MODEL" "${P1_ALL[0]}" "$P1OPT" medium
+fresh; rec_plan high; gcase "ui plan high rejects Opus medium" 2 plan high "$P1MODEL" "${P1_ALL[0]}" "$P1OPT" medium
 # --- review: high on every Opus tier; Neon fallback high ---
 for t in low medium high; do rvev "u-rv-$t"; rec_review review "$H"; gcase "ui review $t accepts Opus high" 0 review "$t" "$R1MODEL" "${R1_ALL[0]}" "$R1OPT" "$(rt ui-effort review "$t" '' "$R1ROUTE")"; done
 rvev u-rv-med; rec_review review "$H"; gcase "ui review medium rejects Opus medium" 2 review medium "$R1MODEL" "${R1_ALL[0]}" "$R1OPT" medium
 factev u-plan-neon; rec_plan low; gcase "ui plan Neon fallback accepts high" 0 plan low "$P3MODEL" "${P3_ALL[0]}" "$P3OPT" "$(rt ui-effort plan low '' "$P3ROUTE")"
-fresh; gcase "ui plan Neon fallback rejects medium" 2 plan low "$P3MODEL" "${P3_ALL[0]}" "$P3OPT" medium
+fresh; rec_plan low; gcase "ui plan Neon fallback rejects medium" 2 plan low "$P3MODEL" "${P3_ALL[0]}" "$P3OPT" medium
 rvev u-rv-neon; rec_review review "$H"; gcase "ui review Neon fallback accepts high" 0 review low "$R3MODEL" "${R3_ALL[0]}" "$R3OPT" "$(rt ui-effort review low '' "$R3ROUTE")"
-fresh; gcase "ui review Neon fallback rejects medium" 2 review low "$R3MODEL" "${R3_ALL[0]}" "$R3OPT" medium
+fresh; rec_review review "$H"; gcase "ui review Neon fallback rejects medium" 2 review low "$R3MODEL" "${R3_ALL[0]}" "$R3OPT" medium
 # --- non-UI stays single-route; --ui is plan/review only; Scope: ui is required ---
 factev u-nonui; rec_plan medium; setc "$P1MODEL" "${P1_ALL[0]}" "$P1OPT" high; run plan medium --record "$E/rec.json" --child-thread x1 --parent-thread p1
 chk "non-UI plan rejects Opus" test "$RC" = 2
@@ -93,6 +94,9 @@ run plan medium --ui --record "$E/rec.json" --child-thread d2 --parent-thread p1
 rvev u-cyber; rec_review review "$H"; setc "$R1MODEL" "${R1_ALL[0]}" "$R1OPT" high; export ERR='{"stop_reason": "refusal"}'
 run review medium --ui --record "$E/rec.json" --child-thread cy --parent-thread p1
 chk "ui cyber refusal exit3 blocked" bash -c "[ $RC = 3 ] && tail -1 '$E/gates.log' | grep -q '\"reason\": \"cyber refusal\"' && ! ls '$E'/review-*.json 2>/dev/null"
+factev u-cyber-plan; rec_plan medium; setc "$P1MODEL" "${P1_ALL[0]}" "$P1OPT" "$(rt ui-effort plan medium '' "$P1ROUTE")"; export ERR='{"stop_reason": "refusal"}'
+run plan medium --ui --record "$E/rec.json" --child-thread cyp --parent-thread p1
+chk "ui plan cyber refusal exit3 blocked" bash -c "[ $RC = 3 ] && tail -1 '$E/gates.log' | grep -q '\"reason\": \"cyber refusal\"' && ! ls '$E'/plan-*.json 2>/dev/null"
 # --- default usage_limit failover: two active tiers, no account-name collision ---
 factev u-fo; rec_plan medium; export ERR='{"error":"usage_limit"}'
 setc "$P1MODEL" "${P1_ALL[0]}" "$P1OPT" "$(rt ui-effort plan medium '' "$P1ROUTE")"; run plan medium --ui --record "$E/rec.json" --child-thread f1 --parent-thread p1; f1=$RC; cp "$T/out" "$T/f1"
@@ -158,27 +162,30 @@ def write(gate, k, route, ui, eff, tier2, body):
     if gate == "plan": d["facts_sha256"] = fs
     if ui != "absent": d["ui"] = json.loads(ui)
     rows.append(d)
+if "epoch" in extra:
+    e = cfg["gates"]["epoch"]; write("epoch", "e", e["route"], "true" if "ui-epoch" in extra else "false", e["efforts"][tier if tier in e["efforts"] else "high"], tier, {"gate": "epoch", "head_sha": key, "verdict": "pass", "summary": "ok", "findings": []})
 write("plan", fs, pr, pu, pe, ptier, {"gate": "plan", "tier": ptier, "acceptance_criteria": ["a"], "design": "d", "files": ["f"], "tests": ["t"], "risks": [], "rollback": "r"})
 write("review", key, rr, ru, re, tier, {"gate": "review", "head_sha": key, "verdict": "pass", "summary": "ok", "findings": []})
 if "security" in extra:
     s = cfg["gates"]["security"]; write("security", key, s["route"], "true" if "ui-sec" in extra else "false", s["efforts"]["high"], tier, {"gate": "security", "head_sha": key, "verdict": "pass", "summary": "ok", "findings": []})
-if "epoch" in extra:
-    e = cfg["gates"]["epoch"]; write("epoch", "e", e["route"], "true" if "ui-epoch" in extra else "false", e["efforts"][tier if tier in e["efforts"] else "high"], tier, {"gate": "epoch", "head_sha": key, "verdict": "pass", "summary": "ok", "findings": []})
 open(os.path.join(ev, "gates.log"), "w").write("".join(json.dumps(r) + "\n" for r in rows))
 PY
 }
 pmrun() { ( cd "$T" && EVID="$T/$1" bash "$2" --diff "$T/pdiff" >"$T/pout" 2>&1 ); PRC=$?; }
 pmc() { local n=$1 w=$2 s=$3; shift 3; pm_ev "$n" "$@"; pmrun "$n" "$s"; if [ "$w" = 0 ]; then chk "$n" test "$PRC" = 0; else chk "$n" test "$PRC" = 1; fi; }
-PM=$ROOT/scripts/premerge-and-merge.sh; APM=$ALT/scripts/premerge-and-merge.sh; OP_EFF=$(rt ui-effort plan medium '' "$P1ROUTE"); RV_H=$(rt ui-effort review low '' "$R1ROUTE"); NEON_H=$(rt ui-effort plan low '' "$P3ROUTE")
+PM=$ROOT/scripts/premerge-and-merge.sh; APM=$ALT/scripts/premerge-and-merge.sh; OP_EFF=$(rt ui-effort plan medium '' "$P1ROUTE"); PH=$(rt ui-effort plan high '' "$P1ROUTE"); RV_H=$(rt ui-effort review low '' "$R1ROUTE"); NEON_H=$(rt ui-effort plan low '' "$P3ROUTE")
 pmc "premerge accepts ui=true Opus plan/review" 0 "$PM" medium "$ROOT/routing.json" "$P1ROUTE" true "$OP_EFF" medium "$P1ROUTE" true "$RV_H" -
 pmc "premerge accepts ui=true Neon high plan/review" 0 "$PM" medium "$ROOT/routing.json" "$P3ROUTE" true "$NEON_H" medium "$R3ROUTE" true "$RV_H" -
 pmc "premerge accepts active alt opus_antigravity" 0 "$APM" medium "$ALT/routing.json" "$A2R" true "$AE2" medium "$A2R" true "$(python3 -I "$ALT/scripts/routing_lib.py" ui-effort review medium '' "$A2R")" -
 pmc "premerge rejects ui=true Neon medium plan" 1 "$PM" medium "$ROOT/routing.json" "$P3ROUTE" true medium medium "$R3ROUTE" true "$RV_H" -
 pmc "premerge rejects ui=true Opus review medium" 1 "$PM" medium "$ROOT/routing.json" "$P1ROUTE" true "$OP_EFF" medium "$P1ROUTE" true medium -
 pmc "premerge rejects ui=true Opus high-tier plan medium" 1 "$PM" high "$ROOT/routing.json" "$P1ROUTE" true medium high "$P1ROUTE" true "$RV_H" security
-pmc "premerge rejects ui=true on security" 1 "$PM" high "$ROOT/routing.json" "$P1ROUTE" true "$OP_EFF" medium "$P1ROUTE" true "$RV_H" security+ui-sec
-pmc "premerge rejects ui=true on epoch" 1 "$PM" high "$ROOT/routing.json" "$P1ROUTE" true "$OP_EFF" medium "$P1ROUTE" true "$RV_H" security+epoch+ui-epoch
+pmc "premerge rejects ui=true on security" 1 "$PM" high "$ROOT/routing.json" "$P1ROUTE" true "$PH" high "$P1ROUTE" true "$RV_H" security+ui-sec
+chk "premerge security ui failure names the ui flag" grep -q 'security ui flag is not valid' "$T/pout"
+pmc "premerge rejects ui=true on epoch" 1 "$PM" high "$ROOT/routing.json" "$P1ROUTE" true "$PH" high "$P1ROUTE" true "$RV_H" security+epoch+ui-epoch
+chk "premerge epoch ui failure names the ui flag" grep -q 'epoch ui flag is not valid' "$T/pout"
 pmc "premerge rejects non-boolean ui" 1 "$PM" medium "$ROOT/routing.json" "$P1ROUTE" '"yes"' "$OP_EFF" medium "$P1ROUTE" true "$RV_H" -
+chk "premerge non-boolean ui failure names the ui flag" grep -q 'plan ui flag is not valid' "$T/pout"
 pmc "premerge rejects non-UI Opus plan" 1 "$PM" medium "$ROOT/routing.json" "$P1ROUTE" absent "$OP_EFF" medium "$R3ROUTE" absent "$RV_H" -
 pmc "premerge rejects non-UI Opus review" 1 "$PM" medium "$ROOT/routing.json" "$P3ROUTE" absent "$NEON_H" medium "$P1ROUTE" false "$RV_H" -
 printf '\n%s\n' "$([ $FAILED = 0 ] && echo 'UI ROUTING TESTS PASSED' || echo 'UI ROUTING TESTS FAILED')"

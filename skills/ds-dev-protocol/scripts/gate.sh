@@ -22,7 +22,7 @@ SKILL=${SKILL:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}
 LIB=$SKILL/scripts/gate_lib.py
 gate=$1; tier=$2; shift 2
 key=""
-refuse() { python3 -I "$LIB" --log-invalid --evid "$EVID" --gate "$gate" --tier "$tier" --key "${key:-}" --reason "$*" >/dev/null 2>&1 || true; die "$*"; }
+refuse() { python3 -I "$LIB" --log-invalid --evid "$EVID" --gate "$gate" --tier "$tier" --key "${key:-}" --ui "${ui:-0}" --reason "$*" >/dev/null 2>&1 || true; die "$*"; }
 record=""; child=""; parent=""; trigger=0; ui=0; diff=""; base=""
 while [ $# -gt 0 ]; do case $1 in
   --record|--child-thread|--parent-thread|--diff|--base)
@@ -89,7 +89,9 @@ if [ "$repocheck" = 1 ]; then
 fi
 packet=$EVID/packet-$gate.md
 [ -s "$packet" ] || refuse "missing $packet"
-python3 -I - "$packet" "$gate" "$key" "$want" "$mb" "$tier" "$head" "$ui" <<'PY' || refuse "packet must bind the key, 'Gate: $gate', 'Tier: $tier', the merge-base, the HEAD and the exact gate source"
+pkt_reason="packet must bind the key, 'Gate: $gate', 'Tier: $tier', the merge-base, the HEAD and the exact gate source"
+[ "$ui" = 1 ] && pkt_reason="$pkt_reason plus 'Scope: ui'"
+python3 -I - "$packet" "$gate" "$key" "$want" "$mb" "$tier" "$head" "$ui" <<'PY' || refuse "$pkt_reason"
 import sys
 path, gate, key, source, base, tier, head, ui = sys.argv[1:9]
 text = open(path, encoding="utf-8", errors="replace").read()

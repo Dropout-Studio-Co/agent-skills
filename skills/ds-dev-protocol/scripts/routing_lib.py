@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """routing_lib.py - the ds-dev-protocol routing source of truth reader/validator/syncer (stdlib only, Python 3.9+).
-routing.json holds every route, model, provider, option key, account, cost cap, tier/trigger effort and the UI gate chains;
-this module validates it, derives roles, pinned specs and gate contracts, and syncs opencode/opencode.json and SKILL.md.
-Paths are anchored to this file; no environment override or working-directory lookup is honored.
-"""
+routing.json holds every route, model, provider, option key, account, cost cap, tier/trigger effort and the UI gate chains.
+This module validates it, derives roles, pinned specs and gate contracts, and syncs opencode/opencode.json and SKILL.md;
+paths are anchored to this file, and every error exits 2 without writing."""
 import json, math, os, re, sys, tempfile
 SKILL_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 START, END = "<!-- routing:start -->", "<!-- routing:end -->"
@@ -71,19 +70,20 @@ def load(skill_dir=None):
         seen = set()
         for pos, spec in enumerate(specs):
             name = spec.get("route") if isinstance(spec, dict) else None; route = routes.get(name) if isinstance(name, str) else None
-            if not isinstance(route, dict): raise ValueError("ui_gates %s needs known routes" % gate)
+            if not isinstance(route, dict) or (not pending(route) and ("model" not in route or "option_key" not in route)) or (pos == 0 and pending(route)): raise ValueError("ui_gates %s route %r is not an active model/option_key route or is a pending primary" % (gate, name))
             if name in seen: raise ValueError("ui_gates %s has a duplicate route %s" % (gate, name))
             seen.add(name)
-            if pos == 0 and pending(route): raise ValueError("ui_gates %s primary route cannot be catalog-pending" % gate)
             if not isinstance(spec.get("efforts"), dict) or set(spec["efforts"]) != set(TIERS[gate]): raise ValueError("ui_gates %s efforts must be %s" % (gate, "/".join(TIERS[gate])))
             for tier, value in spec["efforts"].items(): effort(value, allowed, "ui_gates %s %s effort" % (gate, tier))
             if "trigger_effort" in spec: effort(spec["trigger_effort"], allowed, "ui_gates %s trigger_effort" % gate)
     return cfg
 def gate_contracts(cfg, gate, ui=False):
+    if ui and gate not in UI_GATES: raise ValueError("gate %s has no ui route" % gate)
     specs = cfg["ui_gates"][gate] if ui else [cfg["gates"][gate]]
     return [(r["provider"], spec["route"], r["model"], r["option_key"], tuple(r["accounts"])) for spec in specs for r in [cfg["routes"][spec["route"]]] if r.get("model") is not None and r.get("option_key") is not None]
 def gate_contract(cfg, gate): return gate_contracts(cfg, gate)[0]
 def spec_for(cfg, gate, ui=False, route=None):
+    if ui and gate not in UI_GATES: raise ValueError("gate %s has no ui route" % gate)
     specs = cfg["ui_gates"][gate] if ui else [cfg["gates"][gate]]
     specs = [spec for spec in specs if spec["route"] == route] if route is not None else specs
     if not specs: raise ValueError("gate %s has no route %r" % (gate, route))

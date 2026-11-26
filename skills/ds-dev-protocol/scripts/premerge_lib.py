@@ -60,7 +60,7 @@ def evidence(ev, key, tier, base, mode):
         s, p = str(d.get("session_id") or ""), str(d.get("parent_thread_id") or "")
         if not s or not p or s == p: return "%s child session is missing or equals the parent" % g
         hit = next((c for c in routing.gate_contracts(RCFG, g, ui=ui) if c[1] == d.get("route") and c[2] == d.get("model")), None)
-        if not hit: return "%s is not the %s route" % (g, d.get("route"))
+        if not hit: return "%s route %r is not one of %s" % (g, d.get("route"), "/".join(c[1] for c in routing.gate_contracts(RCFG, g, ui=ui)))
         if d.get("account") not in hit[4]: return "%s account is not one of the %s instances" % (g, hit[1])
         if g == "epoch":
             t = d.get("tier")
