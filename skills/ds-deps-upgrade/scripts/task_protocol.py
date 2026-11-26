@@ -407,7 +407,10 @@ def build_prompt(kind, subject, worktree, base, candidate, files, context_path=N
         'critical': 'Correctness of the whole upgrade: every required migration done, no broken callers, config '
                     'or build changes, behaviour regressions, removed or renamed APIs, test adequacy. For the '
                     'lockfile: new, removed or re-sourced packages, integrity fields, unexpected major jumps, '
-                    'install scripts, registry/source changes.',
+                    'install scripts, registry/source changes. Official documentation and migration sources: the '
+                    'latest official documentation was consulted for every dependency upgraded, and official '
+                    'migration guides/sources were followed for every major upgrade; any major upgrade without '
+                    'verified official migration sources must be held.',
         'independent': 'Independent assessment of the high-risk item "%s": impact on data, trust boundaries and '
                        'integrations; whether the migration is complete and correct; controls and recovery. '
                        'Judge only from the diff and code, not from the author\'s claims.' % subject,
@@ -459,7 +462,10 @@ def build_plan_prompt(kind, subject, target, head, context_path, read_only_note)
                 'versions (latest stable, supported, mutually compatible), batch order as a DAG of coupled '
                 'families (toolchain first), required migrations versus optional adoption, codemods, affected '
                 'files and callers, the test matrix and baseline commands, rollback points, and which items '
-                'are high-risk or must be held.',
+                'are high-risk or must be held. Official documentation and migration sources: consult the latest '
+                'official documentation for every dependency upgraded, and strictly follow the official '
+                'migration guides/sources for every major upgrade; any major upgrade without verified official '
+                'migration sources is held.',
         'architecture': 'Architecture of the high-risk item "%s": the safest supported migration route and '
                         'alternatives rejected, effect on data, trust boundaries, integrations and deployment, '
                         'ordering constraints, controls, verification and recovery. Judge only from the code '
