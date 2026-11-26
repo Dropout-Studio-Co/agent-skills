@@ -3,7 +3,7 @@ name: ds-agent-docs
 description: Audit and sync repository AI-agent instructions, IDE rules, skills, and docs (AGENTS.md, CLAUDE.md, GEMINI.md, Cursor, Copilot, Windsurf, README) against live repo truth, session evidence, and git history.
 license: MIT
 metadata:
-  version: "5.0"
+  version: "6.0"
 ---
 
 # Audit & Sync Agent Docs (`ds-agent-docs`)
@@ -20,8 +20,12 @@ Run the read-only mechanical survey and read its JSON (pass `--skills-dir <dir>`
 skills live outside `.agents/skills/`):
 
 ```sh
-python3 <skill-dir>/scripts/check_instructions.py audit --repo <root> [--scope <path>] [--skills-dir <dir>] --json
+ds-agent-docs audit --repo <root> [--scope <path>] [--skills-dir <dir>] --json
 ```
+
+`ds-agent-docs` installs from `crates/ds-agent-docs` (`cargo install --path crates/ds-agent-docs`) or
+from GitHub Releases; `python3 <skill-dir>/scripts/check_instructions.py` and `collect_sessions.py`
+remain the fallback.
 
 Inspect `delivery`, `context_load`, `import`, `references`, `structure`, `hygiene` and
 `docs_coverage`:
@@ -38,7 +42,7 @@ Inspect `delivery`, `context_load`, `import`, `references`, `structure`, `hygien
   Investigate each one; treat bare prose filenames, GitHub repository slugs, and gitignored
   files as non-stale.
 
-The audit, the step 2 collector and both step 2 `git log` commands are read-only and
+The audit, the step 2 `ds-agent-docs collect` and both step 2 `git log` commands are read-only and
 independent. Launch all four in parallel shell calls and read every result before classifying.
 
 ## 2. Collect Session & Git Evidence
@@ -47,7 +51,7 @@ independent. Launch all four in parallel shell calls and read every result befor
 2. Collect redacted session evidence outside any git working tree:
 
    ```sh
-   python3 <skill-dir>/scripts/collect_sessions.py --repo <root> --days 60 \
+   ds-agent-docs collect --repo <root> --days 60 \
      --evidence-out <path outside any git working tree>
    ```
 
@@ -91,7 +95,7 @@ pass.
 
 These stay serial in the lead session: the cross-file contradiction checks and the shared
 5,000-token budget synthesis here, the report in step 4, and the edits plus their post-edit
-`check_instructions.py audit` verification in step 5.
+`ds-agent-docs audit` verification in step 5.
 
 ## 4. Report & Propose Diffs (Review-First)
 
@@ -111,10 +115,10 @@ Apply only after user approval, honoring `delivery.action`:
 
 - `in_place`: edit the working copy directly.
 - `worktree`: run the printed `git fetch` and `git worktree add` commands, then re-run
-  `check_instructions.py audit` inside the new worktree before editing.
+  `ds-agent-docs audit` inside the new worktree before editing.
 - `patch_only`: leave the dirty file untouched and produce a patch the user can apply.
 
-Then re-run `check_instructions.py audit` and verify zero remaining `P1` findings, import errors
+Then re-run `ds-agent-docs audit` and verify zero remaining `P1` findings, import errors
 and hygiene hits. Leave commit, push and pull requests to the user unless asked.
 
 ## Maintenance cadence
