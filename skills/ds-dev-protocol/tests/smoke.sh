@@ -32,7 +32,7 @@ chk "line limits: implement-smoke.sh <= 200" bash -c "[ \$(wc -l < '$TESTS/imple
 chk "line limits: ui-routing-smoke.sh <= 200" bash -c "[ \$(wc -l < '$TESTS/ui-routing-smoke.sh') -le 200 ]"
 # --- SKILL.md size and frontmatter description ---
 chk "SKILL.md <= 25600 bytes" test "$(wc -c < "$ROOT/SKILL.md")" -le 25600
-chk "frontmatter description <= 450 chars" bash -c "d=\$(awk -F\"'\" '/^description:/{print \$2; exit}' '$ROOT/SKILL.md'); [ -n \"\$d\" ] && [ \${#d} -le 450 ]"
+chk "frontmatter description <= 450 chars" bash -c "d=\$(awk -F\"'\" '/^description:/{print \$2; exit}' '$ROOT/SKILL.md'); [ -n \"\$d\" ] && [ \${#d} -le 450 ]"; chk "always-on all-work and session-only opt-out in SKILL.md" bash -c "f='$ROOT/SKILL.md'; d=\$(awk -F\"'\" '/^description:/{print \$2; exit}' \"\$f\"); h=\$(sed -n '6p' \"\$f\"); for s in \"\$d\" \"\$h\"; do for p in 'always on by default' 'all work' 'every harness' 'model' 'AI agent' 'T3 Code' 'explicit' 'session-only' 'never global'; do printf '%s' \"\$s\" | grep -qiF -- \"\$p\" || exit 1; done; done && ! grep -qF 'every dev task' \"\$f\""
 # --- forbidden tokens: no cswap, agy, Sonnet, xhigh, provisional, code-review or sandboxed in anything the conductor reads ---
 TOKENS="cswap agy Sonnet xhigh provisional code-review sandboxed"; TEXTS=("$ROOT/SKILL.md" "$ROOT/reference.md" "$ROOT/plan-gate-brief.md" "$ROOT/review-gate-brief.md" "$ROOT/implementer-brief.md" "$ROOT/opencode/opencode.json" "$SCRIPT")
 chk "zero forbidden tokens in docs, briefs, opencode config and scripts/" bash -c "for t in $TOKENS; do ! grep -riq -- \"\$t\" \"\${@:2}\" || exit 1; done" _ "${TEXTS[@]}"

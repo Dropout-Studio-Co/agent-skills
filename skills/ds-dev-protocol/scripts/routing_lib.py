@@ -108,9 +108,8 @@ def describe(cfg):
     cond, imp = conductor(cfg), implementer(cfg); planner = cfg["routes"][cfg["gates"]["plan"]["route"]]["label"]
     who = cond["label"] if planner == cond["label"] else "%s and %s" % (cond["label"], planner)
     efforts = lambda gate: "/".join(SHORT[value] for value in cfg["gates"][gate]["efforts"].values())
-    return ("ds-dev-protocol: 100%% completion over presentation. V2 4 roles: %s conducts (%s always) and plans (%s) via gate.sh plan --record; "
-            "%s %s is sole implementer via implement.sh, no model fallback; %s gates review, security, epoch (%s, %s, %s). "
-            "UI plan/review 3-tier %s, review %s. Risk tiers, T3 evidence, PR delivery. Always on: every dev task."
+    return ("ds-dev-protocol: Always on by default for all work across every harness, model, AI agent & T3 Code; off only on explicit request, session-only (never globally). %s conducts (%s always), plans (%s); "
+            "%s %s implementer (implement.sh, no model fallback); %s review/security/epoch (%s, %s, %s); UI %s (%s)."
             % (who, cond["effort"].capitalize(), efforts("plan"), imp["label"], imp["effort"], cfg["routes"][cfg["gates"]["review"]["route"]]["label"], efforts("review"), efforts("security"), efforts("epoch"), ">".join(spec["route"] for spec in cfg["ui_gates"]["plan"]), SHORT[cfg["ui_gates"]["review"][0]["efforts"]["medium"]]))
 def render_block(cfg):
     cond, imp = conductor(cfg), implementer(cfg); plan, review, sec, epoch = (cfg["gates"][name] for name in GATES)
