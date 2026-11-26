@@ -139,12 +139,15 @@ row = {"ts": "2026-11-11T00:00:00Z", "gate": "epoch", "tier": tier, "round": 1, 
 open(os.path.join(ev, "gates.log"), "a").write(json.dumps(row) + "\n")
 PY
 }
-# --- plan: tier -> effort (low medium, medium/high high) ---
+# --- plan: tier -> effort (low/medium medium, high high) ---
 for tier in low medium high; do want=$(rt effort plan "$tier")
   fresh; new_ev "pl-$tier"; printf 'facts body\n' > "$E/facts.md"; K=$(shasum -a 256 "$E/facts.md" | awk '{print $1}')
   pkt plan "$K"; rec_plan "$tier"; planenv "$want"; export FAKE_RECORD=$E/rec.json; g "$E" plan "$tier" --record "$E/rec.json"
   chk "plan $tier exit0 file+provenance effort=$want" bash -c "[ $GRC = 0 ] && test -s '$E/plan-$K.json' && tail -1 '$E/gates.log' | grep -q '\"status\": \"ok\"' && tail -1 '$E/gates.log' | grep -q '\"effort\": \"$want\"' && tail -1 '$E/gates.log' | grep -q '\"route\": \"$NR\"' && tail -1 '$E/gates.log' | grep -q '\"provider\": \"$NP\"' && tail -1 '$E/gates.log' | grep -q '\"account\": \"$NEON_ACCT\"' && tail -1 '$E/gates.log' | grep -q '\"driver_kind\": \"$NDK\"' && grep -q '\"driver_kind\": \"$NDK\"' '$E/plan-$K.json' && tail -1 '$E/gates.log' | grep -q '\"provenance_mode\": \"t3-verified\"'"
 done
+for spec in medium:high high:medium; do tier=${spec%%:*}; e=${spec##*:}
+  fresh; new_ev "pl-neg-$tier"; printf 'facts body\n' > "$E/facts.md"; K=$(shasum -a 256 "$E/facts.md" | awk '{print $1}'); pkt plan "$K"; rec_plan "$tier"; planenv "$e"; export FAKE_RECORD=$E/rec.json; g "$E" plan "$tier" --record "$E/rec.json"
+  chk "plan $tier rejects effort=$e exit2" bash -c "[ $GRC = 2 ] && tail -1 '$E/gates.log' | grep -q '\"status\": \"invalid\"' && ! ls '$E'/plan-*.json 2>/dev/null"; done
 fresh; new_ev plan-bad; printf 'facts body\n' > "$E/facts.md"; K=$(shasum -a 256 "$E/facts.md" | awk '{print $1}'); pkt plan "$K"; rec_plan medium; planenv "$(rt effort plan medium)"
 export FAKE_MODEL=gemini-4-pro FAKE_RECORD=$E/rec.json; g "$E" plan medium --record "$E/rec.json"; chk "plan model downgrade exit2" bash -c "[ $GRC = 2 ] && tail -1 '$E/gates.log' | grep -q '\"status\": \"invalid\"' && tail -1 '$E/gates.log' | grep -q 'child model' && ! ls '$E'/plan-*.json 2>/dev/null"
 # --- real T3 output shapes: t3_submit_output tool item and truncated assistant text with a continuation ---

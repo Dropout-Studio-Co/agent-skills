@@ -16,13 +16,6 @@
    "option_key": "effort",
    "driver_kind": "claudeAgent"
   },
-  "opus_antigravity": {
-   "label": "Claude Opus 5.5 (Antigravity)",
-   "provider": "google-antigravity",
-   "model": null,
-   "option_key": null,
-   "driver_kind": "antigravity"
-  },
   "deepseek": {
    "label": "DeepSeek V4.1 Flash 1017",
    "provider": "opencode-go",
@@ -34,7 +27,7 @@
  "conductor": {"route": "neon", "effort": "medium"},
  "implementer": {"route": "deepseek", "effort": "high"},
  "gates": {
-  "plan": {"route": "neon", "efforts": {"low": "medium", "medium": "high", "high": "high"}},
+  "plan": {"route": "neon", "efforts": {"low": "medium", "medium": "medium", "high": "high"}},
   "review": {"route": "neon", "efforts": {"low": "medium", "medium": "medium", "high": "high"}, "trigger_effort": "high"},
   "security": {"route": "neon", "efforts": {"high": "high"}},
   "epoch": {"route": "neon", "efforts": {"medium": "high", "high": "high"}}
@@ -42,13 +35,11 @@
  "ui_gates": {
   "plan": [
    {"route": "opus", "efforts": {"low": "medium", "medium": "medium", "high": "high"}, "trigger_effort": "high"},
-   {"route": "opus_antigravity", "efforts": {"low": "medium", "medium": "medium", "high": "high"}, "trigger_effort": "high"},
-   {"route": "neon", "efforts": {"low": "high", "medium": "high", "high": "high"}}
+   {"route": "neon", "efforts": {"low": "high", "medium": "medium", "high": "high"}}
   ],
   "review": [
-   {"route": "opus", "efforts": {"low": "high", "medium": "high", "high": "high"}},
-   {"route": "opus_antigravity", "efforts": {"low": "high", "medium": "high", "high": "high"}},
-   {"route": "neon", "efforts": {"low": "high", "medium": "high", "high": "high"}}
+   {"route": "opus", "efforts": {"low": "high", "medium": "medium", "high": "high"}},
+   {"route": "neon", "efforts": {"low": "high", "medium": "medium", "high": "high"}}
   ]
  }
 }

@@ -62,7 +62,7 @@ chk "P27 shortcuts in SKILL.md" bash -c "grep -qF 'Shortcuts' '$ROOT/SKILL.md' &
 chk "routing/policy stays High" grep -qF 'routing/policy' "$ROOT/SKILL.md"
 chk "dynamic ds-* skill discovery in SKILL.md" bash -c "f='$ROOT/SKILL.md'; grep -qF '~/.agents/skills/ds-*/SKILL.md' \"\$f\" && grep -qF 'disable-model-invocation: true' \"\$f\" && grep -qF 'names it explicitly' \"\$f\" && grep -qF 'newly added or updated skill is picked up automatically' \"\$f\""
 chk "zero hardcoded sibling ds-* skill names in SKILL.md" bash -c "! grep -oE 'ds-[a-z0-9-]+' '$ROOT/SKILL.md' | grep -vx 'ds-dev-protocol'"
-chk "UI 3-tier plan/review routing in SKILL.md" bash -c "f='$ROOT/SKILL.md'; grep -qF '3-tier chain' \"\$f\" && grep -qF 'Scope: ui' \"\$f\" && grep -qF 'Claude Opus 5.5 (Antigravity)' \"\$f\" && grep -qF 'UI review is' \"\$f\""
+chk "UI 2-tier plan/review routing in SKILL.md" bash -c "f='$ROOT/SKILL.md'; grep -qF '2-tier chain' \"\$f\" && grep -qF 'Scope: ui' \"\$f\" && grep -qF 'UI review' \"\$f\" && ! grep -qF '3-tier' \"\$f\""
 chk "reference.md documents the UI gates" bash -c "f='$ROOT/reference.md'; grep -qF 'ui_gates' \"\$f\" && grep -qF 'catalog-pending' \"\$f\" && grep -qF -- '--ui' \"\$f\" && grep -qF '(model, providerInstanceId)' \"\$f\" && grep -qF '25600' \"\$f\" && grep -qF 'ds-*/SKILL.md' \"\$f\""
 chk "reference.md documents Trail blast" grep -qF 'trail blast --no-owners' "$ROOT/reference.md"
 # --- AC36: HEAD rules SKILL.md must keep ---
@@ -113,7 +113,7 @@ chk "routing.json exists" test -s "$ROOT/routing.json"
 chk "routing_lib.py is not executable" bash -c "[ ! -x '$RLIB' ]"
 chk "routing_lib.py check (python3)" python3 -I "$RLIB" check
 if [ -x /usr/bin/python3 ]; then chk "routing_lib.py check (system /usr/bin/python3)" /usr/bin/python3 -I "$RLIB" check; fi
-chk "routing.json contract" bash -c "python3 -I -c 'import json,sys; d=json.load(open(sys.argv[1])); r=d[\"routes\"]; assert d[\"schema_version\"]==1 and d[\"allowed_efforts\"]==[\"medium\",\"high\"] and set(r)=={\"neon\",\"opus\",\"opus_antigravity\",\"deepseek\"} and r[\"opus_antigravity\"][\"model\"] is None and r[\"opus_antigravity\"][\"option_key\"] is None and not any(\"accounts\" in v for v in r.values()) and {k: v[\"driver_kind\"] for k,v in r.items()}=={\"neon\":\"\u0061ntigravity\",\"opus\":\"claude\u0041gent\",\"opus_antigravity\":\"\u0061ntigravity\",\"deepseek\":\"opencode\"} and r[\"deepseek\"][\"max_cost_usd\"]==0 and set(d[\"gates\"])=={\"plan\",\"review\",\"security\",\"epoch\"} and d[\"gates\"][\"review\"][\"efforts\"][\"medium\"]==\"medium\" and d[\"gates\"][\"review\"][\"trigger_effort\"]==\"high\" and d[\"conductor\"]=={\"route\":\"neon\",\"effort\":\"medium\"} and d[\"implementer\"]=={\"route\":\"deepseek\",\"effort\":\"high\"} and set(d[\"ui_gates\"])=={\"plan\",\"review\"} and [s[\"route\"] for s in d[\"ui_gates\"][\"plan\"]]==[\"opus\",\"opus_antigravity\",\"neon\"] and [s[\"route\"] for s in d[\"ui_gates\"][\"review\"]]==[\"opus\",\"opus_antigravity\",\"neon\"]' '$ROOT/routing.json'"
+chk "routing.json contract" bash -c "python3 -I -c 'import json,sys; d=json.load(open(sys.argv[1])); r=d[\"routes\"]; assert d[\"schema_version\"]==1 and d[\"allowed_efforts\"]==[\"medium\",\"high\"] and set(r)=={\"neon\",\"opus\",\"deepseek\"} and not any(\"accounts\" in v for v in r.values()) and {k: v[\"driver_kind\"] for k,v in r.items()}=={\"neon\":\"\u0061ntigravity\",\"opus\":\"claude\u0041gent\",\"deepseek\":\"opencode\"} and r[\"deepseek\"][\"max_cost_usd\"]==0 and set(d[\"gates\"])=={\"plan\",\"review\",\"security\",\"epoch\"} and d[\"gates\"][\"plan\"][\"efforts\"]=={\"low\":\"medium\",\"medium\":\"medium\",\"high\":\"high\"} and d[\"gates\"][\"review\"][\"efforts\"]=={\"low\":\"medium\",\"medium\":\"medium\",\"high\":\"high\"} and d[\"gates\"][\"review\"][\"trigger_effort\"]==\"high\" and d[\"gates\"][\"security\"][\"efforts\"]=={\"high\":\"high\"} and d[\"gates\"][\"epoch\"][\"efforts\"]=={\"medium\":\"high\",\"high\":\"high\"} and d[\"conductor\"]=={\"route\":\"neon\",\"effort\":\"medium\"} and d[\"implementer\"]=={\"route\":\"deepseek\",\"effort\":\"high\"} and set(d[\"ui_gates\"])=={\"plan\",\"review\"} and [s[\"route\"] for s in d[\"ui_gates\"][\"plan\"]]==[\"opus\",\"neon\"] and d[\"ui_gates\"][\"plan\"][0][\"efforts\"]=={\"low\":\"medium\",\"medium\":\"medium\",\"high\":\"high\"} and d[\"ui_gates\"][\"plan\"][0][\"trigger_effort\"]==\"high\" and d[\"ui_gates\"][\"plan\"][1][\"efforts\"]=={\"low\":\"high\",\"medium\":\"medium\",\"high\":\"high\"} and [s[\"route\"] for s in d[\"ui_gates\"][\"review\"]]==[\"opus\",\"neon\"] and d[\"ui_gates\"][\"review\"][0][\"efforts\"]=={\"low\":\"high\",\"medium\":\"medium\",\"high\":\"high\"} and d[\"ui_gates\"][\"review\"][1][\"efforts\"]=={\"low\":\"high\",\"medium\":\"medium\",\"high\":\"high\"}' '$ROOT/routing.json'"
 chk "routing_lib derives roles" bash -c "cd '$SCRIPT' && python3 -I -B -c 'import sys; sys.path.insert(0, sys.argv[1]); import routing_lib as r; c=r.load(); i=r.implementer(c); d=r.conductor(c); g=r.gate_contract(c,\"plan\"); assert i[\"pinned\"]==i[\"model\"]+\"#\"+i[\"effort\"] and i[\"driver_kind\"]==c[\"routes\"][i[\"route\"]][\"driver_kind\"] and d[\"effort\"]==\"medium\" and g[1:3]==(c[\"gates\"][\"plan\"][\"route\"], c[\"routes\"][c[\"gates\"][\"plan\"][\"route\"]][\"model\"]) and g[4]==c[\"routes\"][c[\"gates\"][\"plan\"][\"route\"]][\"driver_kind\"] and r.option_keys(c) and r.allowed_efforts_for(c,\"review\",\"medium\")=={\"medium\",\"high\"} and r.allowed_efforts_for(c,\"review\",\"low\")=={\"medium\"} and r.effort_for(c,\"review\",\"low\",True)==\"medium\"' '$SCRIPT'"
 cat > "$T/guard.py" <<'PY'
 import json, os, re, sys
@@ -146,7 +146,7 @@ import json, os, sys
 skill, case = sys.argv[1], sys.argv[2]
 rp = os.path.join(skill, "routing.json"); sp = os.path.join(skill, "SKILL.md"); op = os.path.join(skill, "opencode/opencode.json")
 def save(d): open(rp, "w").write(json.dumps(d, indent=1) + "\n")
-d = json.load(open(rp))
+d = json.load(open(rp)); d.setdefault("routes", {})["pt"] = {"label": "Pending Tier", "provider": "pending-provider", "model": None, "option_key": None, "driver_kind": "pending-driver"}
 if case == "missing": os.remove(rp)
 elif case == "corrupt": open(rp, "w").write("{")
 elif case == "schema": d["schema_version"] = 2; save(d)
@@ -172,11 +172,11 @@ elif case == "conductor-option":
     d["conductor"] = {"route": "solo", "effort": "medium"}; save(d)
 elif case == "allowed-unhashable": d["allowed_efforts"] = [{}]; save(d)
 elif case == "nan-cost": d["routes"][d["implementer"]["route"]]["max_cost_usd"] = float("nan"); save(d)
-elif case == "pending-model": d["routes"]["opus_antigravity"]["model"] = "half-model"; save(d)
-elif case == "pending-option": d["routes"]["opus_antigravity"]["option_key"] = "effort"; save(d)
-elif case == "pending-conductor": d["conductor"] = {"route": "opus_antigravity", "effort": "medium"}; save(d)
-elif case == "pending-gate": d["gates"]["plan"]["route"] = "opus_antigravity"; save(d)
-elif case == "ui-primary": d["ui_gates"]["plan"][0], d["ui_gates"]["plan"][1] = d["ui_gates"]["plan"][1], d["ui_gates"]["plan"][0]; save(d)
+elif case == "pending-model": d["routes"]["pt"]["model"] = "half-model"; save(d)
+elif case == "pending-option": d["routes"]["pt"]["option_key"] = "effort"; save(d)
+elif case == "pending-conductor": d["conductor"] = {"route": "pt", "effort": "medium"}; save(d)
+elif case == "pending-gate": d["gates"]["plan"]["route"] = "pt"; save(d)
+elif case == "ui-primary": d["ui_gates"]["plan"][0] = {"route": "pt", "efforts": d["ui_gates"]["plan"][0]["efforts"]}; save(d)
 elif case == "ui-missing": del d["ui_gates"]["review"]; save(d)
 elif case == "ui-extra": d["ui_gates"]["security"] = []; save(d)
 elif case == "ui-empty": d["ui_gates"]["plan"] = []; save(d)

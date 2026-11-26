@@ -5,7 +5,7 @@ usage() { cat <<'EOF'
 usage: EVID=<dir> gate.sh <plan|review|security|epoch> <low|medium|high>
          --record <json-file> --child-thread <id> --parent-thread <id>
          [--trigger] [--ui] [--diff FILE] [--base REF]
-  plan: key = sha256(EVID/facts.md); thought_level medium on low tier, high on medium/high
+  plan: key = sha256(EVID/facts.md); thought_level medium on low/medium tier, high on high
   review: key = HEAD or sha256(--diff FILE); effort medium, high on high tier or --trigger
   security: key = HEAD or sha256(--diff FILE); high tier only; effort high
   epoch: key = sha256(EVID/epoch.md); after a round-cap block; max 2 authorized per EVID

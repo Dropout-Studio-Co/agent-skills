@@ -107,16 +107,20 @@ def conductor(cfg):
 def describe(cfg):
     cond, imp = conductor(cfg), implementer(cfg); planner = cfg["routes"][cfg["gates"]["plan"]["route"]]["label"]
     who = cond["label"] if planner == cond["label"] else "%s and %s" % (cond["label"], planner)
-    efforts = lambda gate: "/".join(SHORT[value] for value in cfg["gates"][gate]["efforts"].values())
+    efforts = lambda gate: "/".join(SHORT[cfg["gates"][gate]["efforts"][tier]] for tier in TIERS[gate])
+    ui = cfg["ui_gates"]; ui_eff = lambda gate: "/".join(SHORT[ui[gate][0]["efforts"][tier]] for tier in TIERS["plan"])
     return ("ds-dev-protocol: Always on by default for all work across every harness, model, AI agent & T3 Code; off only on explicit request, session-only (never globally). %s conducts (%s always), plans (%s); "
-            "%s %s implementer (implement.sh, no model fallback); %s review/security/epoch (%s, %s, %s); UI %s (%s)."
-            % (who, cond["effort"].capitalize(), efforts("plan"), imp["label"], imp["effort"], cfg["routes"][cfg["gates"]["review"]["route"]]["label"], efforts("review"), efforts("security"), efforts("epoch"), ">".join(spec["route"] for spec in cfg["ui_gates"]["plan"]), SHORT[cfg["ui_gates"]["review"][0]["efforts"]["medium"]]))
+            "%s %s implementer (implement.sh, no model fallback); %s review/security/epoch (%s, %s, %s); UI %s (plan %s, review %s)."
+            % (who, cond["effort"].capitalize(), efforts("plan"), imp["label"], imp["effort"], cfg["routes"][cfg["gates"]["review"]["route"]]["label"], efforts("review"), efforts("security"), efforts("epoch"), ">".join(spec["route"] for spec in ui["plan"]), ui_eff("plan"), ui_eff("review")))
+def ui_efforts(specs): return ["/".join(spec["efforts"][tier] for tier in TIERS["plan"]) for spec in specs]
 def render_block(cfg):
     cond, imp = conductor(cfg), implementer(cfg); plan, review, sec, epoch = (cfg["gates"][name] for name in GATES)
     planner, reviewer = cfg["routes"][plan["route"]], cfg["routes"][sec["route"]]; other = [value for value in cfg["allowed_efforts"] if value != cond["effort"]]
     non_cond = "/".join(dict.fromkeys(r["label"] for r in (imp, reviewer) if r["label"] != cond["label"]))
-    ui_routes = [cfg["routes"][spec["route"]] for spec in cfg["ui_gates"]["plan"]]; ui_names = " → ".join(r["label"] if r.get("model") is None else "%s `%s`" % (r["label"], r["model"]) for r in ui_routes)
-    uplan, uneon, urev = cfg["ui_gates"]["plan"][0], cfg["ui_gates"]["plan"][-1], cfg["ui_gates"]["review"][0]
+    ui = cfg["ui_gates"]; ui_routes = [cfg["routes"][spec["route"]] for spec in ui["plan"]]; ui_names = " → ".join(r["label"] if r.get("model") is None else "%s `%s`" % (r["label"], r["model"]) for r in ui_routes)
+    plan_eff, review_eff = ui_efforts(ui["plan"]), ui_efforts(ui["review"]); trig = ui["plan"][0].get("trigger_effort")
+    ui_plan = "UI plan (Low/Med/High): `%s`%s" % (plan_eff[0], " (`%s` `--trigger`)" % trig if trig else "") + (", fallback `%s`" % plan_eff[-1] if len(plan_eff) > 1 else "")
+    ui_review = "`%s`" % review_eff[0] + (" (fallback `%s`)" % review_eff[-1] if len(review_eff) > 1 and review_eff[-1] != review_eff[0] else "")
     rows = [
         "Four roles, one model each, no substitution:", "",
         "| Role | Model and effort (%s only) | Path |" % "/".join(cfg["allowed_efforts"]), "|---|---|---|",
@@ -127,7 +131,7 @@ def render_block(cfg):
         "",
         "- **Dynamic `driver_kind` failover:** call `orchestrator_capabilities`; use only live `providerInstanceId` serial IDs (never display names or emails). A child hitting `usage_limit` is `task_cancel`led and re-dispatched as a fresh `delegate_task` on the next live instance of the same `driver_kind`, model and effort: never cross a `driver_kind` or model, never ask. When every live pair is tried, log `blocked` (exit 3), record `STATUS: blocked external — <model> quota exhausted; waiting for reset` with `Routes tried:`, stop cleanly.",
         "- **Start check (MUST):** session must be %s at `%s` in T3 Code; any other model or effort stops. %s never conducts: runs only its brief, no gate, premerge, git mutation or PR." % (cond["label"], cond["effort"], non_cond or imp["label"]),
-        "- **Frontend & UI routing (`--ui`, plan and review only):** with `--ui` and `Scope: ui` in the packet the gate uses this 3-tier chain in priority order: %s. A tier applies when a live `orchestrator_capabilities` instance of its `driver_kind` runs its model; a `ui_gates` route with zero live instances is skipped automatically. UI plan is `%s` standard, `%s` complex (`--trigger` or High tier); UI review is `%s`; Neon fallback `%s`. Non-UI gates keep the single route above. If every UI tier is exhausted, log `blocked` (exit 3) and never use another model." % (ui_names, uplan["efforts"]["medium"], uplan["efforts"]["high"], urev["efforts"]["medium"], uneon["efforts"]["medium"]),
+        "- **Frontend & UI routing (`--ui`, plan and review only):** with `--ui` and `Scope: ui` in the packet the gate uses this %d-tier chain in priority order: %s. A tier applies when a live `orchestrator_capabilities` instance of its `driver_kind` runs its model; a `ui_gates` route with zero live instances is skipped automatically. %s Non-UI gates keep the single route above. If every UI tier is exhausted, log `blocked` (exit 3) and never use another model." % (len(ui_routes), ui_names, ui_plan + "; UI review " + ui_review + "."),
     ]
     return "\n".join([START] + rows + [END])
 def render_skill(text, cfg):
