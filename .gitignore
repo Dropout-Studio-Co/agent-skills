@@ -18,3 +18,6 @@ __pycache__/
 # Local skill run state (normally kept outside the repository)
 **/.local-state/
 *.log
+
+# Rust build artifacts
+target/

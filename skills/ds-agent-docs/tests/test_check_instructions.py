@@ -766,7 +766,9 @@ class ContractTests(AuditCase):
         with open(os.path.join(SKILL_DIR, 'SKILL.md'), encoding='utf-8') as handle:
             text = handle.read()
         self.assertIn('# Audit & Sync Agent Docs (`ds-agent-docs`)', text)
-        self.assertIn('check_instructions.py audit', text)
+        self.assertIn('check_instructions.py', text)
+        self.assertIn('ds-agent-docs audit', text)
+        self.assertIn('ds-agent-docs collect', text)
         self.assertIn('--budget-tokens', text)
         self.assertNotIn('.backpassrc.json', text)
         for banned in ('claude-opus', 'claude-sonnet', 'claude-haiku', 'opus 5.5',

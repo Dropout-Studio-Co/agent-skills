@@ -1,0 +1,206 @@
+name: release-ds-agent-docs
+
+# Standard GitHub-hosted runners only (free tier); no paid or third-party runners.
+#   pull_request                 -> test (path-filtered)
+#   tag ds-agent-docs-v*         -> test -> build (4 targets) -> publish GitHub Release
+#   workflow_dispatch            -> test -> build (4 targets), no release
+#
+# `paths:` intentionally lives only on `pull_request`: combining it with a tag push
+# makes GitHub skip the run when the tagged commit does not touch those paths.
+# `push` carries tags only, so a `ds-agent-docs-v*` tag always runs `test` and `build`.
+
+on:
+  pull_request:
+    paths:
+      - "crates/ds-agent-docs/**"
+      - "skills/ds-agent-docs/**"
+      - ".github/workflows/release-ds-agent-docs.yml"
+  push:
+    tags: ["ds-agent-docs-v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-ds-agent-docs-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  MANIFEST_PATH: crates/ds-agent-docs/Cargo.toml
+
+jobs:
+  test:
+    name: Test (fmt, clippy, cargo, python)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            crates/ds-agent-docs/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('crates/ds-agent-docs/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: cargo fmt --check
+        run: cargo fmt --manifest-path "$MANIFEST_PATH" --all --check
+
+      - name: cargo clippy
+        run: cargo clippy --manifest-path "$MANIFEST_PATH" --all-targets -- -D warnings
+
+      - name: cargo test
+        run: cargo test --manifest-path "$MANIFEST_PATH" --locked
+
+      - name: Python helper tests
+        run: python3 -m unittest discover -s skills/ds-agent-docs/tests -t skills/ds-agent-docs
+
+  build:
+    name: Build ${{ matrix.target }}
+    needs: test
+    if: ${{ needs.test.result == 'success' && (startsWith(github.ref, 'refs/tags/ds-agent-docs-v') || github.event_name == 'workflow_dispatch') }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            archive: tar.gz
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            archive: tar.gz
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            archive: tar.gz
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            archive: zip
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            crates/ds-agent-docs/target
+          key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('crates/ds-agent-docs/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ matrix.target }}-cargo-
+
+      - name: Resolve release version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            version="${GITHUB_REF_NAME#ds-agent-docs-v}"
+          else
+            version="0.0.0-dev.${GITHUB_SHA::7}"
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Build release binary
+        run: cargo build --release --locked --manifest-path "$MANIFEST_PATH" --target ${{ matrix.target }}
+
+      - name: Stage release files
+        shell: bash
+        run: |
+          set -euo pipefail
+          name="ds-agent-docs-${{ steps.version.outputs.version }}-${{ matrix.target }}"
+          mkdir -p "dist/${name}"
+          if [ "${RUNNER_OS}" = "Windows" ]; then
+            cp "crates/ds-agent-docs/target/${{ matrix.target }}/release/ds-agent-docs.exe" "dist/${name}/"
+          else
+            cp "crates/ds-agent-docs/target/${{ matrix.target }}/release/ds-agent-docs" "dist/${name}/"
+          fi
+          cp LICENSE README.md "dist/${name}/"
+
+      - name: Package tar.gz
+        if: ${{ matrix.archive == 'tar.gz' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          name="ds-agent-docs-${{ steps.version.outputs.version }}-${{ matrix.target }}"
+          tar -czf "dist/${name}.tar.gz" -C dist "${name}"
+          if command -v sha256sum >/dev/null 2>&1; then
+            (cd dist && sha256sum "${name}.tar.gz" > "${name}.tar.gz.sha256")
+          else
+            (cd dist && shasum -a 256 "${name}.tar.gz" > "${name}.tar.gz.sha256")
+          fi
+          cat "dist/${name}.tar.gz.sha256"
+
+      - name: Package zip
+        if: ${{ matrix.archive == 'zip' }}
+        shell: pwsh
+        run: |
+          $name = "ds-agent-docs-${{ steps.version.outputs.version }}-${{ matrix.target }}"
+          Compress-Archive -Path "dist/$name" -DestinationPath "dist/$name.zip" -CompressionLevel Optimal
+          $hash = (Get-FileHash -Algorithm SHA256 "dist/$name.zip").Hash.ToLower()
+          [System.IO.File]::WriteAllText("dist/$name.zip.sha256", "$hash  $name.zip`n")
+          Get-Content "dist/$name.zip.sha256"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ds-agent-docs-${{ matrix.target }}
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/*.sha256
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish GitHub Release
+    needs: build
+    if: ${{ startsWith(github.ref, 'refs/tags/ds-agent-docs-v') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Write checksums.sha256
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd artifacts
+          ls -1
+          sha256sum ./*.tar.gz ./*.zip | sed 's|\./||' > checksums.sha256
+          cat checksums.sha256
+
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ds-agent-docs ${{ github.ref_name }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            artifacts/*.tar.gz
+            artifacts/*.zip
+            artifacts/checksums.sha256

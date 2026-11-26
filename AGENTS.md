@@ -4,11 +4,19 @@ Repository of Dropout Studio (`ds-*`) AI-agent skills. Each directory under `ski
 installable Agent Skill; this repository is the source of truth, and `~/.agents/skills/<name>` is
 kept in sync with `main` automatically (see [Automatic sync](#automatic-sync)).
 
+`crates/ds-agent-docs/` holds the Rust CLI that performs the `ds-agent-docs` audit and session
+collection (`audit`, `collect`). It lives outside `skills/` so `agent-skills-sync` stays text-only and
+under its 5 MB limit; the Python helpers remain the fallback implementation.
+
 ## Commands
 
 ```sh
 python3 -m unittest discover -s skills/ds-deps-upgrade/tests -t skills/ds-deps-upgrade  # ds-deps-upgrade + review_task tests
 python3 -m unittest discover -s skills/ds-agent-docs/tests -t skills/ds-agent-docs  # collector + checker tests
+cargo test --manifest-path crates/ds-agent-docs/Cargo.toml  # Rust CLI tests
+cargo clippy --manifest-path crates/ds-agent-docs/Cargo.toml --all-targets -- -D warnings  # Rust lint gate
+cargo fmt --manifest-path crates/ds-agent-docs/Cargo.toml --check  # Rust formatting gate
+cargo install --path crates/ds-agent-docs  # install the ds-agent-docs CLI from this checkout
 bash skills/ds-dev-protocol/tests/smoke.sh  # ds-dev-protocol smoke tests (fake CLIs)
 python3 -I skills/ds-dev-protocol/scripts/routing_lib.py check  # routing.json vs its derived files: 0 in sync, 1 drifted
 python3 -I skills/ds-dev-protocol/scripts/routing_lib.py sync   # rewrite opencode/opencode.json + the SKILL.md routing block
@@ -21,7 +29,9 @@ rsync -a --exclude '__pycache__/' --exclude 'graft/.cache/' skills/<name>/ ~/.ag
 `skills/ds-agent-docs/scripts/check_instructions.py` runs a read-only cross-agent instruction and
 documentation audit (`audit --repo R [--scope P]`); it never modifies a repository.
 `scripts/collect_sessions.py` collects and redacts session evidence. Both helpers are stdlib-only Python
-3.9+, and their tests live under `skills/ds-agent-docs/tests/`.
+3.9+, and their tests live under `skills/ds-agent-docs/tests/`. The Rust CLI in `crates/ds-agent-docs/`
+provides the same `audit` and `collect` commands and is what `SKILL.md` invokes; the Python helpers stay
+as the fallback when the binary is not installed.
 
 Run the drift check from an up-to-date `main` before starting a change to a skill: it must print
 nothing (any difference is local drift; bring it into the repository first). After the change is
@@ -83,6 +93,8 @@ skills/ds-agent-docs/           SKILL.md, references/ (audit-rubric.md, agent-su
 skills/ds-ui-overhaul/             SKILL.md, task-profile.json, references/ (platforms.md, parallel-work.md)
 skills/ds-media-cleanup/           SKILL.md, references/ (naming-and-jargon.md)
 skills/ds-storage-audit/           SKILL.md, references/ (os-locations.md, safety-classification.md)
+crates/ds-agent-docs/             Cargo.toml, Cargo.lock, src/ (main.rs, lib.rs, audit/, collect/,
+                          git.rs, redact.rs, repo.rs)
 ```
 
 `.githooks/pre-commit` (executable 0755) keeps `routing.json` and its derived `opencode/opencode.json` and `SKILL.md`
@@ -96,7 +108,9 @@ regions staged together; enable it once per clone with `git config core.hooksPat
   skill loads `task-profile.json`.
 - `SKILL.md` frontmatter keeps `name` (matching the `ds-*` folder name) and `description`;
   `ds-deps-upgrade` also declares `allowed-tools`, `license` and `disable-model-invocation`.
-- Python helpers are stdlib-only and must run on 3.9+.
+- Python helpers under `skills/` are stdlib-only and must run on 3.9+. `crates/ds-agent-docs/` is the
+  explicit exception: it is a Rust crate with its own `Cargo.toml`, `Cargo.lock` and dependencies, and it
+  stays outside `skills/` so the text-only skill sync never carries build output.
 - `skills/ds-dev-protocol/routing.json` (`schema_version` 1) is the only place a model route, provider, option
   key, driver kind, cost cap, tier/trigger effort or UI gate chain is defined; live instances come only from
   T3 Code's `orchestrator_capabilities`. `scripts/routing_lib.py` validates it, fails closed,
@@ -115,6 +129,8 @@ regions staged together; enable it once per clone with `git config core.hooksPat
 
 - Run the test suite after touching `ds-deps-upgrade` scripts, tests or any `task-profile.json`.
 - Run the collector and checker tests after touching `ds-agent-docs` scripts or tests.
+- Run `cargo test`, `cargo clippy --all-targets -- -D warnings` and `cargo fmt --check` after touching
+  `crates/ds-agent-docs`.
 - Run `bash skills/ds-dev-protocol/tests/smoke.sh` after touching `ds-dev-protocol` scripts or tests.
 - Keep documentation accurate to the code: file names, commands and flags.
 
@@ -123,4 +139,5 @@ regions staged together; enable it once per clone with `git config core.hooksPat
 - Commit `__pycache__/`, `graft/.cache/`, run state, transcripts, secrets or home-directory paths.
 - Rename or move a skill folder without updating all sibling references and tests, or link whole
   skills directories into a harness root.
-- Add a dependency, a package manifest, or a build step.
+- Add a dependency, a package manifest, or a build step under `skills/` (`crates/ds-agent-docs/` is the
+  explicit exception and keeps its own Cargo manifest, dependencies and release build).
