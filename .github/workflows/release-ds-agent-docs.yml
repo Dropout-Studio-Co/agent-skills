@@ -118,6 +118,7 @@ jobs:
           echo "version=${version}" >> "$GITHUB_OUTPUT"
 
       - name: Build release binary
+        shell: bash
         run: cargo build --release --locked --manifest-path "$MANIFEST_PATH" --target ${{ matrix.target }}
 
       - name: Stage release files
