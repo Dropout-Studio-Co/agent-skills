@@ -1,9 +1,9 @@
 ---
 name: ds-dev-protocol
-description: 'ds-dev-protocol: 100% completion over presentation. V2 4 roles: Gemini 4 Neon conducts (Medium always) and plans (Med/High/High) via gate.sh plan --record; DeepSeek V4.1 Flash 1017 high is sole implementer via implement.sh, no model fallback; Gemini 4 Neon gates review, security, epoch (Med/Med/High, High, High/High). UI plan/review 3-tier opus>opus_antigravity>neon, review High. Risk tiers, T3 evidence, PR delivery. Always on: every dev task.'
+description: 'ds-dev-protocol: Always on by default for all work across every harness, model, AI agent & T3 Code; off only on explicit request, session-only (never globally). Gemini 4 Neon conducts (Medium always), plans (Med/High/High); DeepSeek V4.1 Flash 1017 high implementer (implement.sh, no model fallback); Gemini 4 Neon review/security/epoch (Med/Med/High, High, High/High); UI opus>opus_antigravity>neon (High).'
 ---
 
-## ds-dev-protocol (applies to the task it accompanies, before or after it)
+## ds-dev-protocol (always on by default for all work across every harness, model, AI agent & T3 Code; opt-out: explicit, session-only, never global)
 
 **Precedence:** safety/system rules > repo AGENTS.md/CLAUDE.md, branch protection and CI > this protocol. If a step is impossible here, use the closest safe alternative and say so; never fake execution or results.
 
