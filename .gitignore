@@ -21,3 +21,6 @@ __pycache__/
 
 # Rust build artifacts
 target/
+
+# Local Serena MCP state
+.serena/
