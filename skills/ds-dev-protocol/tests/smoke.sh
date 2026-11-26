@@ -107,7 +107,7 @@ chk "routing_lib.py is not executable" bash -c "[ ! -x '$RLIB' ]"
 chk "routing_lib.py check (python3)" python3 -I "$RLIB" check
 if [ -x /usr/bin/python3 ]; then chk "routing_lib.py check (system /usr/bin/python3)" /usr/bin/python3 -I "$RLIB" check; fi
 chk "routing.json contract" bash -c "python3 -I -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d[\"schema_version\"]==1 and d[\"allowed_efforts\"]==[\"medium\",\"high\"] and set(d[\"routes\"])=={\"neon\",\"opus\",\"deepseek\"} and set(d[\"gates\"])=={\"plan\",\"review\",\"security\",\"epoch\"} and d[\"conductor\"]=={\"route\":\"neon\",\"effort\":\"medium\"} and d[\"implementer\"]=={\"route\":\"deepseek\",\"effort\":\"high\"}' '$ROOT/routing.json'"
-chk "routing_lib derives roles" bash -c "cd '$SCRIPT' && python3 -I -B -c 'import sys; sys.path.insert(0, sys.argv[1]); import routing_lib as r; c=r.load(); i=r.implementer(c); d=r.conductor(c); g=r.gate_contract(c,\"plan\"); assert i[\"pinned\"]==i[\"model\"]+\"#\"+i[\"effort\"] and i[\"account\"]==i[\"accounts\"][0] and d[\"effort\"]==\"medium\" and g[1:3]==(c[\"gates\"][\"plan\"][\"route\"], c[\"routes\"][c[\"gates\"][\"plan\"][\"route\"]][\"model\"]) and r.option_keys(c) and r.allowed_efforts_for(c,\"review\",\"medium\")' '$SCRIPT'"
+chk "routing_lib derives roles" bash -c "cd '$SCRIPT' && python3 -I -B -c 'import sys; sys.path.insert(0, sys.argv[1]); import routing_lib as r; c=r.load(); i=r.implementer(c); d=r.conductor(c); g=r.gate_contract(c,\"plan\"); assert i[\"pinned\"]==i[\"model\"]+\"#\"+i[\"effort\"] and i[\"account\"]==i[\"accounts\"][0] and d[\"effort\"]==\"medium\" and g[1:3]==(c[\"gates\"][\"plan\"][\"route\"], c[\"routes\"][c[\"gates\"][\"plan\"][\"route\"]][\"model\"]) and r.option_keys(c) and r.allowed_efforts_for(c,\"review\",\"medium\")=={\"medium\",\"high\"} and r.allowed_efforts_for(c,\"review\",\"low\")=={\"medium\"} and r.effort_for(c,\"review\",\"low\",True)==\"medium\"' '$SCRIPT'"
 cat > "$T/guard.py" <<'PY'
 import json, os, re, sys
 root = sys.argv[1]
@@ -233,6 +233,10 @@ gatev() { ( cd "$GR" && EVID="$GE" REC="$GE/rec-review.json" INST="$1" MODEL="$2
 gatev alt-review-a alt-review-1 effort "$(rt2 effort review medium)" alt-r1; rr1=$?
 gatev "$OPAC" "$OPM" "$OPO" "$(python3 -I "$ROOT/scripts/routing_lib.py" effort review medium)" old-r1; rr2=$?
 chk "gate.sh review accepts the alt route and rejects the old one" bash -c "[ $rr1 = 0 ] && [ $rr2 = 2 ] && test -s '$GE/review-$GH.json'"
+gatev alt-review-a alt-review-1 effort "$(rt2 effort review medium)" alt-r2; rr_r2=$?
+gatev alt-review-a alt-review-1 effort "$(rt2 effort review medium)" alt-r3m; rr_r3m=$?
+gatev alt-review-a alt-review-1 effort "$(rt2 effort review medium 1)" alt-r3h; rr_r3h=$?
+chk "gate.sh review medium round 3 auto-enforces high without --trigger" bash -c "[ $rr_r2 = 0 ] && [ $rr_r3m = 2 ] && [ $rr_r3h = 0 ]"
 cp "$T/skill/routing.json" "$T/routing.keep"; printf '{' > "$T/skill/routing.json"; : > "$T/t3.calls"
 gatev alt-review-a alt-review-1 effort "$(rt2 effort review medium)" bad-r1; rr3=$?
 chk "gate.sh fails closed on invalid routing.json" bash -c "[ $rr3 = 2 ] && [ ! -s '$T/t3.calls' ]"; cp "$T/routing.keep" "$T/skill/routing.json"

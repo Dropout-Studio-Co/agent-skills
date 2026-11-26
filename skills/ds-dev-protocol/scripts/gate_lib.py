@@ -145,7 +145,7 @@ def main():
     read = t3("t3_thread_read", {"threadId": args.child_thread, "view": "activity", "maxCharsPerItem": 20000}); cfg = t3("t3_thread_configure", {"threadId": args.child_thread})
     if not isinstance(read, dict) or not isinstance(cfg, dict): return stop(2, reason="T3 MCP verification unavailable (t3_thread_read/t3_thread_configure)")
     info = thread_info(read, cfg, routing.option_keys(RCFG)); provider, route, model, option, accounts = routing.gate_contract(RCFG, args.gate)
-    effort = routing.effort_for(RCFG, args.gate, args.tier, trigger); chosen = info["options"].get(option) or ""
+    effort = routing.effort_for(RCFG, args.gate, args.tier, trigger or (args.gate == "review" and round_no >= 3)); chosen = info["options"].get(option) or ""
     obs = dict(model=info["model"], effort=chosen, account=info["instance"])
     def bad(reason):
         prior = any(row.get("gate") == args.gate and row.get("key") == args.key and row.get("status") == "invalid" and str(row.get("reason", "")).startswith("invalid output") for row in rows[last_ok + 1:])
