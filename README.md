@@ -6,18 +6,24 @@ A collection of 9 Dropout Studio (`ds-*`) skills for AI coding assistants (like 
 
 ## Setup (1 Step)
 
-Open your AI coding assistant and paste this prompt:
+Open your AI coding assistant and paste this prompt to install or update the skills:
 
 ```text
-Install all skills from https://github.com/Dropout-Studio-Co/ds-agent-skills onto my computer:
+Install or update all skills from https://github.com/Dropout-Studio-Co/ds-agent-skills onto my computer. Resolve paths for this OS rather than assuming `~` expands: the target skills directory is `~/.agents/skills/` on macOS/Linux or `C:\Users\<you>\.agents\skills\` on Windows (one folder per skill, all siblings).
 
-1. Download or clone the repository to a temporary folder, copy every folder inside `skills/` into `~/.agents/skills/` (keep all skill folders together in that same directory), and remove the temporary folder when done.
-2. If I use Claude Code (or `~/.claude` exists), create a symlink in `~/.claude/skills/<skill-name>` pointing to `~/.agents/skills/<skill-name>` for each individual skill folder — do not symlink the whole `skills` directory.
-3. Check that `git` and `python3` (3.9 or newer) are installed, and tell me if anything is missing.
-4. Confirm when all 9 skills are installed and ready to use.
+1. Clone https://github.com/Dropout-Studio-Co/ds-agent-skills to a temporary folder.
+2. List every skill folder inside `skills/` in the cloned repository (derive the list from `skills/` — do not assume a fixed count).
+3. For each skill folder, check whether `<skills-dir>/<skill-name>/` already exists (creating `<skills-dir>` if needed):
+   - If missing, install it by copying the repository's skill folder into `<skills-dir>/<skill-name>/`.
+   - If it already exists, replace the entire folder with the repository version (delete the existing folder first, then copy) so files deleted upstream do not survive. Existing local edits inside those skill folders will be lost.
+4. Delete the temporary folder.
+5. Verify that every skill folder from `skills/` exists in `<skills-dir>` and is non-empty.
+6. Optional (Claude Code): if the `.claude` folder exists in my home directory (`~/.claude` on macOS/Linux, `C:\Users\<you>\.claude` on Windows), create or update a symlink at `<claude-dir>/skills/<skill-name>` pointing to `<skills-dir>/<skill-name>` for each individual skill folder — never symlink the whole `skills` directory. On Windows, symlinks require Developer Mode or an elevated shell; report if symlink creation fails instead of failing silently.
+7. Check that `git` and `python3` (3.9 or newer) are installed, and report anything missing instead of failing silently.
+8. Report one line per skill from `skills/` as `installed`, `updated`, or `failed` (with the reason).
 ```
 
-That's it. Your AI assistant will download the files, put them in the right folders, and let you know when everything is ready.
+That's it. Paste the same prompt anytime to install missing skills or refresh existing ones — your AI assistant will replace each skill folder with the latest version and report the result per skill.
 
 ## Included Skills
 
