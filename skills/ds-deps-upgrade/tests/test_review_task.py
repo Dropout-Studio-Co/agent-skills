@@ -114,7 +114,7 @@ class ProfileAndAgnosticComplianceTests(TaskCase):
         self.assertEqual(rt.load_profile('ds-consolidate')['review_kinds']['reconciliation']['evidence'], 'git-inventory')
 
     def test_all_skills_follow_ds_naming_and_valid_frontmatter(self):
-        expected = {'ds-consolidate', 'ds-deps-upgrade', 'ds-dev-protocol', 'ds-responsive', 'ds-handoff', 'ds-agent-docs', 'ds-ui-overhaul', 'ds-media-cleanup'}
+        expected = {'ds-consolidate', 'ds-deps-upgrade', 'ds-dev-protocol', 'ds-responsive', 'ds-handoff', 'ds-agent-docs', 'ds-ui-overhaul', 'ds-media-cleanup', 'ds-storage-audit'}
         actual = {d for d in os.listdir(SKILLS) if os.path.isdir(os.path.join(SKILLS, d)) and not d.startswith('.')}
         self.assertEqual(actual, expected)
         for skill in sorted(actual):
@@ -150,7 +150,7 @@ class ProfileAndAgnosticComplianceTests(TaskCase):
             r'claude auth|claude agents|claude attach|review_router\.py|routed_task\.py|'
             r'routing\.json|--effort|\bxhigh\b|deepseek', re.I)
         non_exception = ('ds-consolidate', 'ds-deps-upgrade', 'ds-ui-overhaul',
-                         'ds-responsive', 'ds-handoff', 'ds-agent-docs')
+                         'ds-responsive', 'ds-handoff', 'ds-agent-docs', 'ds-storage-audit')
         for skill in non_exception:
             skill_dir = os.path.join(SKILLS, skill)
             for dirpath, dirnames, filenames in os.walk(skill_dir):
@@ -178,6 +178,142 @@ class ProfileAndAgnosticComplianceTests(TaskCase):
                     text = handle.read()
                 self.assertIn('ds-dev-protocol', text, skill)
                 self.assertIn('explicitly invoked', text, skill)
+
+
+    def test_storage_audit_skill_contract(self):
+        root = os.path.join(SKILLS, 'ds-storage-audit')
+        skill_md = os.path.join(root, 'SKILL.md')
+        self.assertTrue(os.path.isfile(skill_md), 'skills/ds-storage-audit/SKILL.md is missing')
+        with open(skill_md, encoding='utf-8') as handle:
+            text = handle.read()
+        self.assertTrue(text.startswith('---\n'), 'SKILL.md needs YAML frontmatter')
+        parts = text.split('---\n', 2)
+        self.assertEqual(len(parts), 3, 'SKILL.md needs a closed YAML frontmatter block')
+        front = parts[1]
+        self.assertIn('name: ds-storage-audit\n', front)
+        self.assertRegex(front, r'(?m)^argument-hint:\s*\S')
+        self.assertRegex(front, r'(?m)^license:\s*MIT\s*$')
+        description = re.search(r'(?m)^description:\s*(.+)$', front)
+        self.assertIsNotNone(description, 'description is required')
+        self.assertTrue(description.group(1).strip(), 'description must not be empty')
+        self.assertLessEqual(len(description.group(1).strip()), 1024)
+        self.assertNotIn('disable-model-invocation', front, 'storage audit is model-invoked')
+        self.assertLessEqual(len(parts[2].splitlines()), 500, 'SKILL.md body must stay under 500 lines')
+
+        markdown_files = []
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames[:] = [d for d in dirnames if d != '__pycache__']
+            for name in dirnames + filenames:
+                self.assertFalse(os.path.islink(os.path.join(dirpath, name)),
+                                 'symlink inside the skill: %s' % os.path.join(dirpath, name))
+            for name in filenames:
+                if name.endswith('.md'):
+                    markdown_files.append(os.path.join(dirpath, name))
+        self.assertIn(skill_md, markdown_files)
+
+        skill_root = os.path.realpath(root)
+        for path in markdown_files:
+            with open(path, encoding='utf-8') as handle:
+                body = handle.read()
+            for target in re.findall(r'\[[^\]]*\]\(([^)]+)\)', body):
+                target = target.strip().split('#', 1)[0].split('"', 1)[0].strip()
+                if not target or re.match(r'^(?:[a-z][a-z0-9+.-]*:|#)', target, re.I):
+                    continue
+                resolved = os.path.realpath(os.path.join(os.path.dirname(path), target))
+                self.assertTrue(resolved == skill_root or resolved.startswith(skill_root + os.sep),
+                                '%s links outside the skill: %s' % (path, target))
+                self.assertTrue(os.path.exists(resolved), '%s has a broken link: %s' % (path, target))
+
+        # The sync refuses to push home paths and token-like strings; the skill must never carry one.
+        leak_re = re.compile(
+            r'/Users/|/home/|sk-ant-|ghp_|gho_|github_pat_|AKIA[0-9A-Z]{16}|xox[abpr]-|'
+            r'-----BEGIN [A-Z ]*PRIVATE KEY-----')
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames[:] = [d for d in dirnames if d != '__pycache__']
+            for name in filenames:
+                path = os.path.join(dirpath, name)
+                with open(path, encoding='utf-8') as handle:
+                    content = handle.read()
+                match = leak_re.search(content)
+                self.assertIsNone(match, '%s leaks a home path or secret-like value: %r'
+                                  % (os.path.relpath(path, SKILLS), match and match.group(0)))
+
+        def read(rel):
+            with open(os.path.join(root, rel), encoding='utf-8') as handle:
+                return handle.read()
+
+        os_locations = read('references/os-locations.md')
+        classification = read('references/safety-classification.md')
+        lower_skill = parts[2].lower()
+
+        for rel in ('references/os-locations.md', 'references/safety-classification.md'):
+            self.assertIn(rel, parts[2], 'SKILL.md must disclose %s' % rel)
+        for host in ('macOS', 'Linux', 'Windows', 'WSL'):
+            self.assertIn(host, parts[2], 'host-OS detection must name %s' % host)
+        for phrase in ('Pass A', 'Pass B'):
+            self.assertIn(phrase, parts[2])
+            self.assertIn(phrase, os_locations)
+        self.assertIn('read-only', lower_skill)
+        self.assertIn('never delete', lower_skill)
+        self.assertIn('largest to smallest', lower_skill)
+        self.assertIn('double-count', classification.lower())
+        self.assertIn('firmlink', classification.lower())
+        self.assertIn('sparse', classification.lower())
+        self.assertIn('placeholder', classification.lower())
+        self.assertIn('Safe to Recommend', classification)
+        self.assertIn('Never Recommend', classification)
+        for exclusion in ('System32', 'WinSxS', 'pagefile', 'hiberfil', 'swap', '.git',
+                          'browser profile', 'credential', '.env'):
+            self.assertIn(exclusion, classification)
+        for required in ('What to delete', 'What it is', 'Space freed', 'nothing was deleted'):
+            self.assertIn(required, parts[2])
+
+        for ecosystem in ('Library/Caches', '.Trash', 'tmutil listlocalsnapshots',
+                          'journalctl --disk-usage', 'apt', 'dnf', 'pacman', 'flatpak', 'snap',
+                          'Recycle Bin', 'Get-Volume', 'DerivedData', 'DeviceSupport',
+                          'CoreSimulator', 'Gradle', 'npm', 'pnpm', 'yarn', 'bun', 'deno',
+                          'Playwright', 'Cypress', 'pip', 'uv', 'poetry', 'conda', 'Cargo',
+                          'Go', 'Homebrew', 'Docker', 'Podman', 'Downloads',
+                          '.dmg', '.pkg', '.iso', '.msi', '.exe', '.deb', '.rpm'):
+            self.assertIn(ecosystem, os_locations)
+        for placeholder in ('$HOME', '%LOCALAPPDATA%', '%USERPROFILE%', '%TEMP%'):
+            self.assertIn(placeholder, os_locations)
+        for bound in ('-x', '-d 3', 'max-depth'):
+            self.assertIn(bound, os_locations)
+        for sizing in ('docker system df', '25 MB', '1 MB', '-P'):
+            self.assertIn(sizing, classification)
+
+        # Review round 1: only cache directories, never installed app trees or credential-bearing roots.
+        self.assertNotIn(r'%LOCALAPPDATA%\Microsoft\Teams\`', os_locations,
+                         'Teams Classic is an installed app directory, not a cache')
+        self.assertIsNone(re.search(r'~/\.gradle/(?!caches)', os_locations),
+                          'Gradle cleanup must stay scoped to caches/, never the bare ~/.gradle/')
+        self.assertIsNone(re.search(r'%USERPROFILE%\.gradle\\(?!caches)', os_locations),
+                          'Gradle cleanup must stay scoped to caches/, never the bare %USERPROFILE%\\.gradle\\')
+        self.assertNotIn('mount read-only', os_locations.lower())
+        for window_bound in ('-Depth 3', 'ReparsePoint', 'Offline'):
+            self.assertIn(window_bound, os_locations,
+                          'Windows Pass B must be depth-bounded and skip junctions and cloud-only placeholders')
+
+        repo_root = os.path.dirname(SKILLS)
+        readme = os.path.join(repo_root, 'README.md')
+        if os.path.isfile(readme):
+            with open(readme, encoding='utf-8') as handle:
+                readme_text = handle.read()
+            self.assertIn('A collection of 9 Dropout Studio', readme_text)
+            self.assertIn('all 9 skills', readme_text)
+            self.assertNotIn('A collection of 8 Dropout Studio', readme_text)
+            self.assertNotIn('all 8 skills', readme_text)
+            media = readme_text.split('### Media & Utilities', 1)
+            self.assertEqual(len(media), 2, 'README.md needs a Media & Utilities section')
+            self.assertIn('[`ds-storage-audit`](skills/ds-storage-audit/)', media[1])
+        agents = os.path.join(repo_root, 'AGENTS.md')
+        if os.path.isfile(agents):
+            with open(agents, encoding='utf-8') as handle:
+                agents_text = handle.read()
+            self.assertIn('skills/ds-storage-audit/', agents_text)
+            self.assertIn('os-locations.md', agents_text)
+            self.assertIn('safety-classification.md', agents_text)
 
 
 class PlanningAndConsultTests(TaskCase):

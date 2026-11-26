@@ -82,6 +82,7 @@ skills/ds-agent-docs/           SKILL.md, references/ (audit-rubric.md, agent-su
                           tests/ (collector, checker)
 skills/ds-ui-overhaul/             SKILL.md, task-profile.json, references/ (platforms.md, parallel-work.md)
 skills/ds-media-cleanup/           SKILL.md, references/ (naming-and-jargon.md)
+skills/ds-storage-audit/           SKILL.md, references/ (os-locations.md, safety-classification.md)
 ```
 
 `.githooks/pre-commit` (executable 0755) keeps `routing.json` and its derived `opencode/opencode.json` and `SKILL.md`
