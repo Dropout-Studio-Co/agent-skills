@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """routing_lib.py - the ds-dev-protocol routing source of truth reader/validator/syncer (stdlib only, Python 3.9+).
-routing.json holds every route, model, provider, option key, account, cost cap, tier/trigger effort and the UI gate chains.
+routing.json holds every route, model, provider, option key, driver kind, cost cap, tier/trigger effort and the UI gate chains.
 This module validates it, derives roles, pinned specs and gate contracts, and syncs opencode/opencode.json and SKILL.md;
 paths are anchored to this file, and every error exits 2 without writing."""
 import json, math, os, re, sys, tempfile
@@ -46,9 +46,9 @@ def load(skill_dir=None):
         elif model is None or option is None:
             if "model" not in route or "option_key" not in route or model is not None or option is not None: raise ValueError("route %s is half-configured: model and option_key must both be null (catalog-pending)" % key)
         else: ident(model, "route %s model" % key); ident(option, "route %s option_key" % key)
-        accounts, cost = route.get("accounts"), route.get("max_cost_usd")
-        if not isinstance(accounts, list) or not accounts or len(set(map(str, accounts))) != len(accounts): raise ValueError("route %s accounts must be a non-empty list of unique names" % key)
-        for account in accounts: ident(account, "route %s account" % key)
+        if "accounts" in route: raise ValueError("route %s must use driver_kind, never legacy accounts" % key)
+        ident(route.get("driver_kind"), "route %s driver_kind" % key)
+        cost = route.get("max_cost_usd")
         if "max_cost_usd" in route and (isinstance(cost, bool) or not isinstance(cost, (int, float)) or not math.isfinite(cost) or cost < 0): raise ValueError("route %s max_cost_usd must be a non-negative number" % key)
     for role, fields in (("conductor", ("model", "option_key")), ("implementer", ("model_id",))):
         spec = cfg.get(role); route = routes.get(spec.get("route")) if isinstance(spec, dict) and isinstance(spec.get("route"), str) else None
@@ -80,7 +80,7 @@ def load(skill_dir=None):
 def gate_contracts(cfg, gate, ui=False):
     if ui and gate not in UI_GATES: raise ValueError("gate %s has no ui route" % gate)
     specs = cfg["ui_gates"][gate] if ui else [cfg["gates"][gate]]
-    return [(r["provider"], spec["route"], r["model"], r["option_key"], tuple(r["accounts"])) for spec in specs for r in [cfg["routes"][spec["route"]]] if r.get("model") is not None and r.get("option_key") is not None]
+    return [(r["provider"], spec["route"], r["model"], r["option_key"], r["driver_kind"]) for spec in specs for r in [cfg["routes"][spec["route"]]] if r.get("model") is not None and r.get("option_key") is not None]
 def gate_contract(cfg, gate): return gate_contracts(cfg, gate)[0]
 def spec_for(cfg, gate, ui=False, route=None):
     if ui and gate not in UI_GATES: raise ValueError("gate %s has no ui route" % gate)
@@ -100,11 +100,10 @@ def allowed_efforts_for(cfg, gate, tier, ui=False, route=None):
     return out
 def implementer(cfg):
     spec = cfg["implementer"]; route = cfg["routes"][spec["route"]]; model = "%s/%s" % (route["provider"], route["model_id"])
-    return dict(route=spec["route"], provider=route["provider"], model_id=route["model_id"], model=model, effort=spec["effort"], pinned="%s#%s" % (model, spec["effort"]), account=route["accounts"][0], accounts=tuple(route["accounts"]), max_cost_usd=route["max_cost_usd"], label=route["label"])
+    return dict(route=spec["route"], provider=route["provider"], model_id=route["model_id"], model=model, effort=spec["effort"], pinned="%s#%s" % (model, spec["effort"]), driver_kind=route["driver_kind"], max_cost_usd=route["max_cost_usd"], label=route["label"])
 def conductor(cfg):
     spec = cfg["conductor"]; route = cfg["routes"][spec["route"]]
-    return dict(route=spec["route"], provider=route["provider"], model=route["model"], option_key=route["option_key"], accounts=tuple(route["accounts"]), effort=spec["effort"], label=route["label"])
-def chain(accounts): return " → ".join("`%s`" % name for name in accounts)
+    return dict(route=spec["route"], provider=route["provider"], model=route["model"], option_key=route["option_key"], driver_kind=route["driver_kind"], effort=spec["effort"], label=route["label"])
 def describe(cfg):
     cond, imp = conductor(cfg), implementer(cfg); planner = cfg["routes"][cfg["gates"]["plan"]["route"]]["label"]
     who = cond["label"] if planner == cond["label"] else "%s and %s" % (cond["label"], planner)
@@ -116,22 +115,20 @@ def describe(cfg):
 def render_block(cfg):
     cond, imp = conductor(cfg), implementer(cfg); plan, review, sec, epoch = (cfg["gates"][name] for name in GATES)
     planner, reviewer = cfg["routes"][plan["route"]], cfg["routes"][sec["route"]]; other = [value for value in cfg["allowed_efforts"] if value != cond["effort"]]
-    used = [cfg["routes"][k] for k in dict.fromkeys([cfg["conductor"]["route"], cfg["implementer"]["route"]] + [cfg["gates"][g]["route"] for g in GATES])]
-    chains, solo = [chain(r["accounts"]) for r in used if len(r["accounts"]) > 1], ["`%s` alone" % r["accounts"][0] for r in used if len(r["accounts"]) == 1]
     non_cond = "/".join(dict.fromkeys(r["label"] for r in (imp, reviewer) if r["label"] != cond["label"]))
     ui_routes = [cfg["routes"][spec["route"]] for spec in cfg["ui_gates"]["plan"]]; ui_names = " → ".join(r["label"] if r.get("model") is None else "%s `%s`" % (r["label"], r["model"]) for r in ui_routes)
     uplan, uneon, urev = cfg["ui_gates"]["plan"][0], cfg["ui_gates"]["plan"][-1], cfg["ui_gates"]["review"][0]
     rows = [
         "Four roles, one model each, no substitution:", "",
         "| Role | Model and effort (%s only) | Path |" % "/".join(cfg["allowed_efforts"]), "|---|---|---|",
-        "| Conductor | %s `%s`, `%s` always (never `%s` or other) | this T3 Code thread (%s) |" % (cond["label"], cond["model"], cond["effort"], other[0] if other else "any other", ", ".join(cond["accounts"])),
-        "| Architect & Planner | %s `%s`, `%s` Low, `%s` Medium, `%s` High | fresh `delegate_task` (%s), then `gate.sh plan --record` |" % (planner["label"], planner["model"], plan["efforts"]["low"], plan["efforts"]["medium"], plan["efforts"]["high"], chain(planner["accounts"])),
+        "| Conductor | %s `%s`, `%s` always (never `%s` or other) | this T3 Code thread (`%s`) |" % (cond["label"], cond["model"], cond["effort"], other[0] if other else "any other", cond["driver_kind"]),
+        "| Architect & Planner | %s `%s`, `%s` Low, `%s` Medium, `%s` High | fresh `delegate_task` on a live `%s` instance, then `gate.sh plan --record` |" % (planner["label"], planner["model"], plan["efforts"]["low"], plan["efforts"]["medium"], plan["efforts"]["high"], planner["driver_kind"]),
         "| Implementer | %s `%s`, `variant: %s` always | `scripts/implement.sh`, the documented mechanical runner, no OS sandbox; sole implementer, no fallback |" % (imp["label"], imp["pinned"], imp["effort"]),
-        "| Reviewer, Security & Epoch | %s `%s`, review `%s`/`%s` Low/Medium and `%s` High (`%s` with `--trigger`); security `%s`; epoch `%s`/`%s` | fresh `delegate_task` (%s), then `gate.sh <gate> --record` |" % (reviewer["label"], reviewer["model"], review["efforts"]["low"], review["efforts"]["medium"], review["efforts"]["high"], review.get("trigger_effort", review["efforts"]["high"]), sec["efforts"]["high"], epoch["efforts"]["medium"], epoch["efforts"]["high"], chain(reviewer["accounts"])),
+        "| Reviewer, Security & Epoch | %s `%s`, review `%s`/`%s` Low/Medium and `%s` High (`%s` with `--trigger`); security `%s`; epoch `%s`/`%s` | fresh `delegate_task` on a live `%s` instance, then `gate.sh <gate> --record` |" % (reviewer["label"], reviewer["model"], review["efforts"]["low"], review["efforts"]["medium"], review["efforts"]["high"], review.get("trigger_effort", review["efforts"]["high"]), sec["efforts"]["high"], epoch["efforts"]["medium"], epoch["efforts"]["high"], reviewer["driver_kind"]),
         "",
-        "- **Same-provider instance failover only:** a child that hits `usage_limit`, or a reviewer child stalled holding a turn open, is `task_cancel`led and re-dispatched as a fresh `delegate_task` with the full packet and schema on the next enabled same-provider, same-model, same-effort instance: %s. Never cross a provider or model, never ask. When every instance is exhausted, log `blocked` (exit 3), record `STATUS: blocked external — <model> quota exhausted; waiting for reset` with `Routes tried:`, finish unaffected work and stop cleanly." % ", ".join(chains + solo),
+        "- **Dynamic `driver_kind` failover:** call `orchestrator_capabilities`; use only live `providerInstanceId` serial IDs (never display names or emails). A child hitting `usage_limit` is `task_cancel`led and re-dispatched as a fresh `delegate_task` on the next live instance of the same `driver_kind`, model and effort: never cross a `driver_kind` or model, never ask. When every live pair is tried, log `blocked` (exit 3), record `STATUS: blocked external — <model> quota exhausted; waiting for reset` with `Routes tried:`, stop cleanly.",
         "- **Start check (MUST):** session must be %s at `%s` in T3 Code; any other model or effort stops. %s never conducts: runs only its brief, no gate, premerge, git mutation or PR." % (cond["label"], cond["effort"], non_cond or imp["label"]),
-        "- **Frontend & UI routing (`--ui`, plan and review only):** with `--ui` and `Scope: ui` in the packet the gate uses this 3-tier chain in priority order: %s. Tiers after the first apply only when the route is live and configured with quota; UI plan is `%s` standard and `%s` for complex multi-state work (`--trigger` or High tier), UI review is `%s`, and the Neon fallback is `%s`. Non-UI gates, security and epoch keep the single route above. If every UI tier is exhausted, log `blocked` (exit 3) and never use another model." % (ui_names, uplan["efforts"]["medium"], uplan["efforts"]["high"], urev["efforts"]["medium"], uneon["efforts"]["medium"]),
+        "- **Frontend & UI routing (`--ui`, plan and review only):** with `--ui` and `Scope: ui` in the packet the gate uses this 3-tier chain in priority order: %s. A tier applies when a live `orchestrator_capabilities` instance of its `driver_kind` runs its model; a `ui_gates` route with zero live instances is skipped automatically. UI plan is `%s` standard, `%s` complex (`--trigger` or High tier); UI review is `%s`; Neon fallback `%s`. Non-UI gates keep the single route above. If every UI tier is exhausted, log `blocked` (exit 3) and never use another model." % (ui_names, uplan["efforts"]["medium"], uplan["efforts"]["high"], urev["efforts"]["medium"], uneon["efforts"]["medium"]),
     ]
     return "\n".join([START] + rows + [END])
 def render_skill(text, cfg):
@@ -182,14 +179,14 @@ def main(argv):
             sys.stdout.write(text if text.endswith("\n") else text + "\n"); return 0
         cfg = load()
         if cmd == "impl-tsv":
-            imp = implementer(cfg); print(tsv(imp["route"], imp["provider"], imp["model"], imp["model_id"], imp["effort"], imp["pinned"], imp["account"], imp["max_cost_usd"])); return 0
+            imp = implementer(cfg); print(tsv(imp["route"], imp["provider"], imp["model"], imp["model_id"], imp["effort"], imp["pinned"], imp["driver_kind"], imp["max_cost_usd"])); return 0
         if cmd == "gate-tsv" and len(argv) == 3:
-            provider, route, model, option, accounts = gate_contract(cfg, argv[2]); print(tsv(provider, route, model, option, " ".join(accounts))); return 0
+            provider, route, model, option, driver_kind = gate_contract(cfg, argv[2]); print(tsv(provider, route, model, option, driver_kind)); return 0
         if cmd == "ui-gate-tsv" and len(argv) == 3:
-            for provider, route, model, option, accounts in gate_contracts(cfg, argv[2], ui=True): print(tsv(provider, route, model, option, " ".join(accounts)))
+            for provider, route, model, option, driver_kind in gate_contracts(cfg, argv[2], ui=True): print(tsv(provider, route, model, option, driver_kind))
             return 0
         if cmd == "conductor-tsv":
-            cond = conductor(cfg); print(tsv(cond["provider"], cond["route"], cond["model"], cond["option_key"], cond["effort"], cond["label"], " ".join(cond["accounts"]))); return 0
+            cond = conductor(cfg); print(tsv(cond["provider"], cond["route"], cond["model"], cond["option_key"], cond["effort"], cond["label"], cond["driver_kind"])); return 0
         if cmd == "effort" and len(argv) in (4, 5):
             print(effort_for(cfg, argv[2], argv[3], len(argv) == 5 and argv[4] not in ("", "0"))); return 0
         if cmd == "ui-effort" and len(argv) in (4, 5, 6):

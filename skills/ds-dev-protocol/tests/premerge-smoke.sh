@@ -4,9 +4,9 @@
 set -uo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd -P); PM=$ROOT/scripts/premerge-and-merge.sh
 rt() { python3 -I "$ROOT/scripts/routing_lib.py" "$@"; }
-IFS=$'\t' read -r NP NR NM NO NA <<< "$(rt gate-tsv plan)"; IFS=$'\t' read -r OP OR OM OO OA <<< "$(rt gate-tsv review)"
-IFS=$'\t' read -r IR IP IM ID IE IPIN IACCT ICM <<< "$(rt impl-tsv)"; NEON_ACCT=${NA%% *}; OPUS_ACCT=${OA%% *}
-export NR NM NEON_ACCT OR OM OPUS_ACCT IR IM IE
+IFS=$'\t' read -r NP NR NM NO NDK <<< "$(rt gate-tsv plan)"; IFS=$'\t' read -r OP OR OM OO ODK <<< "$(rt gate-tsv review)"
+IFS=$'\t' read -r IR IP IM ID IE IPIN IDK ICM <<< "$(rt impl-tsv)"; NEON_ACCT=neon-a; OPUS_ACCT=neon-a
+export NR NM NEON_ACCT NDK OR OM OPUS_ACCT ODK IR IM IE
 T=$(mktemp -d "${TMPDIR:-/tmp}/premerge-smoke.XXXXXX"); T=$(cd "$T" && pwd -P)
 export T HOME="$T/home" XDG_STATE_HOME="$T/state" PATH="$T/bin:$PATH"
 mkdir -p "$HOME" "$XDG_STATE_HOME" "$T/bin"; : > "$T/body.txt"; : > "$T/gh.head"; FAILED=0
@@ -61,9 +61,10 @@ ev, gate, key, tier, status, verdict, fname = sys.argv[1:8]
 def sha(p): return hashlib.sha256(open(p, "rb").read()).hexdigest()
 effort = os.environ["EFFORT"]
 route, model, account = (os.environ["NR"], os.environ["NM"], os.environ["NEON_ACCT"]) if gate == "plan" else (os.environ["OR"], os.environ["OM"], os.environ["OPUS_ACCT"])
+dk = os.environ["NDK"] if gate == "plan" else os.environ["ODK"]
 d = {"ts": "2026-11-11T00:00:00Z", "gate": gate, "tier": tier, "round": 1, "key": key, "base_ref": "", "base_sha": "",
      "diff_sha256": "", "head_sha": key, "facts_sha256": "", "route": route, "model": model, "effort": effort,
-     "session_id": "child-1", "parent_thread_id": "parent-1", "account": account, "input_tokens": 0, "output_tokens": 0,
+     "session_id": "child-1", "parent_thread_id": "parent-1", "account": account, "driver_kind": dk, "input_tokens": 0, "output_tokens": 0,
      "cost_usd": 0, "verdict": verdict, "status": status, "reason": "", "file": fname, "file_sha256": "",
      "engine": "t3-delegate", "provenance_mode": "t3-verified"}
 for kv in sys.argv[8:]:
@@ -98,6 +99,14 @@ out = [json.loads(l) for l in open(p) if json.loads(l).get("gate") != gate]
 open(p, "w").write("".join(json.dumps(d) + "\n" for d in out))
 PY
 }
+nodk() { python3 - "$E/gates.log" <<'PY'
+import json, sys
+p = sys.argv[1]; out = []
+for line in open(p):
+    d = json.loads(line); d.pop("driver_kind", None); out.append(json.dumps(d))
+open(p, "w").write("\n".join(out) + "\n")
+PY
+}
 # base_ev EV TIER KEY: facts, PLAN/tier re-check, plan row and review (plus security on High), all T3-verified.
 base_ev() { E=$T/$1; rm -rf "$E"; mkdir -p "$E"; local fs fname
   printf 'facts\n' > "$E/facts.md"; fs=$(shasum -a 256 "$E/facts.md" | awk '{print $1}')
@@ -120,6 +129,10 @@ f=$(gf "$E" plan "$FS" pass '[]' low); row "$E" plan "$FS" low ok pass "$f" "fac
 f=$(gf "$E" review "$OK" pass '[]' low); row "$E" review "$OK" low ok pass "$f"
 : > "$T/calls.log"; pmrun "$E" "$R" --diff "$T/out.diff"
 chk "--diff exit0 and no gh" bash -c "[ $PRC = 0 ] && [ ! -s '$T/calls.log' ] && test -s '$E/premerge-$OK.txt'"
+base_ev r-legacy medium "$H"; nodk; pm_reset; pmrun "$E" "$R" 1
+chk "legacy gates.log rows without driver_kind still pass" test "$PRC" = 0
+base_ev r-white medium "$H"; setrow plan account '"  "'; pm_reset; pmrun "$E" "$R" 1
+chk "refuse:whitespace-only account" bash -c "[ $PRC = 1 ] && grep -q 'account is missing or invalid' '$T/pm.out'"
 # --- tier floor: PLAN.md and the re-check each need a Tier line; headings parse; lower fails
 base_ev t-heading high "$H"; printf '# PLAN (x) - Tier: High\n' > "$E/PLAN.md"; printf 'Tier: High\n' > "$E/tier-recheck-$H.md"; pm_reset; pmrun "$E" "$R" 1
 chk "Tier: High in a heading parses" test "$PRC" = 0
@@ -133,9 +146,9 @@ chk "lower re-check tier fails" bash -c "[ $PRC = 1 ] && grep -q 'lower than PLA
 refuse() { local n=$1 tier=$2 mut=$3 want=$4; base_ev "r-$n" "$tier" "$H"; pm_reset; eval "$mut"; pmrun "$E" "$R" 1
   chk "refuse:$n" bash -c "[ $PRC = 1 ] && grep -q '$want' '$T/pm.out' && [ \$(grep -cE 'pr (edit|merge)' '$T/calls.log') = 0 ]"; }
 for tier in low medium high; do refuse "facts-$tier" "$tier" 'printf x >> "$E/facts.md"' 'does not match plan.facts_sha256'; done
-for spec in 'route=wrong-route' 'model=wrong-model' 'account=wrong-acct' 'session_id=parent-1' 'effort=medium'; do
+for spec in 'route=wrong-route' 'model=wrong-model' 'account=""' 'driver_kind=wrong-driver' 'driver_kind=""' 'session_id=parent-1' 'effort=medium'; do
   refuse "plan-${spec%%=*}" medium "setrow plan ${spec%%=*} ${spec#*=}" 'plan provenance'; done
-for spec in 'route=deepseek-low' 'model=wrong-model' 'account=wrong-acct' 'session_id=parent-1' 'effort=low'; do
+for spec in 'route=deepseek-low' 'model=wrong-model' 'account=""' 'driver_kind=wrong-driver' 'driver_kind=""' 'session_id=parent-1' 'effort=low'; do
   refuse "review-${spec%%=*}" medium "setrow review ${spec%%=*} ${spec#*=}" 'review provenance'; done
 for spec in 'route=fallback' 'provenance_mode=provisional' 'effort=medium' 'model=claude-opus-4-8'; do
   refuse "security-${spec%%=*}" high "setrow security ${spec%%=*} ${spec#*=}" 'security provenance'; done

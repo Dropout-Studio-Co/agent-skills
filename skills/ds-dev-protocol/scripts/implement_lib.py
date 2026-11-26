@@ -5,7 +5,7 @@ import routing_lib as routing
 try: RCFG = routing.load(); IMP = routing.implementer(RCFG)
 except ValueError as problem: sys.stderr.write("implement_lib.py: invalid routing.json: %s\n" % problem); sys.exit(2)
 a = sys.argv[1:]; cmd = a[0]
-DS, DSID, PROV = IMP["model"], IMP["model_id"], {"provider": IMP["provider"], "account": IMP["account"]}  # the implementer route: no model fallback.
+DS, DSID, PROV = IMP["model"], IMP["model_id"], {"provider": IMP["provider"], "driver_kind": IMP["driver_kind"], "account": IMP["driver_kind"]}  # the implementer route: no model fallback.
 FIELDS = ("step", "round", "plan_sha256", "tier", "route", "model", "effort", "status", "reason", "session_id", "files", "input_tokens", "output_tokens", "cost_usd")
 LOCKS = {"bun.lock", "bun.lockb", "package-lock.json", "pnpm-lock.yaml", "yarn.lock", "Cargo.lock", "poetry.lock", "uv.lock", "go.sum"}
 CFG = re.compile(r"(^|/)(opencode\.jsonc?$|\.opencode/|\.claude/|\.agents/|AGENTS\.md$|CLAUDE\.md$)", re.I)
@@ -50,11 +50,11 @@ if cmd == "plan":
     # Only a T3-verified plan counts: route, model, effort, ui flag, provenance and engine are checked before the file hash.
     ev, step = a[1:3]; pl = [d for d in rows(os.path.join(ev, "gates.log")) if isinstance(d, dict) and d.get("gate") == "plan" and d.get("status") == "ok"]
     if not pl: sys.exit(1)
-    p = pl[-1]; ui = p.get("ui", False)
-    if not isinstance(ui, bool): sys.exit(1)
-    hit = next((c for c in routing.gate_contracts(RCFG, "plan", ui=ui) if c[1] == p.get("route") and c[2] == p.get("model") and p.get("account") in c[4]), None)
+    p = pl[-1]; ui = p.get("ui", False); acct = p.get("account")
+    if not isinstance(ui, bool) or not isinstance(acct, str) or not acct.strip() or any(ch.isspace() or ord(ch) < 32 for ch in acct): sys.exit(1)
+    hit = next((c for c in routing.gate_contracts(RCFG, "plan", ui=ui) if c[1] == p.get("route") and c[2] == p.get("model")), None)
     allowed = set().union(*(routing.allowed_efforts_for(RCFG, "plan", t, ui=ui, route=hit[1]) for t in routing.TIERS["plan"])) if hit else set()
-    if not hit or p.get("effort") not in allowed or p.get("provenance_mode") != "t3-verified" or p.get("engine") != "t3-delegate": sys.exit(1)
+    if not hit or p.get("effort") not in allowed or p.get("provenance_mode") != "t3-verified" or p.get("engine") != "t3-delegate" or ("driver_kind" in p and p.get("driver_kind") != hit[4]): sys.exit(1)
     f = os.path.join(ev, os.path.basename(str(p.get("file") or "-")))
     if not os.path.isfile(f) or sha(f) != p.get("file_sha256"): sys.exit(1)
     try: plan(f)

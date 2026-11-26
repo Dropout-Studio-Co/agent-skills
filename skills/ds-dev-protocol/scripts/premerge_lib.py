@@ -6,7 +6,7 @@ import routing_lib as routing
 try: RCFG = routing.load()
 except ValueError as problem: RCFG, ROUTING_ERROR = None, str(problem)
 RANK = {"low": 0, "medium": 1, "high": 2}
-FIELDS = "ts engine provenance_mode gate tier round key base_ref base_sha diff_sha256 head_sha facts_sha256 route model effort session_id parent_thread_id account input_tokens output_tokens cost_usd verdict status reason file file_sha256".split()
+FIELDS = "ts engine provenance_mode gate tier round key base_ref base_sha diff_sha256 head_sha facts_sha256 route model effort session_id parent_thread_id account driver_kind input_tokens output_tokens cost_usd verdict status reason file file_sha256".split()
 def sha(f): return hashlib.sha256(open(f, "rb").read()).hexdigest()
 def rows(f):
     out = []
@@ -61,7 +61,9 @@ def evidence(ev, key, tier, base, mode):
         if not s or not p or s == p: return "%s child session is missing or equals the parent" % g
         hit = next((c for c in routing.gate_contracts(RCFG, g, ui=ui) if c[1] == d.get("route") and c[2] == d.get("model")), None)
         if not hit: return "%s route %r is not one of %s" % (g, d.get("route"), "/".join(c[1] for c in routing.gate_contracts(RCFG, g, ui=ui)))
-        if d.get("account") not in hit[4]: return "%s account is not one of the %s instances" % (g, hit[1])
+        acct = d.get("account")
+        if not isinstance(acct, str) or not acct.strip() or any(ch.isspace() or ord(ch) < 32 for ch in acct): return "%s account is missing or invalid" % g
+        if "driver_kind" in d and d.get("driver_kind") != hit[4]: return "%s driver_kind is not %s" % (g, hit[4])
         if g == "epoch":
             t = d.get("tier")
             if t not in ("medium", "high") or RANK[t] < RANK[tr]: return "epoch tier is below the task tier"
@@ -191,8 +193,6 @@ def evidence(ev, key, tier, base, mode):
     if stray: F("gate files not written by gate.sh: " + ",".join(stray))
     else: P("every gate file was written by gate.sh")
     print("\n".join(out))
-
-
 a = sys.argv[1:]
 if a and a[0] == "tiers": tiers(*a[1:3])
 elif a and a[0] == "evidence": evidence(*a[1:6])
