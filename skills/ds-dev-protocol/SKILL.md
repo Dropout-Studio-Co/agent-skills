@@ -1,6 +1,6 @@
 ---
 name: ds-dev-protocol
-description: 'ds-dev-protocol: 100% end-to-end completion over presentation. Orchestration V2 4 roles: Gemini 4 Neon conducts (Medium always) and plans (Med/High/High) via gate.sh plan --record; DeepSeek V4.1 Flash 1017 high is sole implementer via implement.sh, no model fallback; Gemini 4 Neon gates review, security, epoch (High/High/High, High, High/High). Risk tiers, T3 evidence, head-SHA gates, PR delivery. Always on: every dev task.'
+description: 'ds-dev-protocol: 100% end-to-end completion over presentation. Orchestration V2 4 roles: Gemini 4 Neon conducts (Medium always) and plans (Med/High/High) via gate.sh plan --record; DeepSeek V4.1 Flash 1017 high is sole implementer via implement.sh, no model fallback; Gemini 4 Neon gates review, security, epoch (Med/Med/High, High, High/High). Risk tiers, T3 evidence, head-SHA gates, PR delivery. Always on: every dev task.'
 ---
 
 ## ds-dev-protocol (applies to the task it accompanies, before or after it)
@@ -33,7 +33,7 @@ Four roles, one model each, no substitution:
 | Conductor | Gemini 4 Neon `gemini-4-neon`, `medium` always (never `high` or other) | this T3 Code thread (antigravity, antigravity_2) |
 | Architect & Planner | Gemini 4 Neon `gemini-4-neon`, `medium` Low, `high` Medium, `high` High | fresh `delegate_task` (`antigravity` → `antigravity_2`), then `gate.sh plan --record` |
 | Implementer | DeepSeek V4.1 Flash 1017 `opencode-go/deepseek-v4.1-flash#high`, `variant: high` always | `scripts/implement.sh`, the documented mechanical runner, no OS sandbox; sole implementer, no fallback |
-| Reviewer, Security & Epoch | Gemini 4 Neon `gemini-4-neon`, review `high`/`high` Low/Medium and `high` High (`high` with `--trigger`); security `high`; epoch `high`/`high` | fresh `delegate_task` (`antigravity` → `antigravity_2`), then `gate.sh <gate> --record` |
+| Reviewer, Security & Epoch | Gemini 4 Neon `gemini-4-neon`, review `medium`/`medium` Low/Medium and `high` High (`high` with `--trigger`); security `high`; epoch `high`/`high` | fresh `delegate_task` (`antigravity` → `antigravity_2`), then `gate.sh <gate> --record` |
 
 - **Same-provider instance failover only:** a child that hits `usage_limit`, or a reviewer child stalled holding a turn open, is `task_cancel`led and re-dispatched as a fresh `delegate_task` with the full packet and schema on the next enabled same-provider, same-model, same-effort instance: `antigravity` → `antigravity_2`, `opencode` alone. Never cross a provider or model, never ask. When every instance is exhausted, log `blocked` (exit 3), record `STATUS: blocked external — <model> quota exhausted; waiting for reset` with `Routes tried:`, finish unaffected work and stop cleanly.
 - **Start check (MUST):** session must be Gemini 4 Neon at `medium` in T3 Code; any other model or effort stops. DeepSeek V4.1 Flash 1017 never conducts: runs only its brief, no gate, premerge, git mutation or PR.
@@ -113,8 +113,8 @@ The brief comes from the last logged plan; attempts log to `EVID/impl.log`. Exit
 
 | Tier | Gate(s) | Reviewer |
 |---|---|---|
-| Low | `review` | Reviewer, `high` |
-| Medium | `review` | Reviewer, `high` |
+| Low | `review` | Reviewer, `medium` |
+| Medium | `review` | Reviewer, `medium` (`high` if a trigger matched) |
 | High | `review` and `security` (separate fresh children) | Reviewer, `high` |
 
 **Every gate runs through `scripts/gate.sh` (MUST),** including a program-level or multi-task plan (own EVID), re-reviews and the `epoch` decision. Each gate is a T3 `delegate_task` child; never run a model call yourself, and a gate recorded any other way did not happen. From the task worktree:
