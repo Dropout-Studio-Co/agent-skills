@@ -770,6 +770,8 @@ class ContractTests(AuditCase):
         self.assertIn('ds-agent-docs audit', text)
         self.assertIn('ds-agent-docs collect', text)
         self.assertIn('--budget-tokens', text)
+        self.assertIn('cargo install --path crates/ds-agent-docs', text)
+        self.assertNotIn('github releases', text.lower())
         self.assertNotIn('.backpassrc.json', text)
         for banned in ('claude-opus', 'claude-sonnet', 'claude-haiku', 'opus 5.5',
                        'claude -p', 'claude --bg', 'claude auth', 'claude agents',
