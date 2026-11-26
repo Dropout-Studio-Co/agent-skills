@@ -155,6 +155,35 @@ class RunScriptTests(unittest.TestCase):
     def test_default_gate_is_the_skill_gate(self):
         self.assertIn('GATE=${DS_EVAL_GATE:-$SKILL/scripts/gate.sh}', (EVALS / "run.sh").read_text(encoding="utf-8"))
 
+    def test_record_forwards_high_effort_tags(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            stub = root / "stub.sh"
+            stub.write_text('#!/usr/bin/env bash\nprintf "%s\\n" "$@" > "$STUB_ARGS"\n', encoding="utf-8")
+            (root / "evid").mkdir()
+            (root / "work").mkdir()
+            (root / "record.json").write_text("{}", encoding="utf-8")
+            args_file = root / "args.txt"
+            env = dict(os.environ, DS_EVAL_GATE=str(stub), STUB_ARGS=str(args_file))
+            for tags in ("diff-large", "diff-large,ui-overhaul"):
+                done = run("bash", EVALS / "run.sh", "record", "--evid", "evid", "--tier", "medium",
+                           "--record", "record.json", "--child-thread", "c1", "--parent-thread", "p1",
+                           "--high-effort", tags, "--force", cwd=root, env=env)
+                self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+                seen = args_file.read_text(encoding="utf-8").splitlines()
+                self.assertIn("--high-effort", seen)
+                self.assertEqual(seen[seen.index("--high-effort") + 1], tags)
+
+    def test_record_rejects_high_effort_without_a_value(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "evid").mkdir()
+            done = run("bash", EVALS / "run.sh", "record", "--evid", "evid", "--tier", "medium",
+                       "--record", "record.json", "--child-thread", "c1", "--parent-thread", "p1",
+                       "--high-effort", cwd=root)
+            self.assertEqual(done.returncode, 2, done.stdout + done.stderr)
+            self.assertIn("--high-effort needs a value", done.stderr)
+
     def test_record_keeps_gate_exit_codes(self):
         with tempfile.TemporaryDirectory() as tmp:
             stub = Path(tmp) / "stub.sh"
