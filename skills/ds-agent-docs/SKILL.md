@@ -23,9 +23,8 @@ skills live outside `.agents/skills/`):
 ds-agent-docs audit --repo <root> [--scope <path>] [--skills-dir <dir>] --json
 ```
 
-`ds-agent-docs` installs from `crates/ds-agent-docs` (`cargo install --path crates/ds-agent-docs`) or
-from GitHub Releases; `python3 <skill-dir>/scripts/check_instructions.py` and `collect_sessions.py`
-remain the fallback.
+`ds-agent-docs` installs from `crates/ds-agent-docs` (`cargo install --path crates/ds-agent-docs`);
+`python3 <skill-dir>/scripts/check_instructions.py` and `collect_sessions.py` remain the fallback.
 
 Inspect `delivery`, `context_load`, `import`, `references`, `structure`, `hygiene` and
 `docs_coverage`:
