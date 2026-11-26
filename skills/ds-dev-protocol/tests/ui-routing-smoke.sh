@@ -80,13 +80,11 @@ fresh; rec_plan medium; gcase "ui plan medium --trigger accepts Opus high" 0 pla
 fresh; rec_plan medium; gcase "ui plan medium --trigger rejects Opus medium" 2 plan medium "$P1MODEL" "${P1_ALL[0]}" "$P1OPT" "$(rt ui-effort plan medium '' "$P1ROUTE")" 1
 factev u-plan-high; rec_plan high; gcase "ui plan high accepts Opus high" 0 plan high "$P1MODEL" "${P1_ALL[0]}" "$P1OPT" "$(rt ui-effort plan high '' "$P1ROUTE")"
 fresh; rec_plan high; gcase "ui plan high rejects Opus medium" 2 plan high "$P1MODEL" "${P1_ALL[0]}" "$P1OPT" medium
-# --- review: high on every Opus tier; Neon fallback high ---
-for t in low medium high; do rvev "u-rv-$t"; rec_review review "$H"; gcase "ui review $t accepts Opus high" 0 review "$t" "$R1MODEL" "${R1_ALL[0]}" "$R1OPT" "$(rt ui-effort review "$t" '' "$R1ROUTE")"; done
-rvev u-rv-med; rec_review review "$H"; gcase "ui review medium rejects Opus medium" 2 review medium "$R1MODEL" "${R1_ALL[0]}" "$R1OPT" medium
-factev u-plan-neon; rec_plan low; gcase "ui plan Neon fallback accepts high" 0 plan low "$P3MODEL" "${P3_ALL[0]}" "$P3OPT" "$(rt ui-effort plan low '' "$P3ROUTE")"
-fresh; rec_plan low; gcase "ui plan Neon fallback rejects medium" 2 plan low "$P3MODEL" "${P3_ALL[0]}" "$P3OPT" medium
-rvev u-rv-neon; rec_review review "$H"; gcase "ui review Neon fallback accepts high" 0 review low "$R3MODEL" "${R3_ALL[0]}" "$R3OPT" "$(rt ui-effort review low '' "$R3ROUTE")"
-fresh; rec_review review "$H"; gcase "ui review Neon fallback rejects medium" 2 review low "$R3MODEL" "${R3_ALL[0]}" "$R3OPT" medium
+# --- review: Opus low/high high, medium medium; Neon fallback low/high high, medium medium ---
+for t in low medium high; do rvev "u-rv-$t"; rec_review review "$H"; gcase "ui review $t accepts Opus $(rt ui-effort review "$t" '' "$R1ROUTE")" 0 review "$t" "$R1MODEL" "${R1_ALL[0]}" "$R1OPT" "$(rt ui-effort review "$t" '' "$R1ROUTE")"; done
+for spec in low:medium medium:high high:medium; do rvev "u-rvx-${spec%%:*}"; rec_review review "$H"; gcase "ui review ${spec%%:*} rejects Opus ${spec##*:}" 2 review "${spec%%:*}" "$R1MODEL" "${R1_ALL[0]}" "$R1OPT" "${spec##*:}"; done
+for spec in low:high medium:medium; do t=${spec%%:*}; factev "u-plan-neon-$t"; rec_plan "$t"; gcase "ui plan Neon $t accepts ${spec##*:}" 0 plan "$t" "$P3MODEL" "${P3_ALL[0]}" "$P3OPT" "$(rt ui-effort plan "$t" '' "$P3ROUTE")"; fresh; rec_plan "$t"; gcase "ui plan Neon $t rejects $([ "$t" = low ] && echo medium || echo high)" 2 plan "$t" "$P3MODEL" "${P3_ALL[0]}" "$P3OPT" "$([ "$t" = low ] && echo medium || echo high)"; done
+for spec in low:high medium:medium; do t=${spec%%:*}; rvev "u-rv-neon-$t"; rec_review review "$H"; gcase "ui review Neon $t accepts ${spec##*:}" 0 review "$t" "$R3MODEL" "${R3_ALL[0]}" "$R3OPT" "$(rt ui-effort review "$t" '' "$R3ROUTE")"; fresh; rec_review review "$H"; gcase "ui review Neon $t rejects $([ "$t" = low ] && echo medium || echo high)" 2 review "$t" "$R3MODEL" "${R3_ALL[0]}" "$R3OPT" "$([ "$t" = low ] && echo medium || echo high)"; done
 # --- non-UI stays single-route; --ui is plan/review only; Scope: ui is required ---
 factev u-nonui; rec_plan medium; setc "$P1MODEL" "${P1_ALL[0]}" "$P1OPT" high; run plan medium --record "$E/rec.json" --child-thread x1 --parent-thread p1; chk "non-UI plan rejects Opus" test "$RC" = 2
 rvev u-nonui-rv; rec_review review "$H"; setc "$R1MODEL" "${R1_ALL[0]}" "$R1OPT" high; run review medium --record "$E/rec.json" --child-thread x2 --parent-thread p1; chk "non-UI review rejects Opus" test "$RC" = 2
@@ -105,6 +103,7 @@ chk "ui plan safety refusal exit3 blocked" bash -c "[ $RC = 3 ] && tail -1 '$E/g
 # --- live capabilities: a zero-instance primary tier is skipped, a disabled primary is rejected ---
 factev u-skip; rec_plan low; setc "$P3MODEL" "${P3_ALL[0]}" "$P3OPT" "$(rt ui-effort plan low '' "$P3ROUTE")"; export FAKE_CAPS=$(caps "$P3MODEL|$P3DK|${P3_ALL[0]}" "$P3MODEL|$P3DK|${P3_ALL[1]}"); run plan low --ui --record "$E/rec.json" --child-thread s1 --parent-thread p1; chk "ui plan skips a zero-instance primary tier" test "$RC" = 0
 fresh; rec_plan low; setc "$P1MODEL" "${P1_ALL[0]}" "$P1OPT" "$(rt ui-effort plan low '' "$P1ROUTE")"; export FAKE_CAPS=$(caps "$P1MODEL|$P1DK|${P1_ALL[0]}|0" "$P3MODEL|$P3DK|${P3_ALL[0]}"); run plan low --ui --record "$E/rec.json" --child-thread s2 --parent-thread p1; chk "ui plan rejects a disabled primary instance" test "$RC" = 2
+factev u-anti; rec_plan low; export FAKE_CAPS=$(caps "$P1MODEL|$P3DK|anti-opus-a"); setc "$P1MODEL" anti-opus-a "$P1OPT" "$(rt ui-effort plan low '' "$P1ROUTE")"; run plan low --ui --record "$E/rec.json" --child-thread ant --parent-thread p1; chk "ui plan rejects Opus on Neon's driver_kind" bash -c "[ $RC = 2 ] && grep -q 'not a live' '$E/gates.log'"
 # --- default usage_limit failover: two active tiers, no account-name collision ---
 factev u-fo; rec_plan medium; export ERR='{"error":"usage_limit"}'
 setc "$P1MODEL" "${P1_ALL[0]}" "$P1OPT" "$(rt ui-effort plan medium '' "$P1ROUTE")"; run plan medium --ui --record "$E/rec.json" --child-thread f1 --parent-thread p1; f1=$RC; cp "$T/out" "$T/f1"
@@ -114,16 +113,13 @@ setc "$P3MODEL" "${P3_ALL[1]}" "$P3OPT" "$(rt ui-effort plan medium '' "$P3ROUTE
 factev u-zero; rec_plan medium; export ERR='{"error":"usage_limit"}'; export FAKE_CAPS=$(caps "$P3MODEL|$P3DK|${P3_ALL[0]}" "$P3MODEL|$P3DK|${P3_ALL[1]}")
 setc "$P3MODEL" "${P3_ALL[0]}" "$P3OPT" "$(rt ui-effort plan medium '' "$P3ROUTE")"; run plan medium --ui --record "$E/rec.json" --child-thread z1 --parent-thread p1; z1=$RC
 setc "$P3MODEL" "${P3_ALL[1]}" "$P3OPT" "$(rt ui-effort plan medium '' "$P3ROUTE")"; run plan medium --ui --record "$E/rec.json" --child-thread z2 --parent-thread p1; chk "zero-instance primary tier is skipped during failover" bash -c "[ $z1 = 2 ] && [ $RC = 3 ] && ! grep -q '${P1_ALL[0]}' '$T/out' && tail -1 '$E/gates.log' | grep -q 'quota exhausted on every live instance'"
-# --- 3-tier failover when the alt routing.json populates opus_antigravity ---
+# --- 3-tier failover with a synthetic shared-driver mid route ---
 ALT=$T/alt; cp -R "$ROOT" "$ALT"
-python3 -I - "$ALT/routing.json" <<'PY'
-import json, sys
-p = sys.argv[1]; d = json.load(open(p)); d["routes"]["opus_antigravity"].update(model="alt-opus-model", option_key="effort"); open(p, "w").write(json.dumps(d, indent=1) + "\n")
-PY
+python3 -I -c 'import json,sys; p=sys.argv[1]; d=json.load(open(p)); d["routes"]["alt_mid"]={"label":"Alt Mid","provider":"alt-mid-provider","model":"alt-mid-model","option_key":"effort","driver_kind":"alt-shared"}; d["routes"]["neon"]["driver_kind"]="alt-shared"; d["ui_gates"]["plan"].insert(1,{"route":"alt_mid","efforts":{"low":"medium","medium":"medium","high":"high"}}); d["ui_gates"]["review"].insert(1,{"route":"alt_mid","efforts":{"low":"high","medium":"medium","high":"high"}}); open(p,"w").write(json.dumps(d, indent=1)+"\n")' "$ALT/routing.json"
 python3 -I "$ALT/scripts/routing_lib.py" sync || bad "alt ui routing sync"
 A1=$(python3 -I "$ALT/scripts/routing_lib.py" ui-gate-tsv plan | sed -n 1p); A2=$(python3 -I "$ALT/scripts/routing_lib.py" ui-gate-tsv plan | sed -n 2p); A3=$(python3 -I "$ALT/scripts/routing_lib.py" ui-gate-tsv plan | sed -n 3p)
 IFS=$'\t' read -r A1P A1R A1M A1O A1DK <<< "$A1"; IFS=$'\t' read -r A2P A2R A2M A2O A2DK <<< "$A2"; IFS=$'\t' read -r A3P A3R A3M A3O A3DK <<< "$A3"
-A1L=(alt-opus-a alt-opus-b); A2L=(alt-grav-a alt-grav-b); A3L=(alt-neon-a alt-neon-b); chk "alt tiers are distinct models; the two Antigravity tiers share a driver kind" bash -c "[ '$A1M' != '$A2M' ] && [ '$A2M' != '$A3M' ] && [ '$A2DK' = '$A3DK' ] && [ '$A1DK' != '$A2DK' ]"
+A1L=(alt-opus-a alt-opus-b); A2L=(alt-mid-a alt-mid-b); A3L=(alt-neon-a alt-neon-b); chk "alt tiers are distinct models; the two shared-driver tiers share a driver kind" bash -c "[ '$A1M' != '$A2M' ] && [ '$A2M' != '$A3M' ] && [ '$A2DK' = '$A3DK' ] && [ '$A1DK' != '$A2DK' ]"
 mk_ev u-alt; printf 'facts\n' > "$E/facts.md"; K=$(shasum -a 256 "$E/facts.md" | awk '{print $1}'); pkt plan "$K"; rec_plan medium; export ERR='{"error":"usage_limit"}'
 export CAPS=$(caps "$A1M|$A1DK|${A1L[0]}" "$A1M|$A1DK|${A1L[1]}" "$A2M|$A2DK|${A2L[0]}" "$A2M|$A2DK|${A2L[1]}" "$A3M|$A3DK|${A3L[0]}" "$A3M|$A3DK|${A3L[1]}")
 runalt() { ( cd "$R" && EVID="$E" bash "$ALT/scripts/gate.sh" "$@" >"$T/out" 2>&1 ); RC=$?; }
@@ -152,7 +148,8 @@ implcase() { local n=$1 want=$2; shift 2; git -C "$IW" reset -q --hard; git -C "
   if [ "$want" = accept ]; then chk "$n" bash -c "[ $IRC = 3 ] && grep -qF -- '--model $IPIN' '$T/calls/calls.log' && grep -qF '\"model\": \"$IPIN\"' '$T/calls/config.log'"; else chk "$n" bash -c "[ $IRC = 2 ] && [ ! -s '$T/calls/calls.log' ]"; fi; }
 implcase "implement accepts ui=true Opus medium plan" accept true "$P1ROUTE" "$P1MODEL" "${P1_ALL[0]}" "$(rt ui-effort plan medium '' "$P1ROUTE")"
 implcase "implement accepts ui=true Neon high plan" accept true "$P3ROUTE" "$P3MODEL" "${P3_ALL[0]}" "$(rt ui-effort plan low '' "$P3ROUTE")"
-implcase "implement rejects ui=true Neon medium plan" reject true "$P3ROUTE" "$P3MODEL" "${P3_ALL[0]}" medium
+implcase "implement accepts ui=true Neon medium plan" accept true "$P3ROUTE" "$P3MODEL" "${P3_ALL[0]}" medium
+implcase "implement rejects ui=true Neon low plan" reject true "$P3ROUTE" "$P3MODEL" "${P3_ALL[0]}" low
 implcase "implement rejects ui=true unknown route" reject true ghost ghost-model ghost-account high
 implcase "implement rejects non-boolean ui" reject '"yes"' "$P1ROUTE" "$P1MODEL" "${P1_ALL[0]}" "$(rt ui-effort plan medium '' "$P1ROUTE")"
 implcase "implement rejects non-UI Opus plan" reject - "$P1ROUTE" "$P1MODEL" "${P1_ALL[0]}" high
@@ -166,7 +163,7 @@ open(os.path.join(ev, "facts.md"), "w").write("facts\n"); fs = hashlib.sha256(op
 open(os.path.join(ev, "PLAN.md"), "w").write("Tier: %s\n" % tier); open(os.path.join(ev, "tier-recheck-%s.md" % key), "w").write("Tier: %s\n" % tier)
 rows = []
 def write(gate, k, route, ui, eff, tier2, body):
-    r = routes[route]; name = "%s-%s.json" % (gate, k); acct = {"opus": "opus-a", "opus_antigravity": "alt-grav-a", "neon": "neon-a", "deepseek": "deepseek-a"}.get(route, "fallback-a")
+    r = routes[route]; name = "%s-%s.json" % (gate, k); acct = {"opus": "opus-a", "alt_mid": "alt-mid-a", "neon": "neon-a", "deepseek": "deepseek-a"}.get(route, "fallback-a")
     open(os.path.join(ev, name), "w").write(json.dumps({"structured_output": body, "provenance": {}}) + "\n")
     d = {"ts": "2026-11-11T00:00:00Z", "gate": gate, "status": "ok", "verdict": "pass", "route": route, "model": r.get("model") or r.get("model_id"), "effort": eff, "account": acct, "driver_kind": r["driver_kind"], "tier": tier2, "key": k, "head_sha": k, "session_id": "c-%s" % gate, "parent_thread_id": "p", "engine": "t3-delegate", "provenance_mode": "t3-verified", "file": name, "file_sha256": hashlib.sha256(open(os.path.join(ev, name), "rb").read()).hexdigest()}
     if gate == "plan": d["facts_sha256"] = fs
@@ -183,17 +180,18 @@ PY
 }
 pmrun() { ( cd "$T" && EVID="$T/$1" bash "$2" --diff "$T/pdiff" >"$T/pout" 2>&1 ); PRC=$?; }
 pmc() { local n=$1 w=$2 s=$3; shift 3; pm_ev "$n" "$@"; pmrun "$n" "$s"; if [ "$w" = 0 ]; then chk "$n" test "$PRC" = 0; else chk "$n" test "$PRC" = 1; fi; }
-PM=$ROOT/scripts/premerge-and-merge.sh; APM=$ALT/scripts/premerge-and-merge.sh; OP_EFF=$(rt ui-effort plan medium '' "$P1ROUTE"); PH=$(rt ui-effort plan high '' "$P1ROUTE"); RV_H=$(rt ui-effort review low '' "$R1ROUTE"); NEON_H=$(rt ui-effort plan low '' "$P3ROUTE")
-pmc "premerge accepts ui=true Opus plan/review" 0 "$PM" medium "$ROOT/routing.json" "$P1ROUTE" true "$OP_EFF" medium "$P1ROUTE" true "$RV_H" -
-pmc "premerge accepts ui=true Neon high plan/review" 0 "$PM" medium "$ROOT/routing.json" "$P3ROUTE" true "$NEON_H" medium "$R3ROUTE" true "$RV_H" -
-pmc "premerge accepts active alt opus_antigravity" 0 "$APM" medium "$ALT/routing.json" "$A2R" true "$AE2" medium "$A2R" true "$(python3 -I "$ALT/scripts/routing_lib.py" ui-effort review medium '' "$A2R")" -
-pmc "premerge rejects ui=true Neon medium plan" 1 "$PM" medium "$ROOT/routing.json" "$P3ROUTE" true medium medium "$R3ROUTE" true "$RV_H" -
-pmc "premerge rejects ui=true Opus review medium" 1 "$PM" medium "$ROOT/routing.json" "$P1ROUTE" true "$OP_EFF" medium "$P1ROUTE" true medium -
+PM=$ROOT/scripts/premerge-and-merge.sh; APM=$ALT/scripts/premerge-and-merge.sh; OP_EFF=$(rt ui-effort plan medium '' "$P1ROUTE"); PH=$(rt ui-effort plan high '' "$P1ROUTE"); RV_M=$(rt ui-effort review medium '' "$R1ROUTE"); RV_H=$(rt ui-effort review low '' "$R1ROUTE"); NEON_M=$(rt ui-effort plan medium '' "$P3ROUTE")
+pmc "premerge accepts ui=true Opus plan/review" 0 "$PM" medium "$ROOT/routing.json" "$P1ROUTE" true "$OP_EFF" medium "$P1ROUTE" true "$RV_M" -
+pmc "premerge accepts ui=true Neon medium plan/review" 0 "$PM" medium "$ROOT/routing.json" "$P3ROUTE" true "$NEON_M" medium "$R3ROUTE" true "$RV_M" -
+pmc "premerge accepts active alt_mid" 0 "$APM" medium "$ALT/routing.json" "$A2R" true "$AE2" medium "$A2R" true "$(python3 -I "$ALT/scripts/routing_lib.py" ui-effort review medium '' "$A2R")" -
+pmc "premerge rejects ui=true Neon medium plan high" 1 "$PM" medium "$ROOT/routing.json" "$P3ROUTE" true high medium "$R3ROUTE" true "$RV_M" -
+pmc "premerge rejects ui=true Opus medium review high" 1 "$PM" medium "$ROOT/routing.json" "$P1ROUTE" true "$OP_EFF" medium "$P1ROUTE" true high -
 pmc "premerge rejects ui=true Opus high-tier plan medium" 1 "$PM" high "$ROOT/routing.json" "$P1ROUTE" true medium high "$P1ROUTE" true "$RV_H" security
 pmc "premerge rejects ui=true on security" 1 "$PM" high "$ROOT/routing.json" "$P1ROUTE" true "$PH" high "$P1ROUTE" true "$RV_H" security+ui-sec; chk "premerge security ui failure names the ui flag" grep -q 'security ui flag is not valid' "$T/pout"
 pmc "premerge rejects ui=true on epoch" 1 "$PM" high "$ROOT/routing.json" "$P1ROUTE" true "$PH" high "$P1ROUTE" true "$RV_H" security+epoch+ui-epoch; chk "premerge epoch ui failure names the ui flag" grep -q 'epoch ui flag is not valid' "$T/pout"
-pmc "premerge rejects non-boolean ui" 1 "$PM" medium "$ROOT/routing.json" "$P1ROUTE" '"yes"' "$OP_EFF" medium "$P1ROUTE" true "$RV_H" -; chk "premerge non-boolean ui failure names the ui flag" grep -q 'plan ui flag is not valid' "$T/pout"
-pmc "premerge rejects non-UI Opus plan" 1 "$PM" medium "$ROOT/routing.json" "$P1ROUTE" absent "$OP_EFF" medium "$R3ROUTE" absent "$RV_H" -
-pmc "premerge rejects non-UI Opus review" 1 "$PM" medium "$ROOT/routing.json" "$P3ROUTE" absent "$NEON_H" medium "$P1ROUTE" false "$RV_H" -
+pmc "premerge rejects non-boolean ui" 1 "$PM" medium "$ROOT/routing.json" "$P1ROUTE" '"yes"' "$OP_EFF" medium "$P1ROUTE" true "$RV_M" -; chk "premerge non-boolean ui failure names the ui flag" grep -q 'plan ui flag is not valid' "$T/pout"
+pmc "premerge rejects non-UI Opus plan" 1 "$PM" medium "$ROOT/routing.json" "$P1ROUTE" absent "$OP_EFF" medium "$R3ROUTE" absent "$RV_M" -
+pmc "premerge rejects non-UI Opus review" 1 "$PM" medium "$ROOT/routing.json" "$P3ROUTE" absent "$NEON_M" medium "$P1ROUTE" false "$RV_M" -
+pm_ev "pm-opus-dk" medium "$ROOT/routing.json" "$P1ROUTE" true "$OP_EFF" medium "$P1ROUTE" true "$RV_M" -; python3 -c 'import json,sys; p=sys.argv[1]; dk=sys.argv[2]; r=[json.loads(l) for l in open(p)]; [x.update(driver_kind=dk) for x in r if x.get("route")=="opus"]; open(p,"w").write("".join(json.dumps(x)+"\n" for x in r))' "$T/pm-opus-dk/gates.log" "$P3DK"; pmrun "pm-opus-dk" "$PM"; chk "premerge rejects Opus on Neon's driver_kind" bash -c "[ $PRC = 1 ] && grep -q 'provenance' '$T/pout'"
 printf '\n%s\n' "$([ $FAILED = 0 ] && echo 'UI ROUTING TESTS PASSED' || echo 'UI ROUTING TESTS FAILED')"
 exit $FAILED
