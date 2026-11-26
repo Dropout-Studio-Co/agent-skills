@@ -1,4 +1,4 @@
-# agent-skills
+# ds-agent-skills
 
 A collection of 9 Dropout Studio (`ds-*`) skills for AI coding assistants (like Claude Code and OpenCode). Each skill works across web, mobile, native, desktop, TV, CLI, and backend projects — teaching your AI assistant how to handle a specific job from start to finish.
 
@@ -9,7 +9,7 @@ A collection of 9 Dropout Studio (`ds-*`) skills for AI coding assistants (like 
 Open your AI coding assistant and paste this prompt:
 
 ```text
-Install all skills from https://github.com/Dropout-Studio-Co/agent-skills onto my computer:
+Install all skills from https://github.com/Dropout-Studio-Co/ds-agent-skills onto my computer:
 
 1. Download or clone the repository to a temporary folder, copy every folder inside `skills/` into `~/.agents/skills/` (keep all skill folders together in that same directory), and remove the temporary folder when done.
 2. If I use Claude Code (or `~/.claude` exists), create a symlink in `~/.claude/skills/<skill-name>` pointing to `~/.agents/skills/<skill-name>` for each individual skill folder — do not symlink the whole `skills` directory.

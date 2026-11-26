@@ -1,4 +1,4 @@
-# agent-skills — notes for agents
+# ds-agent-skills — notes for agents
 
 Repository of Dropout Studio (`ds-*`) AI-agent skills. Each directory under `skills/` is an
 installable Agent Skill; this repository is the source of truth, and `~/.agents/skills/<name>` is

@@ -452,7 +452,7 @@ class ReferenceTests(AuditCase):
                    '- `SKILL.md` and `task-profile.json`\n'
                    '- `docs/guide.md`\n'
                    '- `Move.target`\n'
-                   '- `Dropout-Studio-Co/agent-skills`\n'
+                   '- `Dropout-Studio-Co/ds-agent-skills`\n'
                    '- `skills/<name>`\n'
                    '- `https://example.dev/path`\n'
                    '- [site](https://example.dev/docs)\n'
@@ -462,7 +462,7 @@ class ReferenceTests(AuditCase):
         data = self.ok_audit()
         self.assertEqual(data['references']['stale'], [])
         self.assertIn('Move.target', [i['ref'] for i in data['references']['items']])
-        self.assertIn('Dropout-Studio-Co/agent-skills', [i['ref'] for i in data['references']['items']])
+        self.assertIn('Dropout-Studio-Co/ds-agent-skills', [i['ref'] for i in data['references']['items']])
 
     def test_gitignored_missing_markdown_link_is_not_stale(self):
         self.write('.gitignore', 'generated/**\n')
@@ -678,9 +678,9 @@ class DocsCoverageTests(AuditCase):
 
 
 class SelfAuditTests(AuditCase):
-    """A fixture mimicking agent-skills AGENTS.md / CONTRIBUTING.md must stay clean."""
+    """A fixture mimicking ds-agent-skills AGENTS.md / CONTRIBUTING.md must stay clean."""
 
-    AGENTS = """# agent-skills - notes for agents
+    AGENTS = """# ds-agent-skills - notes for agents
 
 `skills/ds-agent-docs/scripts/check_instructions.py` runs a read-only audit.
 `scripts/collect_sessions.py` collects evidence. See [AGENTS.md](./AGENTS.md).
@@ -697,7 +697,7 @@ Scripts: `scripts/depup.py`, `scripts/review_task.py`, `scripts/collect_sessions
 `scripts/implement.sh`, `tests/smoke.sh`, `tests/implement-smoke.sh`.
 State: `runs.jsonl`, `state.json`, `launchd.log`, `.env`, `.DS_Store`.
 
-A GitHub slug such as `Dropout-Studio-Co/agent-skills` is not a path, and `Move.target` is prose.
+A GitHub slug such as `Dropout-Studio-Co/ds-agent-skills` is not a path, and `Move.target` is prose.
 """
 
     CONTRIBUTING = """# Contributing
