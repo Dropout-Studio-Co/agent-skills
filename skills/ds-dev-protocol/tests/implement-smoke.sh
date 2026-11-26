@@ -7,9 +7,9 @@ trap '[ "$OUTSIDE" = 0 ] || kill "$OUTSIDE" 2>/dev/null; rm -rf "$T"' EXIT
 ok() { printf 'ok   impl: %s\n' "$1"; }; bad() { printf 'FAIL impl: %s\n' "$1"; FAILED=1; }
 chk() { local d=$1; shift; if "$@" >/dev/null 2>&1; then ok "$d"; else bad "$d"; fi; }
 export T HOME=$T/home; EVR=$HOME/.local/state/dev-evidence; E=$EVR/task
-IFS=$'\t' read -r IR IP IMDL ID IE IPIN IACCT ICM <<< "$(python3 -I "$ROOT/scripts/routing_lib.py" impl-tsv)"; IFS=$'\t' read -r PN PR PM PO PA <<< "$(python3 -I "$ROOT/scripts/routing_lib.py" gate-tsv plan)"
-PLANEFF=$(python3 -I "$ROOT/scripts/routing_lib.py" effort plan medium); PA0=${PA%% *}; PMODEL=$PM
-export DEF_PROVIDER="$IP" DEF_ID="$ID" DEF_VARIANT="$IE" PM PR PA0 PLANEFF
+IFS=$'\t' read -r IR IP IMDL ID IE IPIN IDK ICM <<< "$(python3 -I "$ROOT/scripts/routing_lib.py" impl-tsv)"; IFS=$'\t' read -r PN PR PM PO PDK <<< "$(python3 -I "$ROOT/scripts/routing_lib.py" gate-tsv plan)"
+PLANEFF=$(python3 -I "$ROOT/scripts/routing_lib.py" effort plan medium); PA0=neon-a; PMODEL=$PM
+export DEF_PROVIDER="$IP" DEF_ID="$ID" DEF_VARIANT="$IE" PM PR PA0 PDK PLANEFF
 mkdir -p "$E" "$T/bin" "$T/oc" "$T/sys"; ln -s "$(command -v python3)" "$T/sys/python3"
 cat > "$T/oc/opencode" <<'FAKE'
 #!/bin/bash
@@ -58,7 +58,7 @@ mkplan() { local f=plan-$1.json; shift; local fs fld
   python3 - "$E/gates.log" "$f" "$fs" "$@" <<'PY'
 import json, os, sys
 p, f, fs = sys.argv[1:4]
-d = {"gate": "plan", "status": "ok", "route": os.environ["PR"], "model": os.environ["PM"], "effort": os.environ["PLANEFF"], "provenance_mode": "t3-verified",
+d = {"gate": "plan", "status": "ok", "route": os.environ["PR"], "model": os.environ["PM"], "effort": os.environ["PLANEFF"], "driver_kind": os.environ["PDK"], "provenance_mode": "t3-verified",
      "engine": "t3-delegate", "file": f, "file_sha256": fs, "key": fs, "session_id": "child-1", "parent_thread_id": "parent-1", "account": os.environ["PA0"]}
 for kv in sys.argv[4:]:
     k, v = kv.split("=", 1); d[k] = v
@@ -74,30 +74,30 @@ clean() { [ -z "$(git -C "$W" status --porcelain --untracked-files=all)" ]; }
 RES='printf "{\"status\": \"done\", \"tests_run\": [\"t\"], \"not_checked\": []}" > .impl/result.json'; SK=it.sk
 # --- preconditions: exit 2, no opencode call ---
 pre() { local d=$1; shift; im "$@"; if [ "$IRC" = 2 ] && [ "$(nmodel)" = 0 ]; then ok "pre: $d"; else bad "pre: $d (rc $IRC, $(nmodel) calls)"; fi; }
-fresh; NOEV=1 pre "EVID unset" medium --bootstrap none
-fresh; pre "no --bootstrap" medium
-fresh; echo x >> "$W/src/a.txt"; pre "dirty file" medium --bootstrap none
-fresh; echo x > "$W/new.txt"; pre "untracked file" medium --bootstrap none
+fresh; NOEV=1 pre "EVID unset" medium --bootstrap none; fresh; pre "no --bootstrap" medium
+fresh; echo x >> "$W/src/a.txt"; pre "dirty file" medium --bootstrap none; fresh; echo x > "$W/new.txt"; pre "untracked file" medium --bootstrap none
 fresh; mkdir "$W/.impl"; pre ".impl exists" medium --bootstrap none
 fresh; echo '{"status": "start", "step": "main"}' >> "$E/impl.log"; pre "trailing start row" medium --bootstrap none
-fresh; : > "$E/gates.log"; pre "no logged plan" medium --bootstrap none
-fresh; echo x >> "$E/plan-p1.json"; pre "plan hash mismatch" medium --bootstrap none
-fresh; rm -f "$E"/plan-*.json; pre "plan file missing" medium --bootstrap none
-fresh; CWD=$R pre "main checkout, not a linked worktree" medium --bootstrap none
+fresh; : > "$E/gates.log"; pre "no logged plan" medium --bootstrap none; fresh; echo x >> "$E/plan-p1.json"; pre "plan hash mismatch" medium --bootstrap none
+fresh; rm -f "$E"/plan-*.json; pre "plan file missing" medium --bootstrap none; fresh; CWD=$R pre "main checkout, not a linked worktree" medium --bootstrap none
 fresh; git -C "$R" worktree add -q --detach "$EVR/wtx"; CWD=$EVR/wtx pre "worktree under the evidence root" medium --bootstrap none; git -C "$R" worktree remove --force "$EVR/wtx"
 fresh; pre "bad tier max" max --bootstrap none
 # --- Neon plan lookup: route, model, effort and t3 provenance are all required ---
 badplan() { local d=$1 kv=$2; fresh; : > "$E/gates.log"; mkplan p1 "$kv"; im medium --bootstrap none
   if [ "$IRC" = 2 ] && [ "$(nmodel)" = 0 ]; then ok "plan lookup: $d"; else bad "plan lookup: $d (rc $IRC)"; fi; }
-badplan "route must be neon" route=opus
-badplan "model must be the plan model" model=plan-other-model
-badplan "effort xhigh rejected" effort=xhigh
-badplan "effort empty rejected" effort=
-badplan "provenance_mode must be t3-verified" provenance_mode=provisional
-badplan "engine must be t3-delegate" engine=claude-delegate
-badplan "account must be a plan instance" account=plan-other-account
-badplan "missing account rejected" account=
+badplan "route must be neon" route=opus; badplan "model must be the plan model" model=plan-other-model
+badplan "effort xhigh rejected" effort=xhigh; badplan "effort empty rejected" effort=
+badplan "provenance_mode must be t3-verified" provenance_mode=provisional; badplan "engine must be t3-delegate" engine=claude-delegate
+badplan "driver_kind mismatch rejected" driver_kind=wrong-driver; badplan "driver_kind empty rejected" driver_kind=; badplan "missing account rejected" account=
 # --- happy DeepSeek run ---
+fresh; : > "$E/gates.log"; mkplan p1; python3 - "$E/gates.log" <<'PY'
+import json, sys
+p = sys.argv[1]; out = []
+for line in open(p):
+    d = json.loads(line); d.pop("driver_kind", None); out.append(json.dumps(d))
+open(p, "w").write("\n".join(out) + "\n")
+PY
+NOOC=1 im medium --bootstrap none; chk "legacy plan row without driver_kind accepted" test "$IRC" = 3
 fresh; mkdir -p "$T/xc" "$T/xs" "$T/tmpx"; FAKE_ACTION="echo b > src/a.txt; echo x > ignored.txt; $RES" IMPL_MODEL=x OPENCODE_MODEL=y XDG_CACHE_HOME=$T/xc XDG_STATE_HOME=$T/xs TMPDIR=$T/tmpx im medium --bootstrap none
 chk "happy: exit 0" test "$IRC" = 0
 chk "happy: probe first" bash -c "grep '^opencode run' '$T/calls.log' | head -1 | grep -q -- '--agent implementer-probe'"

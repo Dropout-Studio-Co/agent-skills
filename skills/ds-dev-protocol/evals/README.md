@@ -79,7 +79,7 @@ findings raised on a clean fixture.
   fails; it also proves zero `__pycache__` remains (all Python runs use `-I -B`).
 - Any edit to a fixture source needs `build_fixtures.py` (no flag) to regenerate the diff, packet,
   `meta.json`, `keys.txt` and `inputs.sha256`; `--check` then proves the tree is consistent.
-- Rescore after any change to `opus-gate-brief.md`, `plan-gate-brief.md`, `plan-schema.json` or
+- Rescore after any change to `review-gate-brief.md`, `plan-gate-brief.md`, `plan-schema.json` or
   `review-schema.json`, and record one row per variant.
 - The rubric matches identifiers and failure wording with regexes, so a correct finding phrased far
   from the expected language can still score as a miss; `score.py` prints which part did not match.

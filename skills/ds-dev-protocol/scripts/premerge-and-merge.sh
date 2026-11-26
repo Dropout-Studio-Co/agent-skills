@@ -23,7 +23,7 @@ else case ${1:-} in ''|*[!0-9]*) usage >&2; exit 2 ;; esac; pr=$1; noci=0
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/premerge.XXXXXX"); trap 'rm -rf "$TMP"' EXIT; out=$EVID/premerge-$key.txt; : > "$out"; FAILED=0
 pass_() { printf 'PASS %s\n' "$1" | tee -a "$out"; }
 fail_() { printf 'FAIL %s\n' "$1" | tee -a "$out"; FAILED=1; }
-logrow() { printf '{"ts": "%s", "engine": "", "provenance_mode": "", "gate": "%s", "tier": "%s", "round": 0, "key": "%s", "route": "", "model": "", "effort": "", "session_id": "", "parent_thread_id": "", "account": "", "input_tokens": 0, "output_tokens": 0, "cost_usd": 0, "verdict": "", "status": "%s", "reason": "%s", "file": "", "file_sha256": "", "provider": "", "task_id": "%s"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$2" "${final:-}" "$3" "$1" "$4" "$(basename "$EVID")" >> "$EVID/gates.log"; }
+logrow() { printf '{"ts": "%s", "engine": "", "provenance_mode": "", "gate": "%s", "tier": "%s", "round": 0, "key": "%s", "route": "", "model": "", "effort": "", "session_id": "", "parent_thread_id": "", "account": "", "driver_kind": "", "input_tokens": 0, "output_tokens": 0, "cost_usd": 0, "verdict": "", "status": "%s", "reason": "%s", "file": "", "file_sha256": "", "provider": "", "task_id": "%s"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$2" "${final:-}" "$3" "$1" "$4" "$(basename "$EVID")" >> "$EVID/gates.log"; }
 base=""; prhead=""; prstate=""
 if [ "$mode" = repo ]; then
   if git diff --quiet HEAD; then pass_ "clean tracked tree at $key"; else fail_ "tracked tree is dirty"; fi
