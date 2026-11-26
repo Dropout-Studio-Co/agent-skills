@@ -165,7 +165,7 @@ chk "security medium exit2 no t3" bash -c "[ $GRC = 2 ] && [ ! -s '$T/t3.calls' 
 fresh; new_ev ef; pkt review "$H" "$B"; rec_review review "$H" pass; export FAKE_RECORD=$E/rec.json
 for e in low xhigh max ultrathink; do fresh; opusenv "$e"; export FAKE_RECORD=$E/rec.json
   g "$E" review medium --record "$E/rec.json"
-  chk "child effort $e exit2" bash -c "[ $GRC = 2 ] && tail -1 '$E/gates.log' | grep -q '\"status\": \"invalid\"' && tail -1 '$E/gates.log' | grep -q 'child effort'"
+  chk "child effort $e exit2" bash -c "[ $GRC = 2 ] && tail -1 '$E/gates.log' | grep -q '\"status\": \"invalid\"' && tail -1 '$E/gates.log' | grep -q 'child $OO'"
 done
 fresh; opusenv "$(rt effort review medium)"; export FAKE_RECORD=$E/rec.json; gaterun "$E" review medium --record "$E/rec.json" --child-thread same --parent-thread same
 chk "childThreadId == parentThreadId exit2" bash -c "[ $GRC = 2 ] && tail -1 '$E/gates.log' | grep -q 'equals the parent' && [ ! -s '$T/t3.calls' ]"
@@ -298,8 +298,8 @@ fresh; new_ev modelconf; pkt review "$H" "$B"; rec_review review "$H" pass; opus
 export FAKE_RECORD=$E/rec.json FAKE_THREAD_MODEL=claude-opus-4-8; g "$E" review medium --record "$E/rec.json"
 chk "thread model conflicting with modelSelection exit2" bash -c "[ $GRC = 2 ] && grep -q 'observed model is' '$E/gates.log'"
 fresh; new_ev effconf; pkt review "$H" "$B"; rec_review review "$H" pass; opusenv "$(rt effort review medium)"
-export FAKE_RECORD=$E/rec.json FAKE_RUNS='[{"runId":"run-2","status":"completed","options":{"effort":"low"}}]'; g "$E" review medium --record "$E/rec.json"
-chk "run effort conflict exit2" bash -c "[ $GRC = 2 ] && grep -q 'observed effort is' '$E/gates.log'"
+export FAKE_RECORD=$E/rec.json FAKE_RUNS='[{"runId":"run-2","status":"completed","options":{"'"$OO"'":"low"}}]'; g "$E" review medium --record "$E/rec.json"
+chk "run effort conflict exit2" bash -c "[ $GRC = 2 ] && grep -q 'observed $OO is' '$E/gates.log'"
 fresh; new_ev ic; pkt review "$H" "$B"; rec_review review "$H" pass; opusenv "$(rt effort review medium)"
 export FAKE_RECORD=$E/rec.json FAKE_RUN_INSTANCE="${OPUS_ALL[1]}"; g "$E" review medium --record "$E/rec.json"
 chk "cross-source instance mismatch ${OPUS_ALL[0]} vs ${OPUS_ALL[1]} exit2" bash -c "[ $GRC = 2 ] && grep -q 'observed account' '$E/gates.log' && grep -q '${OPUS_ALL[1]}' '$E/gates.log' && ! ls '$E'/review-*.json 2>/dev/null"

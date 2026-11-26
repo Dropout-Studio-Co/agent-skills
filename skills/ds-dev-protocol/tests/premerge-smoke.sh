@@ -133,9 +133,9 @@ chk "lower re-check tier fails" bash -c "[ $PRC = 1 ] && grep -q 'lower than PLA
 refuse() { local n=$1 tier=$2 mut=$3 want=$4; base_ev "r-$n" "$tier" "$H"; pm_reset; eval "$mut"; pmrun "$E" "$R" 1
   chk "refuse:$n" bash -c "[ $PRC = 1 ] && grep -q '$want' '$T/pm.out' && [ \$(grep -cE 'pr (edit|merge)' '$T/calls.log') = 0 ]"; }
 for tier in low medium high; do refuse "facts-$tier" "$tier" 'printf x >> "$E/facts.md"' 'does not match plan.facts_sha256'; done
-for spec in "route=$OR" "model=$OM" "account=$OPUS_ACCT" 'session_id=parent-1' 'effort=medium'; do
+for spec in 'route=wrong-route' 'model=wrong-model' 'account=wrong-acct' 'session_id=parent-1' 'effort=medium'; do
   refuse "plan-${spec%%=*}" medium "setrow plan ${spec%%=*} ${spec#*=}" 'plan provenance'; done
-for spec in 'route=deepseek-low' "model=$NM" "account=$NEON_ACCT" 'session_id=parent-1' 'effort=low'; do
+for spec in 'route=deepseek-low' 'model=wrong-model' 'account=wrong-acct' 'session_id=parent-1' 'effort=low'; do
   refuse "review-${spec%%=*}" medium "setrow review ${spec%%=*} ${spec#*=}" 'review provenance'; done
 for spec in 'route=fallback' 'provenance_mode=provisional' 'effort=medium' 'model=claude-opus-4-8'; do
   refuse "security-${spec%%=*}" high "setrow security ${spec%%=*} ${spec#*=}" 'security provenance'; done
