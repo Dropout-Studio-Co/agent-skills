@@ -67,6 +67,11 @@ For every dependency being upgraded — `patch`, `minor`, `major`, `prerelease`,
   is evaluated like any other untrusted code.
 - Choose the target: latest stable that satisfies all peers/engines/runtime and that the
   framework supports. Intermediate versions are fine when a direct jump is unsupported.
+- Cross-stack compatibility: before targeting a latest stable major, check every other package,
+  framework and tool in the stack for removed or incompatible internal or programmatic APIs, peer
+  or ecosystem mismatches, and unfinished downstream framework or tool support (bundler, compiler,
+  framework plugin, test runner). Upgrade only dependencies with zero compatibility conflicts;
+  hold any conflicting dependency rather than forcing or shipping an incompatible stack.
 - Strict major upgrades: for every major crossed, look up and follow the official migration
   guides and migration sources (official upgrade guide, breaking-changes release notes, official
   codemods, compatibility matrix). Check every crossed major, not only the final one (v2 -> v4
@@ -103,6 +108,8 @@ Write the plan into the report input (`targets`, `risks`, `migrations`, `test_ma
 - For each batch, record the official documentation links for every package and, for every major
   upgrade, the official migration guide/source links with the migrations derived from them; hold
   any major upgrade whose official migration sources are missing or cannot be verified.
+- Record every held-back compatibility conflict with its conflicting dependencies and the reason,
+  so the final answer can emit the compact conflict table directly.
 - Separate **required migration** from **optional adoption** (new APIs, perf flags).
   Optional items are listed, not applied, unless the user asked.
 - Add `impact_tier: high` to an upgrade record when its consequences meet safety.md §High-risk; add

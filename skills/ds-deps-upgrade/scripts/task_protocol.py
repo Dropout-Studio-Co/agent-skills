@@ -410,7 +410,12 @@ def build_prompt(kind, subject, worktree, base, candidate, files, context_path=N
                     'install scripts, registry/source changes. Official documentation and migration sources: the '
                     'latest official documentation was consulted for every dependency upgraded, and official '
                     'migration guides/sources were followed for every major upgrade; any major upgrade without '
-                    'verified official migration sources must be held.',
+                    'verified official migration sources must be held. Cross-stack compatibility: no removed or '
+                    'incompatible internal or programmatic APIs used by another package, framework or tool in the '
+                    'stack, no peer or ecosystem mismatches, and no unfinished downstream framework or tool support '
+                    '(bundler, compiler, framework plugin, test runner); upgrade only dependencies with zero '
+                    'compatibility conflicts, and hold any conflicting dependency with the conflicting '
+                    'dependencies and the reason.',
         'independent': 'Independent assessment of the high-risk item "%s": impact on data, trust boundaries and '
                        'integrations; whether the migration is complete and correct; controls and recovery. '
                        'Judge only from the diff and code, not from the author\'s claims.' % subject,
@@ -465,7 +470,11 @@ def build_plan_prompt(kind, subject, target, head, context_path, read_only_note)
                 'are high-risk or must be held. Official documentation and migration sources: consult the latest '
                 'official documentation for every dependency upgraded, and strictly follow the official '
                 'migration guides/sources for every major upgrade; any major upgrade without verified official '
-                'migration sources is held.',
+                'migration sources is held. Cross-stack compatibility: no removed or incompatible internal or '
+                'programmatic APIs used by another package, framework or tool in the stack, no peer or ecosystem '
+                'mismatches, and no unfinished downstream framework or tool support (bundler, compiler, framework '
+                'plugin, test runner); upgrade only dependencies with zero compatibility conflicts, and hold any '
+                'conflicting dependency with the conflicting dependencies and the reason in holds.',
         'architecture': 'Architecture of the high-risk item "%s": the safest supported migration route and '
                         'alternatives rejected, effect on data, trust boundaries, integrations and deployment, '
                         'ordering constraints, controls, verification and recovery. Judge only from the code '

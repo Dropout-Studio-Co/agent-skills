@@ -99,6 +99,21 @@ class TaskProtocolUnitTests(TempCase):
             self.assertIn('every major upgrade', lower)
             self.assertIn('held', lower)
 
+    def test_prompts_enforce_cross_stack_compatibility_and_holds(self):
+        plan_prompt = tp.build_plan_prompt('plan', 'upgrade', '/repo', 'abc', '/ctx', '')
+        critical_prompt = tp.build_prompt(
+            'critical', 'upgrade', '/repo', 'abc', 'def',
+            {'code_diff': 'a', 'code_lines': 1, 'lock_diff': 'b', 'lock_lines': 1, 'stat': 'c'})
+        for prompt in (plan_prompt, critical_prompt):
+            lower = prompt.lower()
+            self.assertIn('removed or incompatible internal or programmatic apis', lower)
+            self.assertIn('peer or ecosystem mismatches', lower)
+            self.assertIn('unfinished downstream framework or tool support', lower)
+            self.assertIn('zero compatibility conflicts', lower)
+            self.assertIn('hold any conflicting dependency', lower)
+            self.assertIn('conflicting dependencies', lower)
+            self.assertIn('reason', lower)
+
 
 class DepupTaskCase(TempCase):
 

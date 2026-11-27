@@ -53,6 +53,18 @@ compatible versions, upgrading the family together, or holding the item back. Ne
 `--force`, `--legacy-peer-deps`, `strict-peer-dependencies=false`, or a blanket override to
 silence them; if the repo already uses one, report it as a pre-existing risk.
 
+Cross-stack compatibility covers more than peer ranges. Before shipping a latest stable major,
+check the rest of the stack for:
+- removed or incompatible internal or programmatic APIs another package, framework or tool
+  consumes (renamed exports, changed signatures, dropped deep imports or runtime hooks);
+- peer or ecosystem mismatches (peer ranges, engine/runtime constraints, type-package skew);
+- unfinished downstream framework or tool support — the bundler, compiler, framework plugin or
+  test runner does not yet support the new major, or its support is unreleased or unverified.
+
+Hold any conflicting package rather than forcing it or shipping an incompatible stack; record the
+conflicting dependencies and the reason, and upgrade only dependencies with zero compatibility
+conflicts.
+
 ## Codemods and migrations
 - Prefer the official codemod named in the migration guide (for example
   `npx @next/codemod`, `npx @angular/cli update`, `npx sv migrate`, `npx
