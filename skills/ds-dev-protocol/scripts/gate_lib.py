@@ -151,7 +151,7 @@ def main():
     if not isinstance(caps, dict) or not isinstance(caps.get("providers"), list): return stop(2, reason="T3 MCP verification unavailable (orchestrator_capabilities)")
     info = thread_info(read, cfg, routing.option_keys(RCFG)); contracts = routing.gate_contracts(RCFG, args.gate, ui=ui)
     live_map = {c[1]: live_instances(caps, c[4], c[2]) for c in contracts}; inst_dk = {p["providerInstanceId"]: p["driverKind"] for p in caps["providers"] if isinstance(p, dict) and isinstance(p.get("providerInstanceId"), str) and isinstance(p.get("driverKind"), str)}
-    hit = next((c for c in contracts if c[2] == info["model"] and info["instance"] in live_map[c[1]]), None) or next((c for c in contracts if c[2] == info["model"]), None) or next((c for c in contracts if live_map[c[1]]), contracts[0]); provider, route, model, option, dk = hit; live = live_map[route]
+    hit = next((c for c in contracts if c[2] == info["model"] and info["instance"] in live_map[c[1]]), None) or next((c for c in contracts if c[2] == info["model"]), None) or next((c for c in contracts if live_map[c[1]]), contracts[0]); provider, route, model, option, dk = hit; live = live_map[route]; suffix = (RCFG["routes"].get(route) or {}).get("executed_model_suffix") or ""
     effort = routing.effort_for(RCFG, args.gate, args.tier, trigger or (args.gate == "review" and round_no >= 3), ui=ui, route=route); chosen = info["options"].get(option) or ""
     obs = dict(model=info["model"], effort=chosen, account=info["instance"], driver_kind=inst_dk.get(info["instance"], ""))
     def bad(reason):
@@ -173,8 +173,8 @@ def main():
     if info["model"] != model: return stop(2, reason="child model is %r, expected %s" % (info["model"], model), **obs)
     if chosen != effort: return stop(2, reason="child %s is %r, expected %s" % (option, chosen, effort), **obs)
     for seen in info["seen"]:
-        for field, expected, label in (("model", model, "model"), ("executed", model, "executed model"), ("effort", effort, option)):
-            if seen[field] and seen[field] != expected: return stop(2, reason="observed %s is %r, expected %s" % (label, seen[field], expected), **obs)
+        for field, allowed, label in (("model", (model,), "model"), ("executed", (model, model + suffix.replace("{effort}", effort)) if suffix and effort else (model,), "executed model"), ("effort", (effort,), option)):
+            if seen[field] and seen[field] not in allowed: return stop(2, reason="observed %s is %r, expected %s" % (label, seen[field], allowed[0]), **obs)
         if seen["instance"] and (seen["instance"] not in live or (not seen["prior_fail"] and seen["instance"] != info["instance"])): return stop(2, reason="observed account %r disagrees with the modelSelection instance %r" % (seen["instance"], info["instance"]), **obs)
     try: payload = json.load(open(args.record))
     except (OSError, ValueError) as problem: return stop(2, reason="--record is not readable JSON: %s" % problem, **obs)
