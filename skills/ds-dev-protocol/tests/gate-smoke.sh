@@ -59,6 +59,11 @@ def items():
     if mode == "spoof":
         return [{"type": "assistant_message", "itemId": "it-1", "text": "Approved."},
                 {"type": "system_notice", "itemId": "it-2", "text": json.dumps(rec)}]
+    if mode == "concat":
+        return [{"type": "assistant_message", "itemId": "it-1", "text": json.dumps(rec) + json.dumps(rec)}]
+    if mode == "concat2":
+        draft = dict(rec); draft["design"] = "old-plan"
+        return [{"type": "assistant_message", "itemId": "it-1", "text": json.dumps(draft) + json.dumps(rec)}]
     if mode == "prose":
         return [{"type": "assistant_message", "itemId": "it-1", "text": "The cyber harness review is done.\n" + json.dumps(rec)}]
     return [{"type": "assistant_message", "itemId": "it-1", "text": json.dumps(rec)}]
@@ -328,8 +333,43 @@ unset T3_ACP_MCP_NODE; g "$E" review medium --record "$E/rec.json"; chk "T3_ACP_
 printf '#!/bin/sh\necho not-json\n' > "$T/bin/badnode"; chmod +x "$T/bin/badnode"; export T3_ACP_MCP_NODE="$T/bin/badnode"
 g "$E" review medium --record "$E/rec.json"; chk "non-JSON T3 node exits 2 with no traceback" bash -c "[ $GRC = 2 ] && tail -1 '$E/gates.log' | grep -q 'T3 MCP verification unavailable' && ! grep -q Traceback '$T/out'"
 export T3_ACP_MCP_NODE="$NODE"
-fresh; new_ev bp; rec_review review "$H" pass; opusenv "$(rt effort review medium)"; export FAKE_RECORD=$E/rec.json
+newrepo bpbind y.txt; fresh; new_ev bp; rec_review review "$H" pass; opusenv "$(rt effort review medium)"; export FAKE_RECORD=$E/rec.json
 ( cd "$R" && EVID="$E" bash "$ROOT/scripts/build-packet.sh" review medium --base origin/main )
 g "$E" review medium --record "$E/rec.json"; chk "build-packet output binds through gate.sh --record" bash -c "[ $GRC = 0 ] && test -s '$E/review-$H.json' && grep -q '^Gate: review' '$E/packet-review.md'"
+BP=$ROOT/scripts/build-packet.sh; bp() { ( cd "$R" && EVID="$E" bash "$BP" "$@" ) >"$T/out" 2>&1; }
+# --- packet builder pre-dispatch tree check, trail blast bound and hard packet byte cap ---
+fresh; new_ev bpdirty; printf 'facts body\n' > "$E/facts.md"; printf 'd\n' > "$T/bp.diff"; printf 'b\n' >> "$R/f.txt"
+bp review medium --base origin/main; r1=$?; cp "$T/out" "$T/o1"; printf 'u\n' > "$R/u.txt"; bp plan medium; r2=$?; cp "$T/out" "$T/o2"
+chk "build-packet dirty tracked (review) and untracked (plan) exit2, no packet" bash -c "[ $r1 = 2 ] && [ $r2 = 2 ] && grep -q dirty '$T/o1' && grep -q dirty '$T/o2' && ! ls '$E'/packet-*.md 2>/dev/null"
+bp review medium --diff "$T/bp.diff"; r3=$?; chk "build-packet --diff on a dirty repo still exit0" bash -c "[ $r3 = 0 ] && test -s '$E/packet-review.md'"
+git -C "$R" checkout -q -- f.txt; rm -f "$R/u.txt" "$E/packet-review.md"
+fresh; new_ev capbig; head -c 204900 /dev/zero | tr '\0' x > "$E/facts.md"; bp plan medium; r1=$?; chk "packet over 204800 bytes exit2 split the candidate, no packet" bash -c "[ $r1 = 2 ] && grep -q 'split the candidate' '$T/out' && [ ! -e '$E/packet-plan.md' ]"
+mkdir -p "$T/bigbin"; printf '#!/bin/sh\nyes y | head -c 9000\n' > "$T/bigbin/trail"; chmod +x "$T/bigbin/trail"; fresh; new_ev blast
+( cd "$R" && PATH="$T/bigbin:$PATH" EVID="$E" bash "$BP" review medium --base origin/main ) >"$T/out" 2>&1; r2=$?; chk "oversized trail blast truncated to 8192 bytes with a marker" bash -c "[ $r2 = 0 ] && grep -qF '[truncated to 8192 bytes]' '$E/packet-review.md' && [ \$(wc -c < '$E/packet-review.md') -lt 204800 ]"
+rec_review review "$H" pass; opusenv "$(rt effort review medium)"; export FAKE_RECORD=$E/rec.json; g "$E" review medium --record "$E/rec.json"; chk "bounded-blast packet binds through gate.sh --record" bash -c "[ $GRC = 0 ] && test -s '$E/review-$H.json'"
+# --- local preflight: preconditions without T3, gates.log or a record ---
+fresh; new_ev pf; pkt review "$H" "$B"; rec_review review "$H" pass; opusenv "$(rt effort review medium)"; export FAKE_RECORD=$E/rec.json
+gaterun "$E" review medium --preflight; r1=$GRC; chk "preflight on a clean tree and valid packet exits 0, no t3 calls, no gates.log" bash -c "[ $r1 = 0 ] && [ ! -s '$T/t3.calls' ] && [ ! -e '$E/gates.log' ]"
+printf 'b\n' >> "$R/f.txt"; gaterun "$E" review medium --preflight; r2=$GRC; git -C "$R" checkout -q -- f.txt
+chk "preflight on a dirty tree exits 2, no t3 calls, no gates.log" bash -c "[ $r2 = 2 ] && [ ! -s '$T/t3.calls' ] && [ ! -e '$E/gates.log' ]"
+gaterun "$E" review medium --preflight --record "$E/rec.json"; r3=$GRC; chk "preflight combined with --record exits 2" bash -c "[ $r3 = 2 ] && [ ! -s '$T/t3.calls' ] && [ ! -e '$E/gates.log' ]"
+# --- early invalid rows carry the computed effort (tier, --trigger, security, plan) ---
+fresh; new_ev refe; pkt review "$H" "$B"; rec_review review "$H" pass; opusenv "$(rt effort review medium)"; export FAKE_RECORD=$E/rec.json
+printf 'b\n' >> "$R/f.txt"; g "$E" review medium --record "$E/rec.json"; r1=$GRC; git -C "$R" checkout -q -- f.txt
+printf 'b\n' >> "$R/f.txt"; g "$E" review medium --record "$E/rec.json" --trigger; r2=$GRC; git -C "$R" checkout -q -- f.txt
+chk "refuse logs the computed effort: review medium medium, --trigger high" bash -c "[ $r1 = 2 ] && [ $r2 = 2 ] && [ \$(grep -c '\"effort\": \"medium\"' '$E/gates.log') = 1 ] && [ \$(grep -c '\"effort\": \"high\"' '$E/gates.log') = 1 ]"
+fresh; new_ev refhs; pkt security "$H" "$B"; rec_review security "$H" pass; opusenv high; export FAKE_RECORD=$E/rec.json; printf 'b\n' >> "$R/f.txt"; g "$E" security high --record "$E/rec.json"; r3=$GRC; git -C "$R" checkout -q -- f.txt
+printf 'facts body\n' > "$E/facts.md"; rec_plan high; planenv high; export FAKE_RECORD=$E/rec.json; g "$E" plan high --record "$E/rec.json"; r4=$GRC; chk "refuse logs security high and missing-packet plan high effort" bash -c "[ $r3 = 2 ] && [ $r4 = 2 ] && [ \$(grep -c '\"effort\": \"high\"' '$E/gates.log') = 2 ] && tail -1 '$E/gates.log' | grep -q 'missing'"
+# --- a prior failed run on another live instance is not an account mismatch ---
+fresh; new_ev prior; pkt review "$H" "$B"; rec_review review "$H" pass; opusenv "$(rt effort review medium)" "$OM" "${OPUS_ALL[1]}"; export FAKE_RECORD=$E/rec.json FAKE_RUNS='[{"runId":"run-2","status":"completed","providerInstanceId":"'${OPUS_ALL[1]}'","model":"'$OM'"},{"runId":"run-1","status":"failed","providerInstanceId":"'${OPUS_ALL[0]}'","model":"'$OM'"}]'
+g "$E" review medium --record "$E/rec.json"; chk "earlier failed run on another live instance accepted exit0" bash -c "[ $GRC = 0 ] && test -s '$E/review-$H.json'"
+fresh; opusenv "$(rt effort review medium)" "$OM" "${OPUS_ALL[1]}"; export FAKE_RECORD=$E/rec.json FAKE_RUNS='[{"runId":"run-2","status":"completed","providerInstanceId":"'${OPUS_ALL[1]}'","model":"'$OM'"},{"runId":"run-1","status":"failed","providerInstanceId":"ghost-1","model":"'$OM'"}]'; g "$E" review medium --record "$E/rec.json"; chk "earlier failed run on a non-live instance exit2" bash -c "[ $GRC = 2 ] && grep -q 'observed account' '$E/gates.log'"
+fresh; opusenv "$(rt effort review medium)" "$OM" "${OPUS_ALL[1]}"; export FAKE_RECORD=$E/rec.json FAKE_RUNS='[{"runId":"run-2","status":"completed","providerInstanceId":"'${OPUS_ALL[1]}'","model":"'$OM'"},{"runId":"run-1","status":"failed","providerInstanceId":"'${OPUS_ALL[0]}'","model":"'$OM'","executedModel":"claude-opus-4-8"}]'; g "$E" review medium --record "$E/rec.json"; chk "earlier failed run with a downgraded executed model exit2" bash -c "[ $GRC = 2 ] && tail -1 '$E/gates.log' | grep -q 'executed model'"
+fresh; opusenv "$(rt effort review medium)" "$OM" "${OPUS_ALL[1]}"; export FAKE_RECORD=$E/rec.json FAKE_RUNS='[{"runId":"run-2","status":"completed","providerInstanceId":"'${OPUS_ALL[1]}'","model":"'$OM'"},{"runId":"run-1","status":"completed","providerInstanceId":"'${OPUS_ALL[0]}'","model":"'$OM'"}]'; g "$E" review medium --record "$E/rec.json"; chk "earlier completed run on another live instance exit2" bash -c "[ $GRC = 2 ] && grep -q 'observed account' '$E/gates.log'"
+# --- concatenated JSON: only the final object counts ---
+fresh; new_ev concat; printf 'facts body\n' > "$E/facts.md"; K=$(shasum -a 256 "$E/facts.md" | awk '{print $1}'); pkt plan "$K"; rec_plan medium; planenv "$(rt effort plan medium)"; export FAKE_MODE=concat FAKE_RECORD=$E/rec.json; g "$E" plan medium --record "$E/rec.json"; chk "concatenated identical JSON decodes to the final object exit0" bash -c "[ $GRC = 0 ] && test -s '$E/plan-$K.json'"
+fresh; new_ev concat2; printf 'facts body\n' > "$E/facts.md"; K=$(shasum -a 256 "$E/facts.md" | awk '{print $1}'); pkt plan "$K"; rec_plan medium; planenv "$(rt effort plan medium)"; printf '{"gate":"plan","tier":"medium","acceptance_criteria":["a"],"design":"old-plan","files":["f"],"tests":["t"],"risks":[],"rollback":"r"}\n' > "$E/old.json"
+export FAKE_MODE=concat2 FAKE_RECORD=$E/rec.json; g "$E" plan medium --record "$E/rec.json"; chk "concatenated draft then final decodes the final submission exit0" bash -c "[ $GRC = 0 ] && grep -q '\"design\": \"d\"' '$E/plan-$K.json' && ! grep -q old-plan '$E/plan-$K.json'"
+fresh; export FAKE_MODE=concat2 FAKE_RECORD=$E/rec.json; g "$E" plan medium --record "$E/old.json"; chk "earlier concatenated draft record exit2" bash -c "[ $GRC = 2 ] && tail -1 '$E/gates.log' | grep -q 'does not match the child thread output'"
 printf '\n%s\n' "$([ $FAILED = 0 ] && echo 'GATE TESTS PASSED' || echo 'GATE TESTS FAILED')"
 exit $FAILED
