@@ -47,7 +47,8 @@ def load(skill_dir=None):
             if "model" not in route or "option_key" not in route or model is not None or option is not None: raise ValueError("route %s is half-configured: model and option_key must both be null (catalog-pending)" % key)
         else: ident(model, "route %s model" % key); ident(option, "route %s option_key" % key)
         if "accounts" in route: raise ValueError("route %s must use driver_kind, never legacy accounts" % key)
-        ident(route.get("driver_kind"), "route %s driver_kind" % key)
+        ident(route.get("driver_kind"), "route %s driver_kind" % key); suffix = route.get("executed_model_suffix")
+        if suffix is not None and suffix != "-{effort}": raise ValueError("route %s executed_model_suffix must be '-{effort}'" % key)
         cost = route.get("max_cost_usd")
         if "max_cost_usd" in route and (isinstance(cost, bool) or not isinstance(cost, (int, float)) or not math.isfinite(cost) or cost < 0): raise ValueError("route %s max_cost_usd must be a non-negative number" % key)
     for role, fields in (("conductor", ("model", "option_key")), ("implementer", ("model_id",))):
@@ -106,8 +107,7 @@ def conductor(cfg):
     return dict(route=spec["route"], provider=route["provider"], model=route["model"], option_key=route["option_key"], driver_kind=route["driver_kind"], effort=spec["effort"], label=route["label"])
 def describe(cfg):
     cond, imp = conductor(cfg), implementer(cfg); planner = cfg["routes"][cfg["gates"]["plan"]["route"]]["label"]
-    who = cond["label"] if planner == cond["label"] else "%s and %s" % (cond["label"], planner)
-    efforts = lambda gate: "/".join(SHORT[cfg["gates"][gate]["efforts"][tier]] for tier in TIERS[gate])
+    who = cond["label"] if planner == cond["label"] else "%s and %s" % (cond["label"], planner); efforts = lambda gate: "/".join(SHORT[cfg["gates"][gate]["efforts"][tier]] for tier in TIERS[gate])
     ui = cfg["ui_gates"]; ui_eff = lambda gate: "/".join(SHORT[ui[gate][0]["efforts"][tier]] for tier in TIERS["plan"])
     return ("ds-dev-protocol: Always on by default for all work across every harness, model, AI agent & T3 Code; off only on explicit request, session-only (never globally). %s conducts (%s always), plans (%s); "
             "%s %s implementer (implement.sh, no model fallback); %s review/security/epoch (%s, %s, %s); UI %s (plan %s, review %s)."

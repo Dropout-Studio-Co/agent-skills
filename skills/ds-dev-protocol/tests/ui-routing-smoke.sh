@@ -96,6 +96,8 @@ setc "$P1MODEL" "${P1_ALL[0]}" "$P1OPT" "$(rt ui-effort plan medium '' "$P1ROUTE
 # --- downgrade, recentRuns and refusal fail closed under --ui ---
 factev u-down; rec_plan medium; setc claude-opus-4-8 "${P1_ALL[0]}" "$P1OPT" "$(rt ui-effort plan medium '' "$P1ROUTE")"; run plan medium --ui --record "$E/rec.json" --child-thread d1 --parent-thread p1; chk "ui silent model downgrade exits 2" test "$RC" = 2
 fresh; setc "$P1MODEL" "${P1_ALL[0]}" "$P1OPT" "$(rt ui-effort plan medium '' "$P1ROUTE")"; export EXECUTED=claude-opus-4-8; run plan medium --ui --record "$E/rec.json" --child-thread d2 --parent-thread p1; chk "ui recentRuns downgrade exits 2" test "$RC" = 2
+fresh; setc "$P1MODEL" "${P1_ALL[0]}" "$P1OPT" "$(rt ui-effort plan medium '' "$P1ROUTE")"; export EXECUTED="$P1MODEL-$(rt ui-effort plan medium '' "$P1ROUTE")"; run plan medium --ui --record "$E/rec.json" --child-thread d3 --parent-thread p1
+chk "ui Opus executedModel with a -effort suffix exits 2" bash -c "[ $RC = 2 ] && tail -1 '$E/gates.log' | grep -q 'executed model is'"
 rvev u-cyber; rec_review review "$H"; setc "$R1MODEL" "${R1_ALL[0]}" "$R1OPT" high; export ERR='{"stop_reason": "refusal"}'; run review medium --ui --record "$E/rec.json" --child-thread cy --parent-thread p1
 chk "ui safety refusal exit3 blocked" bash -c "[ $RC = 3 ] && tail -1 '$E/gates.log' | grep -q '\"reason\": \"safety refusal\"' && ! ls '$E'/review-*.json 2>/dev/null"
 factev u-cyber-plan; rec_plan medium; setc "$P1MODEL" "${P1_ALL[0]}" "$P1OPT" "$(rt ui-effort plan medium '' "$P1ROUTE")"; export ERR='{"stop_reason": "refusal"}'; run plan medium --ui --record "$E/rec.json" --child-thread cyp --parent-thread p1
