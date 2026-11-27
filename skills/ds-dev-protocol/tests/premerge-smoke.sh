@@ -119,7 +119,7 @@ pmrun() { ( cd "$2" && EVID="$1" bash "$PM" "${@:3}" >"$T/pm.out" 2>&1 ); PRC=$?
 merged() { ! grep -qE 'pr (edit|merge)' "$T/calls.log"; }
 # --- happy paths: Low, Medium, High, --diff, --no-ci
 for tier in low medium high; do base_ev "happy-$tier" "$tier" "$H"; pm_reset; pmrun "$E" "$R" 1
-  chk "happy $tier exit0+merge+block" bash -c "[ $PRC = 0 ] && grep -q 'pr merge 1 --squash --match-head-commit $H' '$T/calls.log' && ! grep -qE -- '--admin|--auto|--delete-branch' '$T/calls.log' && grep -q '<!-- premerge:start -->' '$T/body.txt' && grep -q '$H' '$T/body.txt'"
+  chk "happy $tier exit0+merge+block" bash -c "[ $PRC = 0 ] && grep -q 'pr merge 1 --squash --match-head-commit $H' '$T/calls.log' && ! grep -qE -- '--admin|--auto|--delete-branch' '$T/calls.log' && grep -q '<!-- premerge:start -->' '$T/body.txt' && grep -q '$H' '$T/body.txt' && ! grep -q effort_triggers '$E/gates.log'"
   chk "happy $tier wrote txt + merged row" bash -c "test -s '$E/premerge-$H.txt' && grep -q '\"status\": \"merged\"' '$E/gates.log'"; done
 base_ev happy-medium medium "$H"; pm_reset; export FAKE_CHECKS_EXIT=1 FAKE_CHECKS_MSG="no checks reported on the 'b' branch"; pmrun "$E" "$R" 1 --no-ci
 chk "--no-ci passes on a repo with no CI" bash -c "[ $PRC = 0 ] && grep -q 'CI: none (--no-ci)' '$T/body.txt'"; unset FAKE_CHECKS_EXIT FAKE_CHECKS_MSG
@@ -146,12 +146,12 @@ chk "lower re-check tier fails" bash -c "[ $PRC = 1 ] && grep -q 'lower than PLA
 refuse() { local n=$1 tier=$2 mut=$3 want=$4; base_ev "r-$n" "$tier" "$H"; pm_reset; eval "$mut"; pmrun "$E" "$R" 1
   chk "refuse:$n" bash -c "[ $PRC = 1 ] && grep -q '$want' '$T/pm.out' && [ \$(grep -cE 'pr (edit|merge)' '$T/calls.log') = 0 ]"; }
 for tier in low medium high; do refuse "facts-$tier" "$tier" 'printf x >> "$E/facts.md"' 'does not match plan.facts_sha256'; done
-for spec in 'route=wrong-route' 'model=wrong-model' 'account=""' 'driver_kind=wrong-driver' 'driver_kind=""' 'session_id=parent-1' 'effort=high'; do
+for spec in 'route=wrong-route' 'model=wrong-model' 'account=""' 'driver_kind=wrong-driver' 'driver_kind=""' 'session_id=parent-1' 'effort=low' 'effort=max' 'effort=""'; do
   refuse "plan-${spec%%=*}" medium "setrow plan ${spec%%=*} ${spec#*=}" 'plan provenance'; done
-refuse plan-high-effort high 'setrow plan effort medium' 'plan provenance'
-for spec in 'route=deepseek-low' 'model=wrong-model' 'account=""' 'driver_kind=wrong-driver' 'driver_kind=""' 'session_id=parent-1' 'effort=low'; do
+refuse plan-high-effort high 'setrow plan effort max' 'plan provenance'
+for spec in 'route=deepseek-low' 'model=wrong-model' 'account=""' 'driver_kind=wrong-driver' 'driver_kind=""' 'session_id=parent-1' 'effort=low' 'effort=max'; do
   refuse "review-${spec%%=*}" medium "setrow review ${spec%%=*} ${spec#*=}" 'review provenance'; done
-for spec in 'route=fallback' 'provenance_mode=provisional' 'effort=medium' 'model=claude-opus-4-8'; do
+for spec in 'route=fallback' 'provenance_mode=provisional' 'effort=low' 'effort=max' 'model=claude-opus-4-8'; do
   refuse "security-${spec%%=*}" high "setrow security ${spec%%=*} ${spec#*=}" 'security provenance'; done
 refuse plan-after-code medium 'setrow plan ts 2026-12-02T00:00:00Z' 'code before plan'
 refuse plan-after-code-low low 'setrow plan ts 2026-12-02T00:00:00Z' 'code before plan'
@@ -214,10 +214,31 @@ epoch_replan() { E=$T/$1; rm -rf "$E"; mkdir -p "$E"; local fs f
   printf '{"ts": "2026-11-20T12:00:00Z", "route": "%s", "model": "%s", "effort": "%s", "status": "done", "step": "s", "round": 1}\n' "$IR" "$IM" "$IE" > "$E/impl.log"
   f=$(gf "$E" epoch a pass '[]' high); row "$E" epoch a high ok pass "$f" "ts=2026-11-21T00:00:00Z"
   f=$(gf "$E" plan "$fs" pass '[]' high replan); row "$E" plan "$fs" high ok pass "$f" "facts_sha256=$fs" "ts=2026-11-22T00:00:00Z"
-  f=$(gf "$E" review "$H" pass '[]' high); rowb "$E" review "$H" high ok pass "$f" "ts=2026-11-23T00:00:00Z"
-  f=$(gf "$E" security "$H" pass '[]' high); rowb "$E" security "$H" high ok pass "$f" "ts=2026-11-24T00:00:00Z"; }
+  f=$(gf "$E" review "$H" pass '[]' high); rowb "$E" review "$H" high ok pass "$f" "ts=2026-11-23T00:00:00Z" "effort=high"
+  f=$(gf "$E" security "$H" pass '[]' high); rowb "$E" security "$H" high ok pass "$f" "ts=2026-11-24T00:00:00Z" "effort=high"; }
 epoch_replan r-epochreplan; pm_reset; pmrun "$E" "$R" 1
 chk "post-epoch re-plan passes code before plan" bash -c "[ $PRC = 0 ] && ! grep -q 'code before plan' '$T/pm.out'"
+# --- decoupled effort: medium default, high trigger effort, reactive rounds and effort_triggers ---
+trig_case() { base_ev "$1" high "$H"; setrow plan effort high; setrow plan effort_triggers '["arch-trust-state"]'; setrow review effort high; setrow review effort_triggers '["diff-large"]'; setrow security effort high; setrow security effort_triggers '["attack-surface"]'; }
+trig_case r-trig; pm_reset; pmrun "$E" "$R" 1; chk "high effort with allowlisted effort_triggers passes plan/review/security" test "$PRC" = 0
+base_ev rv-react-m medium "$H"; f=$(gf "$E" review "$H" fail '[]' medium); rowb "$E" review "$H" medium ok fail "$f"; f=$(gf "$E" review "$H" pass '[]' medium); rowb "$E" review "$H" medium ok pass "$f"; pm_reset; pmrun "$E" "$R" 1
+chk "refuse:post-fail review round at medium" bash -c "[ $PRC = 1 ] && grep -q 'reactive effort' '$T/pm.out'"
+base_ev rv-react-h medium "$H"; f=$(gf "$E" review "$H" fail '[]' medium); rowb "$E" review "$H" medium ok fail "$f"; f=$(gf "$E" review "$H" pass '[]' medium); rowb "$E" review "$H" medium ok pass "$f" "effort=high"; pm_reset; pmrun "$E" "$R" 1
+chk "post-fail review round at high passes" test "$PRC" = 0
+base_ev sec-react-m high "$H"; f=$(gf "$E" security "$H" fail '[]' high); rowb "$E" security "$H" high ok fail "$f"; f=$(gf "$E" security "$H" pass '[]' high); rowb "$E" security "$H" high ok pass "$f"; pm_reset; pmrun "$E" "$R" 1
+chk "refuse:post-fail security round at medium" bash -c "[ $PRC = 1 ] && grep -q 'reactive effort' '$T/pm.out'"
+base_ev sec-react-h high "$H"; f=$(gf "$E" security "$H" fail '[]' high); rowb "$E" security "$H" high ok fail "$f"; f=$(gf "$E" security "$H" pass '[]' high); rowb "$E" security "$H" high ok pass "$f" "effort=high"; pm_reset; pmrun "$E" "$R" 1
+chk "post-fail security round at high passes" test "$PRC" = 0
+epoch_replan r-ep-med; f=$(gf "$E" review "$H" pass '[]' high); rowb "$E" review "$H" high ok pass "$f"; pm_reset; pmrun "$E" "$R" 1
+chk "refuse:post-epoch review at medium" bash -c "[ $PRC = 1 ] && grep -q 'reactive effort' '$T/pm.out'"
+base_ev r-ep-medium high "$H"; f=$(gf "$E" epoch a pass '[]' high); row "$E" epoch a high ok pass "$f" "effort=medium"; pm_reset; pmrun "$E" "$R" 1
+chk "refuse:epoch at medium effort" bash -c "[ $PRC = 1 ] && grep -q 'epoch effort does not match its tier' '$T/pm.out'"
+base_ev r-et-shape medium "$H"; setrow review effort_triggers '"nope"'; pm_reset; pmrun "$E" "$R" 1
+chk "refuse:malformed effort_triggers" bash -c "[ $PRC = 1 ] && grep -q 'effort_triggers is malformed' '$T/pm.out'"
+base_ev r-et-tag medium "$H"; setrow plan effort_triggers '["diff-large"]'; pm_reset; pmrun "$E" "$R" 1
+chk "refuse:wrong-gate effort trigger tag" bash -c "[ $PRC = 1 ] && grep -q 'effort_triggers is malformed' '$T/pm.out'"
+base_ev r-et-mix medium "$H"; setrow review effort_triggers '["diff-large"]'; pm_reset; pmrun "$E" "$R" 1
+chk "refuse:effort_triggers need the trigger effort" bash -c "[ $PRC = 1 ] && grep -q 'require the trigger effort' '$T/pm.out'"
 # --- a file-less ok plan row with full T3 provenance never sets the chronology start ---
 fileless_ev() { E=$T/$1; rm -rf "$E"; mkdir -p "$E"; local fs f
   printf 'facts\n' > "$E/facts.md"; fs=$(shasum -a 256 "$E/facts.md" | awk '{print $1}')

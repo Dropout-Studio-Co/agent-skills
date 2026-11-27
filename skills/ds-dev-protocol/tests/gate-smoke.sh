@@ -103,7 +103,7 @@ printf 'feat\n' > "$R/g.txt"; git -C "$R" add g.txt; git -C "$R" commit -qm feat
 H=$(git -C "$R" rev-parse HEAD); B=$(git -C "$R" merge-base origin/main "$H")
 new_ev() { E=$T/$1; rm -rf "$E"; mkdir -p "$E"; }
 # pkt GATE KEY [BASE]: packet with the gate, tier, key, HEAD, optional merge-base and the exact source body.
-pkt() { { printf 'Gate: %s\nkey: %s\nhead: %s\nTier: low\nTier: medium\nTier: high\n' "$1" "$2" "$H"; [ -z "${3:-}" ] || printf 'base: %s\n' "$3"
+pkt() { { printf 'Gate: %s\nTier: low\nTier: medium\nTier: high\n' "$1"; [ -z "${4:-}" ] || printf 'Effort: %s\n' "$4"; printf 'key: %s\nhead: %s\n' "$2" "$H"; [ -z "${3:-}" ] || printf 'base: %s\n' "$3"
   if [ "$1" = plan ]; then cat "$E/facts.md"; elif [ "$1" = epoch ]; then cat "$E/epoch.md"; else git -C "$R" diff --no-color "$3" HEAD; fi; } > "$E/packet-$1.md"; }
 rec_review() { printf '{"gate":"%s","head_sha":"%s","verdict":"%s","summary":"ok","findings":%s}\n' "$1" "$2" "$3" "${4:-[]}" > "$E/rec.json"; }
 rec_plan() { printf '{"gate":"plan","tier":"%s","acceptance_criteria":["a"],"design":"d","files":["f"],"tests":["t"],"risks":[],"rollback":"r"}\n' "$1" > "$E/rec.json"; }
@@ -143,9 +143,9 @@ PY
 for tier in low medium high; do want=$(rt effort plan "$tier")
   fresh; new_ev "pl-$tier"; printf 'facts body\n' > "$E/facts.md"; K=$(shasum -a 256 "$E/facts.md" | awk '{print $1}')
   pkt plan "$K"; rec_plan "$tier"; planenv "$want"; export FAKE_RECORD=$E/rec.json; g "$E" plan "$tier" --record "$E/rec.json"
-  chk "plan $tier exit0 file+provenance effort=$want" bash -c "[ $GRC = 0 ] && test -s '$E/plan-$K.json' && tail -1 '$E/gates.log' | grep -q '\"status\": \"ok\"' && tail -1 '$E/gates.log' | grep -q '\"effort\": \"$want\"' && tail -1 '$E/gates.log' | grep -q '\"route\": \"$NR\"' && tail -1 '$E/gates.log' | grep -q '\"provider\": \"$NP\"' && tail -1 '$E/gates.log' | grep -q '\"account\": \"$NEON_ACCT\"' && tail -1 '$E/gates.log' | grep -q '\"driver_kind\": \"$NDK\"' && grep -q '\"driver_kind\": \"$NDK\"' '$E/plan-$K.json' && tail -1 '$E/gates.log' | grep -q '\"provenance_mode\": \"t3-verified\"'"
+  chk "plan $tier exit0 file+provenance effort=$want" bash -c "[ $GRC = 0 ] && test -s '$E/plan-$K.json' && tail -1 '$E/gates.log' | grep -q '\"status\": \"ok\"' && tail -1 '$E/gates.log' | grep -q '\"effort\": \"$want\"' && tail -1 '$E/gates.log' | grep -q '\"route\": \"$NR\"' && tail -1 '$E/gates.log' | grep -q '\"provider\": \"$NP\"' && tail -1 '$E/gates.log' | grep -q '\"account\": \"$NEON_ACCT\"' && tail -1 '$E/gates.log' | grep -q '\"driver_kind\": \"$NDK\"' && grep -q '\"driver_kind\": \"$NDK\"' '$E/plan-$K.json' && tail -1 '$E/gates.log' | grep -q '\"provenance_mode\": \"t3-verified\"' && tail -1 '$E/gates.log' | grep -q '\"effort_triggers\": \[\]' && grep -q '\"effort_triggers\": \[\]' '$E/plan-$K.json'"
 done
-for spec in medium:high high:medium; do tier=${spec%%:*}; e=${spec##*:}
+for spec in low:high high:high; do tier=${spec%%:*}; e=${spec##*:}
   fresh; new_ev "pl-neg-$tier"; printf 'facts body\n' > "$E/facts.md"; K=$(shasum -a 256 "$E/facts.md" | awk '{print $1}'); pkt plan "$K"; rec_plan "$tier"; planenv "$e"; export FAKE_RECORD=$E/rec.json; g "$E" plan "$tier" --record "$E/rec.json"
   chk "plan $tier rejects effort=$e exit2" bash -c "[ $GRC = 2 ] && tail -1 '$E/gates.log' | grep -q '\"status\": \"invalid\"' && ! ls '$E'/plan-*.json 2>/dev/null"; done
 fresh; new_ev plan-bad; printf 'facts body\n' > "$E/facts.md"; K=$(shasum -a 256 "$E/facts.md" | awk '{print $1}'); pkt plan "$K"; rec_plan medium; planenv "$(rt effort plan medium)"
@@ -165,10 +165,49 @@ for tier in low medium high; do want=$(rt effort review "$tier"); fresh; opusenv
 done
 fresh; new_ev rv2; pkt review "$H" "$B"; rec_review review "$H" pass; TW=$(rt effort review medium 1); opusenv "$TW"; export FAKE_RECORD=$E/rec.json
 g "$E" review medium --trigger --record "$E/rec.json"; chk "review medium --trigger effort=$TW" bash -c "[ $GRC = 0 ] && tail -1 '$E/gates.log' | grep -q '\"effort\": \"$TW\"'"
+fresh; new_ev ph; printf 'facts body\n' > "$E/facts.md"; K=$(shasum -a 256 "$E/facts.md" | awk '{print $1}'); pkt plan "$K"; rec_plan medium; planenv high; export FAKE_RECORD=$E/rec.json
+g "$E" plan medium --high-effort arch-trust-state --record "$E/rec.json"; chk "plan --high-effort arch-trust-state exit0 effort=high with triggers" bash -c "[ $GRC = 0 ] && tail -1 '$E/gates.log' | grep -q '\"effort\": \"high\"' && tail -1 '$E/gates.log' | grep -q '\"arch-trust-state\"' && grep -q '\"arch-trust-state\"' '$E/plan-$K.json'"
+fresh; new_ev rh; pkt review "$H" "$B"; rec_review review "$H" pass; opusenv high; export FAKE_RECORD=$E/rec.json
+g "$E" review medium --high-effort diff-large --record "$E/rec.json"; chk "review --high-effort diff-large exit0 effort=high with triggers" bash -c "[ $GRC = 0 ] && tail -1 '$E/gates.log' | grep -q '\"effort\": \"high\"' && grep -q '\"diff-large\"' '$E/gates.log' && grep -q '\"diff-large\"' '$E/review-$H.json'"
+fresh; rec_review review "$H" pass; opusenv high; export FAKE_RECORD=$E/rec.json
+g "$E" review medium --trigger --record "$E/rec.json"; chk "--trigger alias records effort_triggers=[\"legacy-trigger\"]" bash -c "[ $GRC = 0 ] && tail -1 '$E/gates.log' | grep -q '\"effort_triggers\": \[\"legacy-trigger\"\]' && grep -q '\"legacy-trigger\"' '$E/review-$H.json'"
+fresh; new_ev sh; pkt security "$H" "$B"; rec_review security "$H" pass; opusenv high; export FAKE_RECORD=$E/rec.json
+g "$E" security high --high-effort attack-surface --record "$E/rec.json"; chk "security --high-effort attack-surface exit0 effort=high with triggers" bash -c "[ $GRC = 0 ] && tail -1 '$E/gates.log' | grep -q '\"effort\": \"high\"' && grep -q '\"attack-surface\"' '$E/security-$H.json'"
 fresh; new_ev sec; pkt security "$H" "$B"; rec_review security "$H" pass; SW=$(rt effort security high); opusenv "$SW"; export FAKE_RECORD=$E/rec.json
 g "$E" security high --record "$E/rec.json"; chk "security high exit0 effort=$SW" bash -c "[ $GRC = 0 ] && test -s '$E/security-$H.json' && tail -1 '$E/gates.log' | grep -q '\"effort\": \"$SW\"'"
+fresh; new_ev eh1; pkt security "$H" "$B" "high (attack-surface)"; rec_review security "$H" pass; opusenv "$(rt effort security high)"; export FAKE_RECORD=$E/rec.json
+g "$E" security high --record "$E/rec.json"; chk "packet Effort high (attack-surface) with child medium exit2" bash -c "[ $GRC = 2 ] && grep -q 'packet Effort header' '$E/gates.log' && ! ls '$E'/security-*.json 2>/dev/null"
+fresh; new_ev eh2; pkt review "$H" "$B" "medium"; rec_review review "$H" pass; opusenv high; export FAKE_RECORD=$E/rec.json
+g "$E" review high --high-effort diff-large --record "$E/rec.json"; chk "packet Effort medium with verified high exit2" bash -c "[ $GRC = 2 ] && grep -q 'packet Effort header' '$E/gates.log' && ! ls '$E'/review-*.json 2>/dev/null"
+fresh; new_ev eh3; pkt security "$H" "$B" "high (attack-surface)"; rec_review security "$H" pass; opusenv high; export FAKE_RECORD=$E/rec.json
+g "$E" security high --high-effort attack-surface --record "$E/rec.json"; chk "matching packet Effort high (attack-surface) exit0" bash -c "[ $GRC = 0 ] && test -s '$E/security-$H.json' && tail -1 '$E/gates.log' | grep -q '\"attack-surface\"'"
+fresh; new_ev eh4; pkt security "$H" "$B"; rec_review security "$H" pass; opusenv high; export FAKE_RECORD=$E/rec.json
+g "$E" security high --high-effort attack-surface --record "$E/rec.json"; chk "packet without Effort header still exit0" bash -c "[ $GRC = 0 ] && test -s '$E/security-$H.json'"
+fresh; new_ev eh5; { printf 'Gate: security\nTier: high\nkey: %s\nEffort: high (attack-surface)\nhead: %s\nbase: %s\n' "$H" "$H" "$B"; git -C "$R" diff --no-color "$B" HEAD; } > "$E/packet-security.md"; rec_review security "$H" pass; opusenv "$(rt effort security high)"; export FAKE_RECORD=$E/rec.json; g "$E" security high --record "$E/rec.json"; chk "packet Effort header after key: blocks a medium downgrade exit2" bash -c "[ $GRC = 2 ] && grep -q 'packet Effort header' '$E/gates.log' && ! ls '$E'/security-*.json 2>/dev/null"
+fresh; new_ev eh6; { printf 'Gate: review\nTier: medium\nEffort: medium\nEffort: high (diff-large)\nkey: %s\nhead: %s\nbase: %s\n' "$H" "$H" "$B"; git -C "$R" diff --no-color "$B" HEAD; } > "$E/packet-review.md"; rec_review review "$H" pass; opusenv "$(rt effort review medium)"; export FAKE_RECORD=$E/rec.json; g "$E" review medium --record "$E/rec.json"; chk "duplicate Effort headers exit2" bash -c "[ $GRC = 2 ] && grep -q 'duplicate Effort header' '$E/gates.log' && ! ls '$E'/review-*.json 2>/dev/null"
+fresh; new_ev be; printf 'facts body\nEffort: high\n' > "$E/facts.md"; K=$(shasum -a 256 "$E/facts.md" | awk '{print $1}'); pkt plan "$K"; rec_plan medium; planenv "$(rt effort plan medium)"; export FAKE_RECORD=$E/rec.json; g "$E" plan medium --record "$E/rec.json"; chk "Effort: high inside the source body is not a packet header exit0" bash -c "[ $GRC = 0 ] && test -s '$E/plan-$K.json'"
 fresh; new_ev slope; pkt security "$H" "$B"; rec_review security "$H" pass; export FAKE_RECORD=$E/rec.json; g "$E" security low --record "$E/rec.json"; chk "security low exit2 no t3" bash -c "[ $GRC = 2 ] && [ ! -s '$T/t3.calls' ]"
 fresh; new_ev smed; pkt security "$H" "$B"; rec_review security "$H" pass; opusenv "$(rt effort review medium)"; export FAKE_RECORD=$E/rec.json; g "$E" security medium --record "$E/rec.json"; chk "security medium exit2 no t3" bash -c "[ $GRC = 2 ] && [ ! -s '$T/t3.calls' ] && grep -q 'security gate requires tier high' '$T/out'"
+fresh; new_ev rej; printf '{}' > "$E/rec.json"; : > "$T/t3.calls"
+g "$E" plan medium --high-effort 'arch-trust-state,bogus' --record "$E/rec.json"; r1=$GRC
+g "$E" plan medium --high-effort '' --record "$E/rec.json"; r2=$GRC
+g "$E" plan medium --high-effort 'arch-trust-state,' --record "$E/rec.json"; r3=$GRC
+g "$E" plan medium --high-effort ' arch-trust-state' --record "$E/rec.json"; r4=$GRC
+g "$E" plan medium --high-effort legacy-trigger --record "$E/rec.json"; r5=$GRC
+g "$E" plan medium --high-effort diff-large --record "$E/rec.json"; r6=$GRC
+g "$E" epoch high --high-effort attack-surface --record "$E/rec.json"; r7=$GRC
+g "$E" epoch high --trigger --record "$E/rec.json"; r8=$GRC
+chk "gate.sh rejects unknown/empty/trailing/whitespace/legacy/wrong-gate/epoch tags and epoch --trigger with zero T3 calls" bash -c "[ $r1$r2$r3$r4$r5$r6$r7$r8 = 22222222 ] && [ ! -s '$T/t3.calls' ]"
+fresh; new_ev arf; pkt review "$H" "$B"; rec_review review "$H" pass; opusenv high; export FAKE_RECORD=$E/rec.json
+seed plan:medium:ok:pass: review:medium:ok:fail:; g "$E" review medium --record "$E/rec.json"; chk "review round 2 after a fail auto-enforces high + reactive-round" bash -c "[ $GRC = 0 ] && tail -1 '$E/gates.log' | grep -q '\"effort\": \"high\"' && tail -1 '$E/gates.log' | grep -q '\"effort_triggers\": \[\"reactive-round\"\]'"
+fresh; new_ev arp; pkt review "$H" "$B"; rec_review review "$H" pass; opusenv "$(rt effort review medium)"; export FAKE_RECORD=$E/rec.json
+seed plan:medium:ok:pass: review:medium:ok:pass:; g "$E" review medium --record "$E/rec.json"; chk "review round 2 after a prior pass stays medium with no triggers" bash -c "[ $GRC = 0 ] && tail -1 '$E/gates.log' | grep -q '\"effort\": \"medium\"' && tail -1 '$E/gates.log' | grep -q '\"effort_triggers\": \[\]'"
+fresh; new_ev asf; pkt security "$H" "$B"; rec_review security "$H" pass; opusenv high; export FAKE_RECORD=$E/rec.json
+seed plan:medium:ok:pass: security:high:ok:fail:; g "$E" security high --record "$E/rec.json"; chk "security round 2 after a fail auto-enforces high + reactive-round" bash -c "[ $GRC = 0 ] && tail -1 '$E/gates.log' | grep -q '\"effort\": \"high\"' && tail -1 '$E/gates.log' | grep -q '\"effort_triggers\": \[\"reactive-round\"\]'"
+fresh; new_ev aer; seed_epoch e-a high; seed plan:medium:ok:pass:; pkt review "$H" "$B"; rec_review review "$H" pass; opusenv high; export FAKE_RECORD=$E/rec.json
+g "$E" review medium --record "$E/rec.json"; chk "review after an authorized epoch auto-enforces high + reactive-round" bash -c "[ $GRC = 0 ] && tail -1 '$E/gates.log' | grep -q '\"effort\": \"high\"' && tail -1 '$E/gates.log' | grep -q '\"effort_triggers\": \[\"reactive-round\"\]'"
+fresh; new_ev bo; pkt review "$H" "$B"; rec_review review "$H" pass; opusenv "$(rt effort review medium)"; export FAKE_OPTION=other FAKE_RECORD=$E/rec.json
+g "$E" review medium --record "$E/rec.json"; chk "blank/omitted target.options.<option_key> exit2 names target.options.<option>=medium" bash -c "[ $GRC = 2 ] && tail -1 '$E/gates.log' | grep -q 'target.options.$OO=medium'"
 # --- provenance / effort / tree refusals ---
 fresh; new_ev ef; pkt review "$H" "$B"; rec_review review "$H" pass; export FAKE_RECORD=$E/rec.json
 for e in low xhigh max ultrathink; do fresh; opusenv "$e"; export FAKE_RECORD=$E/rec.json
@@ -222,7 +261,7 @@ g "$E" review medium --record "$E/rec.json"; chk "verdict pass with an Important
 # --- log_metrics: review and security findings.jsonl ---
 fresh; new_ev met; pkt review "$H" "$B"; rec_review review "$H" pass '[{"severity":"nit","location":"g.txt:1","failure_scenario":"s","evidence":"e"}]'; opusenv "$(rt effort review medium)"; export FAKE_RECORD=$E/rec.json
 g "$E" review medium --record "$E/rec.json"; rc1=$GRC
-pkt security "$H" "$B"; rec_review security "$H" fail '[{"severity":"important","location":"g.txt:1","failure_scenario":"s","evidence":"e"}]'; fresh; opusenv high; export FAKE_RECORD=$E/rec.json
+pkt security "$H" "$B"; rec_review security "$H" fail '[{"severity":"important","location":"g.txt:1","failure_scenario":"s","evidence":"e"}]'; fresh; opusenv "$(rt effort security high)"; export FAKE_RECORD=$E/rec.json
 g "$E" security high --record "$E/rec.json"; chk "log_metrics findings.jsonl review+security" bash -c "[ $rc1 = 0 ] && [ $GRC = 1 ] && [ \$(grep -c '\"class\": \"review\"' '$XDG_STATE_HOME/review-metrics/findings.jsonl') = 1 ] && [ \$(grep -c '\"class\": \"security\"' '$XDG_STATE_HOME/review-metrics/findings.jsonl') = 1 ] && grep -q '\"severity\": \"Important\"' '$XDG_STATE_HOME/review-metrics/findings.jsonl'"
 # --- round caps ---
 fresh; new_ev cap; pkt review "$H" "$B"; rec_review review "$H" pass; opusenv "$(rt effort review medium)"; export FAKE_RECORD=$E/rec.json

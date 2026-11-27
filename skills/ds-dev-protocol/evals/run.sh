@@ -15,7 +15,7 @@ usage: evals/run.sh <command> [options]
                             as evid/ under DIR (default $STATE/dev-evidence/evals/<utc>);
                             exit 2 on hash drift or an out-dir inside a git repository or the skill directory
   record --evid DIR --tier T --record FILE --child-thread ID --parent-thread ID
-         [--gate plan|review] [--diff FILE] [--trigger] [--force]
+         [--gate plan|review] [--diff FILE] [--high-effort TAGS] [--trigger] [--force]
                             run scripts/gate.sh --record from that fixture's work/ and keep
                             its exit 0|1|2|3|4; one at 0 or 1 is skipped unless --force; --diff
                             defaults to evid/fixture.diff when omitted
@@ -76,12 +76,12 @@ prepare() {
   printf 'manifest: %s\n' "$manifest"
 }
 record() {
-  evid=""; tier=""; rec=""; child=""; parent=""; gate=""; diff=""; trigger=0; force=0
+  evid=""; tier=""; rec=""; child=""; parent=""; gate=""; diff=""; high_effort=""; trigger=0; force=0
   while [ $# -gt 0 ]; do case $1 in
-    --evid|--tier|--record|--child-thread|--parent-thread|--gate|--diff)
+    --evid|--tier|--record|--child-thread|--parent-thread|--gate|--diff|--high-effort)
       [ $# -ge 2 ] && [ -n "$2" ] || die "$1 needs a value"
       case $1 in --evid) evid=$2 ;; --tier) tier=$2 ;; --record) rec=$2 ;; --gate) gate=$2 ;;
-        --child-thread) child=$2 ;; --parent-thread) parent=$2 ;; --diff) diff=$2 ;; esac
+        --child-thread) child=$2 ;; --parent-thread) parent=$2 ;; --diff) diff=$2 ;; --high-effort) high_effort=${high_effort:+$high_effort,}$2 ;; esac
       shift ;;
     --trigger) trigger=1 ;;
     --force) force=1 ;;
@@ -100,7 +100,7 @@ record() {
   work=$(cd "$evid/.." && pwd -P)/work
   [ -d "$work" ] || die "no work/ next to $evid"
   set -- "$GATE" "$gate" "$tier" --record "$rec" --child-thread "$child" --parent-thread "$parent"
-  [ -n "$diff" ] && set -- "$@" --diff "$diff"; [ "$trigger" = 1 ] && set -- "$@" --trigger
+  [ -n "$diff" ] && set -- "$@" --diff "$diff"; [ "$trigger" = 1 ] && set -- "$@" --trigger; [ -n "$high_effort" ] && set -- "$@" --high-effort "$high_effort"
   ( cd "$work" && EVID=$evid SKILL=$SKILL XDG_STATE_HOME=$evid/state bash "$@" )
   rc=$?
   printf '%s\n' "$rc" > "$evid/exit"
