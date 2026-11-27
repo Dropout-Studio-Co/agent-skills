@@ -18,12 +18,9 @@ PY
 }
 export CAPS=$(caps "$NM|$NDK|${NEON_ALL[0]}" "$NM|$NDK|${NEON_ALL[1]}" "$NM|$NDK|${NEON_ALL[2]}")
 EH=$(rt effort epoch high); EM=$(rt effort epoch medium)
-T=$(mktemp -d "${TMPDIR:-/tmp}/gate-smoke.XXXXXX"); T=$(cd "$T" && pwd -P)
-export T HOME="$T/home" XDG_STATE_HOME="$T/state" PATH="$T/bin:$PATH"
-mkdir -p "$HOME" "$XDG_STATE_HOME" "$T/bin"; FAILED=0
-trap 'rm -rf "$T"' EXIT
-ok() { printf 'ok   gate: %s\n' "$1"; }; bad() { printf 'FAIL gate: %s\n' "$1"; FAILED=1; }
-chk() { local d=$1; shift; if "$@" >/dev/null 2>&1; then ok "$d"; else bad "$d"; fi; }
+T=$(mktemp -d "${TMPDIR:-/tmp}/gate-smoke.XXXXXX"); T=$(cd "$T" && pwd -P); export T HOME="$T/home" XDG_STATE_HOME="$T/state" PATH="$T/bin:$PATH"
+mkdir -p "$HOME" "$XDG_STATE_HOME" "$T/bin"; FAILED=0; trap 'rm -rf "$T"' EXIT
+ok() { printf 'ok   gate: %s\n' "$1"; }; bad() { printf 'FAIL gate: %s\n' "$1"; FAILED=1; }; chk() { local d=$1; shift; if "$@" >/dev/null 2>&1; then ok "$d"; else bad "$d"; fi; }
 cat > "$T/bin/acp-node" <<'FAKE'
 #!/usr/bin/env python3
 # Fake T3 ACP node: `acp-mcp-call <tool> <json>` prints T3's real result envelope.
@@ -68,6 +65,11 @@ def items():
         return [{"type": "assistant_message", "itemId": "it-1", "text": "```json\n" + json.dumps(draft) + "\n```\n" + json.dumps(rec)}]
     if mode == "laterbad":
         text = json.dumps(rec); return [{"type": "assistant_message", "itemId": "it-1", "text": text}, {"type": "assistant_message", "itemId": "it-2", "text": text[:-5]}]
+    if mode == "fencetick":
+        tick = dict(rec); tick["design"] = "see ```py\nx\n``` block"; return [{"type": "assistant_message", "itemId": "it-1", "text": "```json\n" + json.dumps(tick) + "\n```"}]
+    if mode == "deepnest": return [{"type": "assistant_message", "itemId": "it-1", "text": '{"a":' + "[" * 1000000 + "]" * 1000000 + "}"}]
+    if mode == "badtool":
+        return [submit("it-1", rec), {"type": "dynamic_tool", "status": "completed", "itemId": "it-2", "text": '{"toolName": "t3_submit_output"', "textTruncated": True, "nextTextOffset": 0}]
     return [{"type": "assistant_message", "itemId": "it-1", "text": json.dumps(rec)}]
 def emit(content):
     print(json.dumps({"structuredContent": content, "isError": E("FAKE_ISERROR") == "1"})); sys.exit(0)
@@ -97,13 +99,10 @@ if tool == "t3_thread_read":
     emit({"thread": th, "recentRuns": [run], "items": its})
 emit({})
 FAKE
-chmod +x "$T/bin/acp-node"; NODE=$T/bin/acp-node; export T3_ACP_MCP_NODE="$NODE" T3_ACP_MCP_ENTRYPOINT=""
-: > "$T/t3.calls"; : > "$T/cid"
-fresh() { : > "$T/t3.calls"; unset FAKE_STATUS FAKE_PARENT FAKE_NO_PARENT FAKE_INSTANCE FAKE_MODEL FAKE_OPTION FAKE_EFFORT \
-  FAKE_RECORD FAKE_ERR FAKE_EXECUTED FAKE_MODE FAKE_NOTICE FAKE_ISERROR FAKE_RUN_STATUS FAKE_RUN_MODEL FAKE_RUN_INSTANCE FAKE_RUNS FAKE_THREAD_MODEL FAKE_ITEM_STOP FAKE_CAPS; }
+chmod +x "$T/bin/acp-node"; NODE=$T/bin/acp-node; export T3_ACP_MCP_NODE="$NODE" T3_ACP_MCP_ENTRYPOINT=""; : > "$T/t3.calls"; : > "$T/cid"
+fresh() { : > "$T/t3.calls"; unset FAKE_STATUS FAKE_PARENT FAKE_NO_PARENT FAKE_INSTANCE FAKE_MODEL FAKE_OPTION FAKE_EFFORT FAKE_RECORD FAKE_ERR FAKE_EXECUTED FAKE_MODE FAKE_NOTICE FAKE_ISERROR FAKE_RUN_STATUS FAKE_RUN_MODEL FAKE_RUN_INSTANCE FAKE_RUNS FAKE_THREAD_MODEL FAKE_ITEM_STOP FAKE_CAPS; }
 nextid() { local v=$(( $(cat "$T/cid") + 1 )); echo "$v" > "$T/cid"; printf 'c%s' "$v"; }
-unset GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM; export GIT_CONFIG_NOSYSTEM=1
-git config --global user.email smoke@example.com; git config --global user.name Smoke; git config --global init.defaultBranch main
+unset GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM; export GIT_CONFIG_NOSYSTEM=1; git config --global user.email smoke@example.com; git config --global user.name Smoke; git config --global init.defaultBranch main
 R=$T/repo; git init -q --bare "$T/origin.git"; git init -q "$R"; printf 'a\n' > "$R/f.txt"; git -C "$R" add f.txt; git -C "$R" commit -qm base
 git -C "$R" remote add origin "$T/origin.git"; git -C "$R" push -q origin main; git -C "$R" remote set-head origin main
 printf 'feat\n' > "$R/g.txt"; git -C "$R" add g.txt; git -C "$R" commit -qm feat
@@ -111,13 +110,10 @@ H=$(git -C "$R" rev-parse HEAD); B=$(git -C "$R" merge-base origin/main "$H")
 new_ev() { E=$T/$1; rm -rf "$E"; mkdir -p "$E"; }
 # pkt GATE KEY [BASE]: packet with the gate, tier, key, HEAD, optional merge-base and the exact source body.
 pkt() { { printf 'Gate: %s\nkey: %s\nhead: %s\nTier: low\nTier: medium\nTier: high\n' "$1" "$2" "$H"; [ -z "${3:-}" ] || printf 'base: %s\n' "$3"; if [ "$1" = plan ]; then cat "$E/facts.md"; elif [ "$1" = epoch ]; then cat "$E/epoch.md"; else git -C "$R" diff --no-color "$3" HEAD; fi; } > "$E/packet-$1.md"; }
-rec_review() { printf '{"gate":"%s","head_sha":"%s","verdict":"%s","summary":"ok","findings":%s}\n' "$1" "$2" "$3" "${4:-[]}" > "$E/rec.json"; }
-rec_plan() { printf '{"gate":"plan","tier":"%s","acceptance_criteria":["a"],"design":"d","files":["f"],"tests":["t"],"risks":[],"rollback":"r"}\n' "$1" > "$E/rec.json"; }
-planenv() { export FAKE_OPTION="$NO" FAKE_MODEL="$NM" FAKE_INSTANCE="$NEON_ACCT" FAKE_EFFORT="$1"; }
-opusenv() { export FAKE_OPTION="$OO" FAKE_MODEL="${2:-$OM}" FAKE_INSTANCE="${3:-$OPUS_ACCT}" FAKE_EFFORT="$1"; }
-gaterun() { ( cd "$R" && EVID="$1" bash "$GATE" "$2" "$3" "${@:4}" >"$T/out" 2>&1 ); GRC=$?; }
+rec_review() { printf '{"gate":"%s","head_sha":"%s","verdict":"%s","summary":"ok","findings":%s}\n' "$1" "$2" "$3" "${4:-[]}" > "$E/rec.json"; }; rec_plan() { printf '{"gate":"plan","tier":"%s","acceptance_criteria":["a"],"design":"d","files":["f"],"tests":["t"],"risks":[],"rollback":"r"}\n' "$1" > "$E/rec.json"; }
+planenv() { export FAKE_OPTION="$NO" FAKE_MODEL="$NM" FAKE_INSTANCE="$NEON_ACCT" FAKE_EFFORT="$1"; }; opusenv() { export FAKE_OPTION="$OO" FAKE_MODEL="${2:-$OM}" FAKE_INSTANCE="${3:-$OPUS_ACCT}" FAKE_EFFORT="$1"; }
 # g EVID GATE TIER [args...]: a gate run with a fresh child thread id (children are never reused across ok rows).
-g() { local e=$1; shift; gaterun "$e" "$1" "$2" --child-thread "$(nextid)" --parent-thread p1 "${@:3}"; }
+gaterun() { ( cd "$R" && EVID="$1" bash "$GATE" "$2" "$3" "${@:4}" >"$T/out" 2>&1 ); GRC=$?; }; g() { local e=$1; shift; gaterun "$e" "$1" "$2" --child-thread "$(nextid)" --parent-thread p1 "${@:3}"; }
 # seed EVID JSON-lines rows: seed gate:tier:status:verdict:reason ... (unique child sessions per row)
 seed() { python3 - "$E/gates.log" "$@" <<'PY'
 import json, os, sys
@@ -372,4 +368,8 @@ fresh; export FAKE_MODE=concat2 FAKE_RECORD=$E/rec.json; g "$E" plan medium --re
 fresh; new_ev truncfinal; printf 'facts body\n' > "$E/facts.md"; K=$(shasum -a 256 "$E/facts.md" | awk '{print $1}'); pkt plan "$K"; rec_plan medium; planenv "$(rt effort plan medium)"; export FAKE_MODE=truncfinal FAKE_RECORD=$E/rec.json; g "$E" plan medium --record "$E/rec.json"; chk "truncated final object rejects the earlier draft exit2" bash -c "[ $GRC = 2 ] && tail -1 '$E/gates.log' | grep -q 'invalid output' && ! ls '$E'/plan-*.json 2>/dev/null"
 fresh; new_ev fenced; printf 'facts body\n' > "$E/facts.md"; K=$(shasum -a 256 "$E/facts.md" | awk '{print $1}'); pkt plan "$K"; rec_plan medium; planenv "$(rt effort plan medium)"; printf '{"gate":"plan","tier":"medium","acceptance_criteria":["a"],"design":"old-plan","files":["f"],"tests":["t"],"risks":[],"rollback":"r"}\n' > "$E/old.json"; export FAKE_MODE=fencedraft FAKE_RECORD=$E/rec.json; g "$E" plan medium --record "$E/old.json"; chk "fenced draft followed by text after the closing fence is rejected exit2" bash -c "[ $GRC = 2 ] && tail -1 '$E/gates.log' | grep -qE 'invalid output|does not match' && ! ls '$E'/plan-*.json 2>/dev/null"
 fresh; new_ev laterbad; printf 'facts body\n' > "$E/facts.md"; K=$(shasum -a 256 "$E/facts.md" | awk '{print $1}'); pkt plan "$K"; rec_plan medium; planenv "$(rt effort plan medium)"; export FAKE_MODE=laterbad FAKE_RECORD=$E/rec.json; g "$E" plan medium --record "$E/rec.json"; chk "a later malformed assistant message discards the earlier parsed one exit2" bash -c "[ $GRC = 2 ] && tail -1 '$E/gates.log' | grep -qE 'invalid output|does not match' && ! ls '$E'/plan-*.json 2>/dev/null"
+# --- fenced JSON holding a fence, deeply nested JSON and an unreadable completed tool item ---
+fresh; new_ev ft; printf 'facts body\n' > "$E/facts.md"; K=$(shasum -a 256 "$E/facts.md" | awk '{print $1}'); pkt plan "$K"; python3 -c 'import json,sys; json.dump({"gate":"plan","tier":"medium","acceptance_criteria":["a"],"design":"see ```py\nx\n``` block","files":["f"],"tests":["t"],"risks":[],"rollback":"r"}, open(sys.argv[1],"w"))' "$E/rec.json"; planenv "$(rt effort plan medium)"; export FAKE_MODE=fencetick FAKE_RECORD=$E/rec.json; g "$E" plan medium --record "$E/rec.json"; chk "fenced submission whose JSON strings contain a fence exit0" bash -c "[ $GRC = 0 ] && test -s '$E/plan-$K.json'"
+fresh; new_ev deep; printf 'facts body\n' > "$E/facts.md"; K=$(shasum -a 256 "$E/facts.md" | awk '{print $1}'); pkt plan "$K"; rec_plan medium; planenv "$(rt effort plan medium)"; export FAKE_MODE=deepnest FAKE_RECORD=$E/rec.json; g "$E" plan medium --record "$E/rec.json"; chk "deeply nested JSON rejects as invalid output without a traceback" bash -c "[ $GRC = 2 ] && tail -1 '$E/gates.log' | grep -q 'invalid output' && ! grep -q Traceback '$T/out'"
+fresh; new_ev badt; printf 'facts body\n' > "$E/facts.md"; K=$(shasum -a 256 "$E/facts.md" | awk '{print $1}'); pkt plan "$K"; rec_plan medium; planenv "$(rt effort plan medium)"; export FAKE_MODE=badtool FAKE_RECORD=$E/rec.json; g "$E" plan medium --record "$E/rec.json"; chk "unreadable completed tool item rejects the earlier submission exit2" bash -c "[ $GRC = 2 ] && ! ls '$E'/plan-*.json 2>/dev/null"
 printf '\n%s\n' "$([ $FAILED = 0 ] && echo 'GATE TESTS PASSED' || echo 'GATE TESTS FAILED')"; exit $FAILED

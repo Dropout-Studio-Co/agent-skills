@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """gate_lib.py - T3-verified provenance, schema, round-cap, epoch and logging for gate.sh (stdlib only)."""
 import argparse, hashlib, json, os, subprocess, sys, time
-sys.dont_write_bytecode = True; sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import routing_lib as routing
+sys.dont_write_bytecode = True; sys.path.insert(0, os.path.dirname(os.path.abspath(__file__))); import routing_lib as routing
 RANK = {"low": 0, "medium": 1, "high": 2}; SEVERITY = {"important": "Important", "nit": "Nit", "pre-existing": "Pre-existing"}; ERR_KEYS = ("stopReason", "stop_reason", "error", "errorCode", "errorMessage", "code", "type", "reason", "status", "message", "detail", "details")
 USAGE_PAT = ("usage_limit", "rate_limit", "rate limit", "usage limit", "quota", "429")
 STOP_KEYS = ("stop_reason", "stopReason", "finish_reason", "finishReason"); REFUSALS = {"refusal", "safety", "prohibited_content", "blocklist", "spii", "recitation"}; MARKS = ("[cyber]", "prohibited_content", "safety_block")
@@ -10,7 +9,7 @@ def now(): return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 def same(left, right): return json.dumps(left, sort_keys=True) == json.dumps(right, sort_keys=True)
 def parse(text):
     try: return json.loads(text)
-    except (TypeError, ValueError): return None
+    except (TypeError, ValueError, RecursionError): return None
 def sha_file(path):
     try: return hashlib.sha256(open(path, "rb").read()).hexdigest()
     except OSError: return ""
@@ -37,7 +36,7 @@ def items_of(read):
     thread = read.get("thread") if isinstance(read.get("thread"), dict) else {}; return next((source if isinstance(source, list) else source["items"] for source in (read, thread, read.get("activity"), thread.get("activity")) if (isinstance(source, list) and source) or (isinstance(source, dict) and isinstance(source.get("items"), list) and source["items"])), [])
 def parse_json(text):
     text = (text if isinstance(text, str) else "").strip()
-    if text.startswith("```") and text.endswith("```") and "```" not in text[3:].rsplit("\n", 1)[0]: text = text.split("\n", 1)[1][:-3] if "\n" in text else ""
+    if text.startswith("```") and text.endswith("```"): text = text.split("\n", 1)[1][:-3] if "\n" in text else ""
     start, end = text.find("{"), text.rfind("}")
     if not 0 <= start < end: return None
     fast = parse(text[start:end + 1])
@@ -45,7 +44,7 @@ def parse_json(text):
     last, pos, decoder = None, start, json.JSONDecoder()
     for _ in range(128):
         try: found, pos = decoder.raw_decode(text, pos)
-        except ValueError: return None
+        except (ValueError, RecursionError): return None
         if isinstance(found, dict): last = found
         while pos < len(text) and text[pos].isspace(): pos += 1
         if pos >= len(text): return last
@@ -70,7 +69,8 @@ def output_of(read, thread):
     for item in [entry for entry in items_of(read) if isinstance(entry, dict)]:
         if item.get("type") == "assistant_message": slot, value = "message", parse_json(full_text(thread, item))
         elif item.get("type") == "dynamic_tool" and item.get("status") == "completed":
-            call = parse_json(full_text(thread, item)) or {}
+            text = full_text(thread, item); call = parse_json(text or "") or {}
+            if text is None: found["submit"] = None; continue
             if not str(call.get("toolName") or "").endswith("t3_submit_output"): continue
             raw = (call.get("input") or {}).get("json"); slot, value = "submit", raw if isinstance(raw, dict) else parse_json(raw)
         else: continue
