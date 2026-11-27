@@ -397,7 +397,9 @@ class ProfileAndAgnosticComplianceTests(TaskCase):
             with open(readme, encoding='utf-8') as handle:
                 readme_text = handle.read()
             self.assertIn('A collection of 9 Dropout Studio', readme_text)
-            self.assertIn('all 9 skills', readme_text)
+            # The install prompt stays idempotent: it derives the skill list from
+            # `skills/` instead of hardcoding a fixed count.
+            self.assertIn('do not assume a fixed count', readme_text)
             self.assertNotIn('A collection of 8 Dropout Studio', readme_text)
             self.assertNotIn('all 8 skills', readme_text)
             media = readme_text.split('### Media & Utilities', 1)
