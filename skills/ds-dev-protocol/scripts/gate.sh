@@ -119,6 +119,6 @@ if [ -f "$EVID/facts.md" ]; then fsha=$(sha "$EVID/facts.md"); fi
 rc=0
 python3 -I "$SKILL/scripts/gate_lib.py" --evid "$EVID" --gate "$gate" --tier "$tier" \
   --record "$record" --child-thread "$child" --parent-thread "$parent" --trigger "$trigger" --ui "$ui" --high-effort "$high_effort" \
-  --key "$key" --expected-head "$head" --facts-sha "$fsha" --base-ref "$base_ref" --base-sha "$mb" \
+  --key "$key" --expected-head "$head" --facts-sha "$fsha" --base-ref "$base_ref" --base-sha "$mb" --source "$want" \
   --diff-sha "$dsha" --repo "$reponame" --skill "$SKILL" || rc=$?
 exit "$rc"

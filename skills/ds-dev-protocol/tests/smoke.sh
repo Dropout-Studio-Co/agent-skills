@@ -268,8 +268,8 @@ gatev() { ( cd "$GR" && EVID="$GE" REC="$GE/rec-review.json" INST="$1" MODEL="$2
 gatev alt-review-a alt-review-1 effort "$(rt2 effort review medium)" alt-r1f; rr1=$?
 gatev "$OPAC" "$OPM" "$OPO" "$(python3 -I "$ROOT/scripts/routing_lib.py" effort review medium)" old-r1; rr2=$?
 chk "gate.sh review accepts the alt route and rejects the old one" bash -c "[ $rr1 = 1 ] && [ $rr2 = 2 ] && test -s '$GE/review-$GH.json'"
-gatev alt-review-a alt-review-1 effort "$(rt2 effort review medium)" alt-r2m; rr_r2m=$?
 ( cd "$GR" && EVID="$GE" bash "$T/skill/scripts/build-packet.sh" review medium --base origin/main --high-effort reactive-round )
+gatev alt-review-a alt-review-1 effort "$(rt2 effort review medium)" alt-r2m; rr_r2m=$?
 printf '{"gate":"review","head_sha":"%s","verdict":"pass","summary":"ok","findings":[]}\n' "$GH" > "$GE/rec-review.json"; gatev alt-review-a alt-review-1 effort "$(rt2 effort review medium 1)" alt-r2h; rr_r2h=$?
 chk "gate.sh review round 1 fail -> round 2 auto-enforces high without --high-effort" bash -c "[ $rr_r2m = 2 ] && [ $rr_r2h = 0 ] && grep -q '\"effort_triggers\": \[\"reactive-round\"\]' '$GE/gates.log' && grep -q '\"reactive-round\"' '$GE/review-$GH.json'"
 cp "$T/skill/routing.json" "$T/routing.keep"; printf '{' > "$T/skill/routing.json"; : > "$T/t3.calls"

@@ -112,10 +112,9 @@ def log_metrics(evid, args, payload, model, round_no):
     except OSError: return
 def main():
     parser = argparse.ArgumentParser(add_help=False)
-    for name in "evid gate tier record child-thread parent-thread key expected-head facts-sha base-ref base-sha diff-sha repo skill trigger ui high-effort reason".split(): parser.add_argument("--" + name, default="")
+    for name in "evid gate tier record child-thread parent-thread key expected-head facts-sha base-ref base-sha diff-sha repo skill trigger ui high-effort reason source".split(): parser.add_argument("--" + name, default="")
     parser.add_argument("--log-invalid", action="store_true"); args = parser.parse_args(); rows = load_rows(args.evid); trigger = args.trigger.strip() not in ("", "0"); ui = args.ui.strip() not in ("", "0"); triggers = []
-    def authorized(row):
-        path = os.path.join(args.evid, os.path.basename(row.get("file") or "-")); return row.get("gate") == "epoch" and row.get("status") == "ok" and row.get("verdict") == "pass" and os.path.isfile(path) and row.get("file_sha256") == sha_file(path)
+    def authorized(row): path = os.path.join(args.evid, os.path.basename(row.get("file") or "-")); return row.get("gate") == "epoch" and row.get("status") == "ok" and row.get("verdict") == "pass" and os.path.isfile(path) and row.get("file_sha256") == sha_file(path)
     epochs = [index for index, row in enumerate(rows) if authorized(row)]; plans = [index for index, row in enumerate(rows) if row.get("gate") == "plan" and row.get("status") == "ok"]
     epoch_start = epochs[-1] + 1 if epochs else 0; plan_start = max(epoch_start, plans[-1] + 1 if plans else 0); last_ok = max((index for index, row in enumerate(rows) if row.get("gate") == args.gate and row.get("status") == "ok"), default=-1)
     used = sum(1 for index, row in enumerate(rows) if index >= plan_start and row.get("gate") == args.gate and row.get("status") == "ok"); total = sum(1 for index, row in enumerate(rows) if index >= epoch_start and row.get("gate") == args.gate and row.get("status") == "ok")
@@ -147,14 +146,15 @@ def main():
     live_map = {c[1]: live_instances(caps, c[4], c[2]) for c in contracts}; inst_dk = {p["providerInstanceId"]: p["driverKind"] for p in caps["providers"] if isinstance(p, dict) and isinstance(p.get("providerInstanceId"), str) and isinstance(p.get("driverKind"), str)}
     hit = next((c for c in contracts if c[2] == info["model"] and info["instance"] in live_map[c[1]]), None) or next((c for c in contracts if c[2] == info["model"]), None) or next((c for c in contracts if live_map[c[1]]), contracts[0]); provider, route, model, option, dk = hit; live = live_map[route]
     effort = routing.effort_for(RCFG, args.gate, args.tier, bool(triggers), ui=ui, route=route); chosen = info["options"].get(option) or ""; obs = dict(model=info["model"], effort=chosen, account=info["instance"], driver_kind=inst_dk.get(info["instance"], ""))
-    htext = ""
-    try: htext = open(os.path.join(args.evid, "packet-%s.md" % args.gate), encoding="utf-8", errors="replace").read().split("key:", 1)[0]
-    except OSError: pass
-    hv = next((line.split(":", 1)[1].strip() for line in htext.splitlines() if line.startswith("Effort:")), None)
-    tags = [t.strip() for t in hv[6:-1].split(",") if t.strip()] if hv and hv.startswith("high (") and hv.endswith(")") else []
-    if hv is not None and ((effort == "high" and not (hv == "high" or (tags and all(t in triggers for t in tags)))) or (effort == "medium" and hv != "medium")): return stop(2, reason="packet Effort header %r does not match verified effort %s" % (hv, effort), **obs)
-    def bad(reason):
-        prior = any(row.get("gate") == args.gate and row.get("key") == args.key and row.get("status") == "invalid" and str(row.get("reason", "")).startswith("invalid output") for row in rows[last_ok + 1:]); return stop(3, status="blocked", reason="invalid output after retry", **obs) if prior else stop(2, reason="invalid output: " + reason, **obs)
+    try: ptext = open(os.path.join(args.evid, "packet-%s.md" % args.gate), encoding="utf-8", errors="replace").read(); body = open(args.source, encoding="utf-8", errors="replace").read().strip() if args.source else ""
+    except OSError: return stop(2, reason="cannot read packet or source for Effort header check", **obs)
+    pos = ptext.find(body) if body else -1
+    if args.source and pos < 0: return stop(2, reason="cannot locate the gate source in the packet for the Effort header check", **obs)
+    effs = [line.split(":", 1)[1].strip() for line in (ptext[:pos] if pos >= 0 else ptext).splitlines() if line.startswith("Effort:")]
+    if len(effs) > 1: return stop(2, reason="duplicate Effort header in packet", **obs)
+    tags = [t.strip() for t in effs[0][6:-1].split(",") if t.strip()] if effs and effs[0].startswith("high (") and effs[0].endswith(")") else []
+    if effs and ((effort == "high" and not (effs[0] == "high" or (tags and all(t in triggers for t in tags)))) or (effort == "medium" and effs[0] != "medium")): return stop(2, reason="packet Effort header %r does not match verified effort %s" % (effs[0], effort), **obs)
+    def bad(reason): prior = any(row.get("gate") == args.gate and row.get("key") == args.key and row.get("status") == "invalid" and str(row.get("reason", "")).startswith("invalid output") for row in rows[last_ok + 1:]); return stop(3, status="blocked", reason="invalid output after retry", **obs) if prior else stop(2, reason="invalid output: " + reason, **obs)
     if not info["parent"] or info["parent"] != args.parent_thread: return stop(2, reason="child thread parent %r does not match --parent-thread" % (info["parent"],), **obs)
     if info["refusal"]: return stop(3, status="blocked", reason="safety refusal", **obs)
     if any(pattern in info["meta"] or pattern in info["notice"] for pattern in USAGE_PAT):
