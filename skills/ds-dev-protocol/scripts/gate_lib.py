@@ -21,8 +21,7 @@ def load_rows(evid):
     try: return [row for row in map(parse, open(os.path.join(evid, "gates.log"), errors="replace").read().splitlines()) if isinstance(row, dict)]
     except OSError: return []
 def unwrap(value):
-    if isinstance(value, str): value = parse(value)
-    if isinstance(value, list): value = next((item for item in value if isinstance(item, dict)), {})
+    value = parse(value) if isinstance(value, str) else value; value = next((item for item in value if isinstance(item, dict)), {}) if isinstance(value, list) else value
     if not isinstance(value, dict) or value.get("isError") is True: return None
     for key in ("structuredContent", "result", "data"):
         if isinstance(value.get(key), dict): return unwrap(value[key])
@@ -35,33 +34,36 @@ def t3(tool, payload):
     except (OSError, ValueError, subprocess.SubprocessError): return None
     return unwrap(parse(done.stdout)) if done.returncode == 0 else None
 def items_of(read):
-    thread = read.get("thread") if isinstance(read.get("thread"), dict) else {}
-    return next((source if isinstance(source, list) else source["items"] for source in (read, thread, read.get("activity"), thread.get("activity")) if (isinstance(source, list) and source) or (isinstance(source, dict) and isinstance(source.get("items"), list) and source["items"])), [])
+    thread = read.get("thread") if isinstance(read.get("thread"), dict) else {}; return next((source if isinstance(source, list) else source["items"] for source in (read, thread, read.get("activity"), thread.get("activity")) if (isinstance(source, list) and source) or (isinstance(source, dict) and isinstance(source.get("items"), list) and source["items"])), [])
 def parse_json(text):
     text = (text if isinstance(text, str) else "").strip(); text = text.split("\n", 1)[-1].rsplit("```", 1)[0] if text.startswith("```") else text; start, end = text.find("{"), text.rfind("}")
     if not 0 <= start < end: return None
     fast = parse(text[start:end + 1])
-    if isinstance(fast, dict): return fast
+    if isinstance(fast, dict) and not text[end + 1:].strip(): return fast
     last, pos, decoder = None, start, json.JSONDecoder()
     for _ in range(128):
         try: found, pos = decoder.raw_decode(text, pos)
-        except ValueError: pos = text.find("{", pos + 1); continue
+        except ValueError: return None
         if isinstance(found, dict): last = found
-        if (pos := text.find("{", pos)) < 0: break
-    return last
+        while pos < len(text) and text[pos].isspace(): pos += 1
+        if pos >= len(text): return last
+        if text[pos] != "{": return None
+    return None
 def full_text(thread, item):
     text = item.get("text") if isinstance(item.get("text"), str) else ""
     offset = item.get("nextTextOffset")
+    if item.get("textTruncated") is not True: return text
     for _ in range(40):
-        if item.get("textTruncated") is not True or not isinstance(offset, int) or offset <= 0: break
+        if not isinstance(offset, int) or offset <= 0: return None
         chunk = t3("t3_thread_read", {"threadId": thread, "itemId": item.get("itemId"), "textOffset": offset, "maxCharsPerItem": 20000}); chunk = chunk if isinstance(chunk, dict) else {}
         found = chunk if isinstance(chunk.get("text"), str) else next((entry for entry in items_of(chunk) if entry.get("itemId") == item.get("itemId")), {})
         piece = found.get("text") if isinstance(found, dict) else None; following = found.get("nextTextOffset") if isinstance(found, dict) else None
-        if not isinstance(piece, str) or not piece: break
+        if not isinstance(piece, str) or not piece: return None
         text += piece
-        if not isinstance(following, int) or following <= offset: break
+        if found.get("textTruncated") is not True: return text
+        if not isinstance(following, int) or following <= offset: return None
         offset = following
-    return text
+    return None
 def output_of(read, thread):
     found = {}
     for item in [entry for entry in items_of(read) if isinstance(entry, dict)]:
@@ -87,8 +89,7 @@ def thread_info(read, cfg, keys):
         opts = source.get("options"); prior = any(source is entry for entry in runs) and source is not run and (not latest or (source.get("runId") or source.get("id")) != latest) and source.get("status") in ("failed", "cancelled", "interrupted")
         effort = next((opts.get(key) for key in keys if isinstance(opts, dict) and opts.get(key)), "") if isinstance(opts, dict) else next((entry.get("value") for entry in opts or [] if isinstance(entry, dict) and entry.get("id") in keys), ""); strings = lambda *keys: next((source[key] for key in keys if isinstance(source.get(key), str) and source.get(key)), "")
         seen.append(dict(model=strings("model", "modelId"), executed=strings("executedModel"), instance=strings("instanceId", "providerInstanceId"), effort=effort if isinstance(effort, str) else "", prior_fail=bool(prior)))
-    pick = lambda *keys: next((source[key] for source in (selection, thread, read, run) for key in keys if isinstance(source, dict) and source.get(key)), "")
-    usage = next((item for item in (thread.get("usage"), read.get("usage"), run.get("usage"), thread.get("tokenUsage")) if isinstance(item, dict)), {})
+    pick = lambda *keys: next((source[key] for source in (selection, thread, read, run) for key in keys if isinstance(source, dict) and source.get(key)), ""); usage = next((item for item in (thread.get("usage"), read.get("usage"), run.get("usage"), thread.get("tokenUsage")) if isinstance(item, dict)), {})
     stops = [node[key].lower() for node in [selection, thread, read, run] + runs + items_of(read) if isinstance(node, dict) for key in STOP_KEYS if isinstance(node.get(key), str) and node.get(key)]
     return {"status": pick("status"), "parent": thread.get("parentThreadId") or read.get("parentThreadId") or "", "instance": pick("instanceId", "providerInstanceId"), "model": pick("model", "modelId"), "run_status": run.get("status"), "usage": usage, "options": options, "meta": meta, "notice": notice, "seen": seen, "stop": stops[0] if stops else "", "refusal": any(value in REFUSALS for value in stops) or any(mark in meta or mark in notice for mark in MARKS)}
 def live_instances(caps, driver_kind, model):
@@ -120,8 +121,7 @@ def main():
     def authorized(row): path = os.path.join(args.evid, os.path.basename(row.get("file") or "-")); return row.get("gate") == "epoch" and row.get("status") == "ok" and row.get("verdict") == "pass" and os.path.isfile(path) and row.get("file_sha256") == sha_file(path)
     epochs = [index for index, row in enumerate(rows) if authorized(row)]; plans = [index for index, row in enumerate(rows) if row.get("gate") == "plan" and row.get("status") == "ok"]
     epoch_start = epochs[-1] + 1 if epochs else 0; plan_start = max(epoch_start, plans[-1] + 1 if plans else 0)
-    last_ok = max((index for index, row in enumerate(rows) if row.get("gate") == args.gate and row.get("status") == "ok"), default=-1)
-    used = sum(1 for index, row in enumerate(rows) if index >= plan_start and row.get("gate") == args.gate and row.get("status") == "ok"); total = sum(1 for index, row in enumerate(rows) if index >= epoch_start and row.get("gate") == args.gate and row.get("status") == "ok")
+    last_ok = max((index for index, row in enumerate(rows) if row.get("gate") == args.gate and row.get("status") == "ok"), default=-1); used = sum(1 for index, row in enumerate(rows) if index >= plan_start and row.get("gate") == args.gate and row.get("status") == "ok"); total = sum(1 for index, row in enumerate(rows) if index >= epoch_start and row.get("gate") == args.gate and row.get("status") == "ok")
     round_no = len(plans) + 1 if args.gate == "plan" else used + 1
     def emit(**fields):
         row = dict(ts=now(), task_id=os.path.basename(os.path.abspath(args.evid)), gate=args.gate, tier=args.tier, round=round_no, key=args.key, facts_sha256=args.facts_sha, base_ref=args.base_ref, base_sha=args.base_sha, diff_sha256=args.diff_sha, head_sha=args.expected_head, status="invalid", provenance_mode="", engine="t3-delegate", provider="", route="", model="", effort=args.effort, driver_kind="", ui=ui, session_id=args.child_thread, parent_thread_id=args.parent_thread, account="", input_tokens=0, output_tokens=0, cost_usd=0, verdict="", reason="", file="", file_sha256="")

@@ -64,6 +64,7 @@ def items():
     if mode == "concat2":
         draft = dict(rec); draft["design"] = "old-plan"
         return [{"type": "assistant_message", "itemId": "it-1", "text": json.dumps(draft) + json.dumps(rec)}]
+    if mode == "truncfinal": return [{"type": "assistant_message", "itemId": "it-1", "text": json.dumps(rec) + "\n\n" + json.dumps(rec)[:-5]}]
     if mode == "prose":
         return [{"type": "assistant_message", "itemId": "it-1", "text": "The cyber harness review is done.\n" + json.dumps(rec)}]
     return [{"type": "assistant_message", "itemId": "it-1", "text": json.dumps(rec)}]
@@ -108,8 +109,7 @@ printf 'feat\n' > "$R/g.txt"; git -C "$R" add g.txt; git -C "$R" commit -qm feat
 H=$(git -C "$R" rev-parse HEAD); B=$(git -C "$R" merge-base origin/main "$H")
 new_ev() { E=$T/$1; rm -rf "$E"; mkdir -p "$E"; }
 # pkt GATE KEY [BASE]: packet with the gate, tier, key, HEAD, optional merge-base and the exact source body.
-pkt() { { printf 'Gate: %s\nkey: %s\nhead: %s\nTier: low\nTier: medium\nTier: high\n' "$1" "$2" "$H"; [ -z "${3:-}" ] || printf 'base: %s\n' "$3"
-  if [ "$1" = plan ]; then cat "$E/facts.md"; elif [ "$1" = epoch ]; then cat "$E/epoch.md"; else git -C "$R" diff --no-color "$3" HEAD; fi; } > "$E/packet-$1.md"; }
+pkt() { { printf 'Gate: %s\nkey: %s\nhead: %s\nTier: low\nTier: medium\nTier: high\n' "$1" "$2" "$H"; [ -z "${3:-}" ] || printf 'base: %s\n' "$3"; if [ "$1" = plan ]; then cat "$E/facts.md"; elif [ "$1" = epoch ]; then cat "$E/epoch.md"; else git -C "$R" diff --no-color "$3" HEAD; fi; } > "$E/packet-$1.md"; }
 rec_review() { printf '{"gate":"%s","head_sha":"%s","verdict":"%s","summary":"ok","findings":%s}\n' "$1" "$2" "$3" "${4:-[]}" > "$E/rec.json"; }
 rec_plan() { printf '{"gate":"plan","tier":"%s","acceptance_criteria":["a"],"design":"d","files":["f"],"tests":["t"],"risks":[],"rollback":"r"}\n' "$1" > "$E/rec.json"; }
 planenv() { export FAKE_OPTION="$NO" FAKE_MODEL="$NM" FAKE_INSTANCE="$NEON_ACCT" FAKE_EFFORT="$1"; }
@@ -371,5 +371,5 @@ fresh; new_ev concat; printf 'facts body\n' > "$E/facts.md"; K=$(shasum -a 256 "
 fresh; new_ev concat2; printf 'facts body\n' > "$E/facts.md"; K=$(shasum -a 256 "$E/facts.md" | awk '{print $1}'); pkt plan "$K"; rec_plan medium; planenv "$(rt effort plan medium)"; printf '{"gate":"plan","tier":"medium","acceptance_criteria":["a"],"design":"old-plan","files":["f"],"tests":["t"],"risks":[],"rollback":"r"}\n' > "$E/old.json"
 export FAKE_MODE=concat2 FAKE_RECORD=$E/rec.json; g "$E" plan medium --record "$E/rec.json"; chk "concatenated draft then final decodes the final submission exit0" bash -c "[ $GRC = 0 ] && grep -q '\"design\": \"d\"' '$E/plan-$K.json' && ! grep -q old-plan '$E/plan-$K.json'"
 fresh; export FAKE_MODE=concat2 FAKE_RECORD=$E/rec.json; g "$E" plan medium --record "$E/old.json"; chk "earlier concatenated draft record exit2" bash -c "[ $GRC = 2 ] && tail -1 '$E/gates.log' | grep -q 'does not match the child thread output'"
-printf '\n%s\n' "$([ $FAILED = 0 ] && echo 'GATE TESTS PASSED' || echo 'GATE TESTS FAILED')"
-exit $FAILED
+fresh; new_ev truncfinal; printf 'facts body\n' > "$E/facts.md"; K=$(shasum -a 256 "$E/facts.md" | awk '{print $1}'); pkt plan "$K"; rec_plan medium; planenv "$(rt effort plan medium)"; export FAKE_MODE=truncfinal FAKE_RECORD=$E/rec.json; g "$E" plan medium --record "$E/rec.json"; chk "truncated final object rejects the earlier draft exit2" bash -c "[ $GRC = 2 ] && tail -1 '$E/gates.log' | grep -q 'invalid output' && ! ls '$E'/plan-*.json 2>/dev/null"
+printf '\n%s\n' "$([ $FAILED = 0 ] && echo 'GATE TESTS PASSED' || echo 'GATE TESTS FAILED')"; exit $FAILED
