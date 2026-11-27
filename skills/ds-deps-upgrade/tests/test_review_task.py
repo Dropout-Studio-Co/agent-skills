@@ -971,6 +971,65 @@ class DepsUpgradeSpecTests(TempCase):
         self.assertIn('migration guides', untrusted)
         self.assertIn('**data**', untrusted)
 
+    def test_cross_stack_compatibility_and_concise_reporting_rules(self):
+        skill = self.read('SKILL.md')
+        workflow = self.read('references/workflow.md')
+        javascript = self.read('references/javascript.md')
+
+        # SKILL.md §1 gates majors on verified zero-conflict cross-stack compatibility.
+        scope = re.sub(r'\s+', ' ', skill.split('### Scope defaults', 1)[1].split('## 2.', 1)[0]).lower()
+        self.assertIn('cross-stack compatibility', scope)
+        self.assertIn('zero conflicts', scope)
+        self.assertIn('hold any', scope)
+
+        # SKILL.md §2 owns one authoritative cross-stack compatibility rule.
+        rules = skill.split('## 2. Non-negotiable rules', 1)[1].split('## 3.', 1)[0]
+        self.assertIn('Cross-stack compatibility', rules)
+        rule = re.sub(r'\s+', ' ', rules.split('Cross-stack compatibility', 1)[1]).lower()
+        for phrase in ('removed or incompatible internal or programmatic apis',
+                       'peer or ecosystem mismatches',
+                       'unfinished downstream framework or tool support',
+                       'zero compatibility conflicts', 'conflicting dependencies', 'reason'):
+            self.assertIn(phrase, rule)
+
+        # SKILL.md §4 research verifies compatibility; plan records held conflicts.
+        research = re.sub(r'\s+', ' ', skill.split('6. `research`', 1)[1].split('7. `plan`', 1)[0]).lower()
+        self.assertIn('cross-stack compatibility', research)
+        plan = re.sub(r'\s+', ' ', skill.split('7. `plan`', 1)[1].split('8. `worktree`', 1)[0]).lower()
+        self.assertIn('held-back', plan)
+        self.assertIn('conflicting dependencies', plan)
+        self.assertIn('reason', plan)
+
+        # workflow.md research enumerates every cross-stack check and the hold rule.
+        wf_research = re.sub(r'\s+', ' ', workflow.split('## 4. `research`', 1)[1].split('## 5. `plan`', 1)[0]).lower()
+        for phrase in ('removed or incompatible internal or programmatic apis',
+                       'peer or ecosystem mismatches',
+                       'unfinished downstream framework or tool support',
+                       'zero compatibility conflicts'):
+            self.assertIn(phrase, wf_research)
+        wf_plan = re.sub(r'\s+', ' ', workflow.split('## 5. `plan`', 1)[1].split('## 6. `worktree`', 1)[0]).lower()
+        self.assertIn('conflicting dependencies', wf_plan)
+        self.assertIn('reason', wf_plan)
+        self.assertNotIn('non-trivial target', workflow)
+
+        # javascript.md peer/engine section covers the same three conflict classes and holds.
+        peers = re.sub(r'\s+', ' ',
+                       javascript.split('## Peer and engine conflicts', 1)[1].split('## Codemods', 1)[0]).lower()
+        for phrase in ('removed or incompatible internal or programmatic apis',
+                       'peer or ecosystem mismatches',
+                       'unfinished downstream framework or tool support', 'hold'):
+            self.assertIn(phrase, peers)
+
+        # §8 is an ultra-concise reporting contract; the old verbose summary is gone.
+        final = re.sub(r'\s+', ' ', skill.split('## 8. Final answer to the user', 1)[1]).lower()
+        self.assertIn('single sentence', final)
+        self.assertIn('conflicting dependencies', final)
+        self.assertIn('reason', final)
+        self.assertIn('report.json', final)
+        self.assertIn('summary.md', final)
+        self.assertNotIn('versions old → new', final)
+        self.assertNotIn('versions old -> new', final)
+
     def test_no_symlinks_inside_the_skill(self):
         root = self.skill_dir()
         for dirpath, dirnames, filenames in os.walk(root):
