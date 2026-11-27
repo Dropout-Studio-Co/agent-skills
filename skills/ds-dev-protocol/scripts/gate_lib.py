@@ -36,7 +36,9 @@ def t3(tool, payload):
 def items_of(read):
     thread = read.get("thread") if isinstance(read.get("thread"), dict) else {}; return next((source if isinstance(source, list) else source["items"] for source in (read, thread, read.get("activity"), thread.get("activity")) if (isinstance(source, list) and source) or (isinstance(source, dict) and isinstance(source.get("items"), list) and source["items"])), [])
 def parse_json(text):
-    text = (text if isinstance(text, str) else "").strip(); text = text.split("\n", 1)[-1].rsplit("```", 1)[0] if text.startswith("```") else text; start, end = text.find("{"), text.rfind("}")
+    text = (text if isinstance(text, str) else "").strip()
+    if text.startswith("```") and text.endswith("```") and "```" not in text[3:].rsplit("\n", 1)[0]: text = text.split("\n", 1)[1][:-3] if "\n" in text else ""
+    start, end = text.find("{"), text.rfind("}")
     if not 0 <= start < end: return None
     fast = parse(text[start:end + 1])
     if isinstance(fast, dict) and not text[end + 1:].strip(): return fast
@@ -55,8 +57,7 @@ def full_text(thread, item):
     if item.get("textTruncated") is not True: return text
     for _ in range(40):
         if not isinstance(offset, int) or offset <= 0: return None
-        chunk = t3("t3_thread_read", {"threadId": thread, "itemId": item.get("itemId"), "textOffset": offset, "maxCharsPerItem": 20000}); chunk = chunk if isinstance(chunk, dict) else {}
-        found = chunk if isinstance(chunk.get("text"), str) else next((entry for entry in items_of(chunk) if entry.get("itemId") == item.get("itemId")), {})
+        chunk = t3("t3_thread_read", {"threadId": thread, "itemId": item.get("itemId"), "textOffset": offset, "maxCharsPerItem": 20000}); chunk = chunk if isinstance(chunk, dict) else {}; found = chunk if isinstance(chunk.get("text"), str) else next((entry for entry in items_of(chunk) if entry.get("itemId") == item.get("itemId")), {})
         piece = found.get("text") if isinstance(found, dict) else None; following = found.get("nextTextOffset") if isinstance(found, dict) else None
         if not isinstance(piece, str) or not piece: return None
         text += piece
@@ -69,11 +70,12 @@ def output_of(read, thread):
     for item in [entry for entry in items_of(read) if isinstance(entry, dict)]:
         if item.get("type") == "assistant_message": slot, value = "message", parse_json(full_text(thread, item))
         elif item.get("type") == "dynamic_tool" and item.get("status") == "completed":
-            call = parse_json(full_text(thread, item)) or {}; raw = (call.get("input") or {}).get("json") if str(call.get("toolName") or "").endswith("t3_submit_output") and isinstance(call.get("input"), dict) else None
-            slot, value = "submit", parse_json(raw) if isinstance(raw, str) else (raw if isinstance(raw, dict) else None)
+            call = parse_json(full_text(thread, item)) or {}
+            if not str(call.get("toolName") or "").endswith("t3_submit_output"): continue
+            raw = (call.get("input") or {}).get("json"); slot, value = "submit", raw if isinstance(raw, dict) else parse_json(raw)
         else: continue
-        if isinstance(value, dict): found[slot] = value
-    return found.get("submit") or found.get("message")
+        found[slot] = value
+    return found["submit"] if "submit" in found else found.get("message")
 def thread_info(read, cfg, keys):
     thread = read.get("thread") if isinstance(read.get("thread"), dict) else read
     selection = cfg.get("modelSelection") if isinstance(cfg.get("modelSelection"), dict) else cfg
@@ -109,8 +111,7 @@ def validate(schema, value, path="$"):
     return ""
 def log_metrics(evid, args, payload, model, round_no):
     if args.gate not in ("review", "security"): return
-    path = os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.join(os.path.expanduser("~"), ".local", "state"), "review-metrics", "findings.jsonl")
-    rows = [dict(date=now()[:10], task=os.path.basename(os.path.abspath(evid)), repo=args.repo or "outside", sha=args.key, tier=args.tier, round=round_no, reviewer=model, outcome="reported", **{"class": args.gate}, severity=SEVERITY.get(finding.get("severity", ""), finding.get("severity", ""))) for finding in payload.get("findings") or [] if isinstance(finding, dict)]
+    path = os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.join(os.path.expanduser("~"), ".local", "state"), "review-metrics", "findings.jsonl"); rows = [dict(date=now()[:10], task=os.path.basename(os.path.abspath(evid)), repo=args.repo or "outside", sha=args.key, tier=args.tier, round=round_no, reviewer=model, outcome="reported", **{"class": args.gate}, severity=SEVERITY.get(finding.get("severity", ""), finding.get("severity", ""))) for finding in payload.get("findings") or [] if isinstance(finding, dict)]
     try: os.makedirs(os.path.dirname(path), exist_ok=True); open(path, "a").write("".join(json.dumps(row) + "\n" for row in rows))
     except OSError: return
 def main():
