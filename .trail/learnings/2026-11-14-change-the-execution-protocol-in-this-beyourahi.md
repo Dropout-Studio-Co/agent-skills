@@ -5,7 +5,7 @@ date: 2026-11-14
 branch: feat/execution-protocol-sync
 id: l-fee4a0a0
 scope: repo
-status: active
+status: superseded
 src: agent
 touches:
   - skills/execution-protocol/SKILL.md

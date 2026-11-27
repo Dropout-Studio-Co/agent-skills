@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """gate_lib.py - T3-verified provenance, schema, round-cap, epoch and logging for gate.sh (stdlib only)."""
 import argparse, hashlib, json, os, subprocess, sys, time
-sys.dont_write_bytecode = True; sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import routing_lib as routing
+sys.dont_write_bytecode = True; sys.path.insert(0, os.path.dirname(os.path.abspath(__file__))); import routing_lib as routing
 RANK = {"low": 0, "medium": 1, "high": 2}; SEVERITY = {"important": "Important", "nit": "Nit", "pre-existing": "Pre-existing"}; ERR_KEYS = ("stopReason", "stop_reason", "error", "errorCode", "errorMessage", "code", "type", "reason", "status", "message", "detail", "details")
 USAGE_PAT = ("usage_limit", "rate_limit", "rate limit", "usage limit", "quota", "429")
 STOP_KEYS = ("stop_reason", "stopReason", "finish_reason", "finishReason"); REFUSALS = {"refusal", "safety", "prohibited_content", "blocklist", "spii", "recitation"}; MARKS = ("[cyber]", "prohibited_content", "safety_block")
@@ -10,7 +9,7 @@ def now(): return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 def same(left, right): return json.dumps(left, sort_keys=True) == json.dumps(right, sort_keys=True)
 def parse(text):
     try: return json.loads(text)
-    except (TypeError, ValueError): return None
+    except (TypeError, ValueError, RecursionError): return None
 def sha_file(path):
     try: return hashlib.sha256(open(path, "rb").read()).hexdigest()
     except OSError: return ""
@@ -18,55 +17,65 @@ def git(*argv):
     try: return subprocess.run(("git",) + argv, capture_output=True, text=True).stdout.strip()
     except OSError: return None
 def load_rows(evid):
-    try: lines = open(os.path.join(evid, "gates.log"), errors="replace").read().splitlines()
+    try: return [row for row in map(parse, open(os.path.join(evid, "gates.log"), errors="replace").read().splitlines()) if isinstance(row, dict)]
     except OSError: return []
-    return [row for row in map(parse, lines) if isinstance(row, dict)]
 def unwrap(value):
-    if isinstance(value, str): value = parse(value)
-    if isinstance(value, list): value = next((item for item in value if isinstance(item, dict)), {})
+    value = parse(value) if isinstance(value, str) else value; value = next((item for item in value if isinstance(item, dict)), {}) if isinstance(value, list) else value
     if not isinstance(value, dict) or value.get("isError") is True: return None
     for key in ("structuredContent", "result", "data"):
         if isinstance(value.get(key), dict): return unwrap(value[key])
-    parsed = [parse(item.get("text")) if isinstance(item, dict) else None for item in value.get("content") or []]
-    nested = next((entry for entry in parsed if isinstance(entry, dict)), None)
+    nested = next((entry for entry in (parse(item.get("text")) if isinstance(item, dict) else None for item in value.get("content") or []) if isinstance(entry, dict)), None)
     return unwrap(nested) if nested is not None else value
 def t3(tool, payload):
     node = os.environ.get("T3_ACP_MCP_NODE", "").strip(); entry = os.environ.get("T3_ACP_MCP_ENTRYPOINT", "").strip()
     if not node: return None
-    argv = [node] + ([entry] if entry else []) + ["acp-mcp-call", tool, json.dumps(payload)]
-    try: done = subprocess.run(argv, capture_output=True, text=True, env=dict(os.environ, ELECTRON_RUN_AS_NODE="1"), timeout=120)
+    try: done = subprocess.run([node] + ([entry] if entry else []) + ["acp-mcp-call", tool, json.dumps(payload)], capture_output=True, text=True, env=dict(os.environ, ELECTRON_RUN_AS_NODE="1"), timeout=120)
     except (OSError, ValueError, subprocess.SubprocessError): return None
     return unwrap(parse(done.stdout)) if done.returncode == 0 else None
 def items_of(read):
-    thread = read.get("thread") if isinstance(read.get("thread"), dict) else {}
-    return next((source if isinstance(source, list) else source["items"] for source in (read, thread, read.get("activity"), thread.get("activity")) if (isinstance(source, list) and source) or (isinstance(source, dict) and isinstance(source.get("items"), list) and source["items"])), [])
+    thread = read.get("thread") if isinstance(read.get("thread"), dict) else {}; return next((source if isinstance(source, list) else source["items"] for source in (read, thread, read.get("activity"), thread.get("activity")) if (isinstance(source, list) and source) or (isinstance(source, dict) and isinstance(source.get("items"), list) and source["items"])), [])
 def parse_json(text):
-    text = (text if isinstance(text, str) else "").strip(); text = text.split("\n", 1)[-1].rsplit("```", 1)[0] if text.startswith("```") else text; start, end = text.find("{"), text.rfind("}")
-    return (lambda value: value if isinstance(value, dict) else None)(parse(text[start:end + 1]) if 0 <= start < end else None)
+    text = (text if isinstance(text, str) else "").strip()
+    if text.startswith("```") and text.endswith("```"): text = text.split("\n", 1)[1][:-3] if "\n" in text else ""
+    start, end = text.find("{"), text.rfind("}")
+    if not 0 <= start < end: return None
+    fast = parse(text[start:end + 1])
+    if isinstance(fast, dict) and not text[end + 1:].strip(): return fast
+    last, pos, decoder = None, start, json.JSONDecoder()
+    for _ in range(128):
+        try: found, pos = decoder.raw_decode(text, pos)
+        except (ValueError, RecursionError): return None
+        if isinstance(found, dict): last = found
+        while pos < len(text) and text[pos].isspace(): pos += 1
+        if pos >= len(text): return last
+        if text[pos] != "{": return None
+    return None
 def full_text(thread, item):
     text = item.get("text") if isinstance(item.get("text"), str) else ""
     offset = item.get("nextTextOffset")
+    if item.get("textTruncated") is not True: return text
     for _ in range(40):
-        if item.get("textTruncated") is not True or not isinstance(offset, int) or offset <= 0: break
-        chunk = t3("t3_thread_read", {"threadId": thread, "itemId": item.get("itemId"), "textOffset": offset, "maxCharsPerItem": 20000}); chunk = chunk if isinstance(chunk, dict) else {}
-        found = chunk if isinstance(chunk.get("text"), str) else next((entry for entry in items_of(chunk) if entry.get("itemId") == item.get("itemId")), {})
+        if not isinstance(offset, int) or offset <= 0: return None
+        chunk = t3("t3_thread_read", {"threadId": thread, "itemId": item.get("itemId"), "textOffset": offset, "maxCharsPerItem": 20000}); chunk = chunk if isinstance(chunk, dict) else {}; found = chunk if isinstance(chunk.get("text"), str) else next((entry for entry in items_of(chunk) if entry.get("itemId") == item.get("itemId")), {})
         piece = found.get("text") if isinstance(found, dict) else None; following = found.get("nextTextOffset") if isinstance(found, dict) else None
-        if not isinstance(piece, str) or not piece: break
+        if not isinstance(piece, str) or not piece: return None
         text += piece
-        if not isinstance(following, int) or following <= offset: break
+        if found.get("textTruncated") is not True: return text
+        if not isinstance(following, int) or following <= offset: return None
         offset = following
-    return text
+    return None
 def output_of(read, thread):
     found = {}
-    for item in items_of(read):
-        if not isinstance(item, dict): continue
+    for item in [entry for entry in items_of(read) if isinstance(entry, dict)]:
         if item.get("type") == "assistant_message": slot, value = "message", parse_json(full_text(thread, item))
         elif item.get("type") == "dynamic_tool" and item.get("status") == "completed":
-            call = parse_json(full_text(thread, item)) or {}
-            raw = (call.get("input") or {}).get("json") if str(call.get("toolName") or "").endswith("t3_submit_output") and isinstance(call.get("input"), dict) else None; slot, value = "submit", parse_json(raw) if isinstance(raw, str) else (raw if isinstance(raw, dict) else None)
+            text = full_text(thread, item); call = parse_json(text or "") or {}
+            if text is None: found["submit"] = None; continue
+            if not str(call.get("toolName") or "").endswith("t3_submit_output"): continue
+            raw = (call.get("input") or {}).get("json"); slot, value = "submit", raw if isinstance(raw, dict) else parse_json(raw)
         else: continue
-        if isinstance(value, dict): found[slot] = value
-    return found.get("submit") or found.get("message")
+        found[slot] = value
+    return found["submit"] if "submit" in found else found.get("message")
 def thread_info(read, cfg, keys):
     thread = read.get("thread") if isinstance(read.get("thread"), dict) else read
     selection = cfg.get("modelSelection") if isinstance(cfg.get("modelSelection"), dict) else cfg
@@ -76,23 +85,20 @@ def thread_info(read, cfg, keys):
     meta = " ".join(str(node[key]) for node in (read, thread, run) if isinstance(node, dict) for key in ERR_KEYS if isinstance(node.get(key), (str, int, float)) and not isinstance(node.get(key), bool)).lower(); notice = " ".join(item.get("text") for item in items_of(read) if isinstance(item, dict) and item.get("type") == "system_notice" and isinstance(item.get("text"), str)).lower()
     options = {}
     for source in (selection.get("options"), thread.get("options"), (thread.get("target") or {}).get("options")):
-        if isinstance(source, dict): options.update(source)
-        elif isinstance(source, list): options.update({entry["id"]: entry.get("value") for entry in source if isinstance(entry, dict) and entry.get("id")})
+        options.update(source if isinstance(source, dict) else {entry["id"]: entry.get("value") for entry in source or [] if isinstance(entry, dict) and entry.get("id")})
     seen = []
     for source in [node for node in [selection, thread, read] + runs if isinstance(node, dict)]:
-        opts = source.get("options")
+        opts = source.get("options"); prior = any(source is entry for entry in runs) and source is not run and (not latest or (source.get("runId") or source.get("id")) != latest) and source.get("status") in ("failed", "cancelled", "interrupted")
         effort = next((opts.get(key) for key in keys if isinstance(opts, dict) and opts.get(key)), "") if isinstance(opts, dict) else next((entry.get("value") for entry in opts or [] if isinstance(entry, dict) and entry.get("id") in keys), ""); strings = lambda *keys: next((source[key] for key in keys if isinstance(source.get(key), str) and source.get(key)), "")
-        seen.append(dict(model=strings("model", "modelId"), executed=strings("executedModel"), instance=strings("instanceId", "providerInstanceId"), effort=effort if isinstance(effort, str) else ""))
-    pick = lambda *keys: next((source[key] for source in (selection, thread, read, run) for key in keys if isinstance(source, dict) and source.get(key)), "")
-    usage = next((item for item in (thread.get("usage"), read.get("usage"), run.get("usage"), thread.get("tokenUsage")) if isinstance(item, dict)), {})
+        seen.append(dict(model=strings("model", "modelId"), executed=strings("executedModel"), instance=strings("instanceId", "providerInstanceId"), effort=effort if isinstance(effort, str) else "", prior_fail=bool(prior)))
+    pick = lambda *keys: next((source[key] for source in (selection, thread, read, run) for key in keys if isinstance(source, dict) and source.get(key)), ""); usage = next((item for item in (thread.get("usage"), read.get("usage"), run.get("usage"), thread.get("tokenUsage")) if isinstance(item, dict)), {})
     stops = [node[key].lower() for node in [selection, thread, read, run] + runs + items_of(read) if isinstance(node, dict) for key in STOP_KEYS if isinstance(node.get(key), str) and node.get(key)]
     return {"status": pick("status"), "parent": thread.get("parentThreadId") or read.get("parentThreadId") or "", "instance": pick("instanceId", "providerInstanceId"), "model": pick("model", "modelId"), "run_status": run.get("status"), "usage": usage, "options": options, "meta": meta, "notice": notice, "seen": seen, "stop": stops[0] if stops else "", "refusal": any(value in REFUSALS for value in stops) or any(mark in meta or mark in notice for mark in MARKS)}
 def live_instances(caps, driver_kind, model):
     found = []
     for provider in caps.get("providers") or []:
-        if not isinstance(provider, dict) or provider.get("canRunChildTask") is not True or provider.get("driverKind") != driver_kind: continue
-        models = provider.get("models"); ids = [entry.get("id") for entry in models if isinstance(entry, dict)] if isinstance(models, list) else []; instance = provider.get("providerInstanceId")
-        if isinstance(instance, str) and instance and model in ids and instance not in found: found.append(instance)
+        models = provider.get("models") if isinstance(provider, dict) else None; ids = [entry.get("id") for entry in models if isinstance(entry, dict)] if isinstance(models, list) else []; instance = provider.get("providerInstanceId") if isinstance(provider, dict) else None
+        if ids and provider.get("canRunChildTask") is True and provider.get("driverKind") == driver_kind and isinstance(instance, str) and instance and model in ids and instance not in found: found.append(instance)
     return found
 def validate(schema, value, path="$"):
     if schema.get("type") == "object" or schema.get("required"):
@@ -101,35 +107,31 @@ def validate(schema, value, path="$"):
         problems += [validate(sub, value[key], path + "." + key) for key, sub in (schema.get("properties") or {}).items() if key in value]
         return next((problem for problem in problems if problem), "")
     if schema.get("type") == "array": return path + " must be an array" if not isinstance(value, list) else next((problem for problem in (validate(schema.get("items") or {}, item, "%s[%d]" % (path, index)) for index, item in enumerate(value)) if problem), "")
-    if schema.get("type") == "string" and not isinstance(value, str): return path + " must be a string"
-    if schema.get("type") == "string" and "enum" in schema and value not in schema["enum"]: return "%s must be one of %s" % (path, schema["enum"])
+    if schema.get("type") == "string": return path + " must be a string" if not isinstance(value, str) else ("%s must be one of %s" % (path, schema["enum"]) if "enum" in schema and value not in schema["enum"] else "")
     return ""
 def log_metrics(evid, args, payload, model, round_no):
     if args.gate not in ("review", "security"): return
-    path = os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.join(os.path.expanduser("~"), ".local", "state"), "review-metrics", "findings.jsonl")
-    try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "a") as handle:
-            for finding in [item for item in payload.get("findings") or [] if isinstance(item, dict)]:
-                handle.write(json.dumps(dict(date=now()[:10], task=os.path.basename(os.path.abspath(evid)), repo=args.repo or "outside", sha=args.key, tier=args.tier, round=round_no, reviewer=model, outcome="reported", **{"class": args.gate}, severity=SEVERITY.get(finding.get("severity", ""), finding.get("severity", "")))) + "\n")
+    path = os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.join(os.path.expanduser("~"), ".local", "state"), "review-metrics", "findings.jsonl"); rows = [dict(date=now()[:10], task=os.path.basename(os.path.abspath(evid)), repo=args.repo or "outside", sha=args.key, tier=args.tier, round=round_no, reviewer=model, outcome="reported", **{"class": args.gate}, severity=SEVERITY.get(finding.get("severity", ""), finding.get("severity", ""))) for finding in payload.get("findings") or [] if isinstance(finding, dict)]
+    try: os.makedirs(os.path.dirname(path), exist_ok=True); open(path, "a").write("".join(json.dumps(row) + "\n" for row in rows))
     except OSError: return
 def main():
     parser = argparse.ArgumentParser(add_help=False)
-    for name in "evid gate tier record child-thread parent-thread key expected-head facts-sha base-ref base-sha diff-sha repo skill trigger ui reason".split(): parser.add_argument("--" + name, default="")
+    for name in "evid gate tier record child-thread parent-thread key expected-head facts-sha base-ref base-sha diff-sha repo skill trigger ui reason effort".split(): parser.add_argument("--" + name, default="")
     parser.add_argument("--log-invalid", action="store_true")
     args = parser.parse_args(); rows = load_rows(args.evid); trigger = args.trigger.strip() not in ("", "0"); ui = args.ui.strip() not in ("", "0")
-    def authorized(row):
-        path = os.path.join(args.evid, os.path.basename(row.get("file") or "-")); return row.get("gate") == "epoch" and row.get("status") == "ok" and row.get("verdict") == "pass" and os.path.isfile(path) and row.get("file_sha256") == sha_file(path)
+    def authorized(row): path = os.path.join(args.evid, os.path.basename(row.get("file") or "-")); return row.get("gate") == "epoch" and row.get("status") == "ok" and row.get("verdict") == "pass" and os.path.isfile(path) and row.get("file_sha256") == sha_file(path)
     epochs = [index for index, row in enumerate(rows) if authorized(row)]; plans = [index for index, row in enumerate(rows) if row.get("gate") == "plan" and row.get("status") == "ok"]
     epoch_start = epochs[-1] + 1 if epochs else 0; plan_start = max(epoch_start, plans[-1] + 1 if plans else 0)
-    last_ok = max((index for index, row in enumerate(rows) if row.get("gate") == args.gate and row.get("status") == "ok"), default=-1)
-    used = sum(1 for index, row in enumerate(rows) if index >= plan_start and row.get("gate") == args.gate and row.get("status") == "ok"); total = sum(1 for index, row in enumerate(rows) if index >= epoch_start and row.get("gate") == args.gate and row.get("status") == "ok")
+    last_ok = max((index for index, row in enumerate(rows) if row.get("gate") == args.gate and row.get("status") == "ok"), default=-1); used = sum(1 for index, row in enumerate(rows) if index >= plan_start and row.get("gate") == args.gate and row.get("status") == "ok"); total = sum(1 for index, row in enumerate(rows) if index >= epoch_start and row.get("gate") == args.gate and row.get("status") == "ok")
     round_no = len(plans) + 1 if args.gate == "plan" else used + 1
     def emit(**fields):
-        row = dict(ts=now(), task_id=os.path.basename(os.path.abspath(args.evid)), gate=args.gate, tier=args.tier, round=round_no, key=args.key, facts_sha256=args.facts_sha, base_ref=args.base_ref, base_sha=args.base_sha, diff_sha256=args.diff_sha, head_sha=args.expected_head, status="invalid", provenance_mode="", engine="t3-delegate", provider="", route="", model="", effort="", driver_kind="", ui=ui, session_id=args.child_thread, parent_thread_id=args.parent_thread, account="", input_tokens=0, output_tokens=0, cost_usd=0, verdict="", reason="", file="", file_sha256="")
+        row = dict(ts=now(), task_id=os.path.basename(os.path.abspath(args.evid)), gate=args.gate, tier=args.tier, round=round_no, key=args.key, facts_sha256=args.facts_sha, base_ref=args.base_ref, base_sha=args.base_sha, diff_sha256=args.diff_sha, head_sha=args.expected_head, status="invalid", provenance_mode="", engine="t3-delegate", provider="", route="", model="", effort=args.effort, driver_kind="", ui=ui, session_id=args.child_thread, parent_thread_id=args.parent_thread, account="", input_tokens=0, output_tokens=0, cost_usd=0, verdict="", reason="", file="", file_sha256="")
         row.update(fields); open(os.path.join(args.evid, "gates.log"), "a").write(json.dumps(row, sort_keys=True) + "\n")
     def stop(code, **fields): emit(**fields); return code
-    if args.log_invalid: return stop(2, reason=args.reason or "gate.sh refused")
+    if args.log_invalid:
+        try: logged = routing.effort_for(routing.load(), args.gate, args.tier, trigger or (args.gate == "review" and round_no >= 3), ui=ui)
+        except ValueError: logged = args.effort
+        return stop(2, reason=args.reason or "gate.sh refused", effort=logged)
     if ui and args.gate not in routing.UI_GATES: return stop(2, reason="--ui is valid on plan and review only")
     try: RCFG = routing.load()
     except ValueError as problem: return stop(2, reason="invalid routing.json: %s" % problem)
@@ -153,8 +155,7 @@ def main():
     effort = routing.effort_for(RCFG, args.gate, args.tier, trigger or (args.gate == "review" and round_no >= 3), ui=ui, route=route); chosen = info["options"].get(option) or ""
     obs = dict(model=info["model"], effort=chosen, account=info["instance"], driver_kind=inst_dk.get(info["instance"], ""))
     def bad(reason):
-        prior = any(row.get("gate") == args.gate and row.get("key") == args.key and row.get("status") == "invalid" and str(row.get("reason", "")).startswith("invalid output") for row in rows[last_ok + 1:])
-        if prior: return stop(3, status="blocked", reason="invalid output after retry", **obs)
+        if any(row.get("gate") == args.gate and row.get("key") == args.key and row.get("status") == "invalid" and str(row.get("reason", "")).startswith("invalid output") for row in rows[last_ok + 1:]): return stop(3, status="blocked", reason="invalid output after retry", **obs)
         return stop(2, reason="invalid output: " + reason, **obs)
     if not info["parent"] or info["parent"] != args.parent_thread: return stop(2, reason="child thread parent %r does not match --parent-thread" % (info["parent"],), **obs)
     if info["refusal"]: return stop(3, status="blocked", reason="safety refusal", **obs)
@@ -174,7 +175,7 @@ def main():
     for seen in info["seen"]:
         for field, expected, label in (("model", model, "model"), ("executed", model, "executed model"), ("effort", effort, option)):
             if seen[field] and seen[field] != expected: return stop(2, reason="observed %s is %r, expected %s" % (label, seen[field], expected), **obs)
-        if seen["instance"] and (seen["instance"] != info["instance"] or seen["instance"] not in live): return stop(2, reason="observed account %r disagrees with the modelSelection instance %r" % (seen["instance"], info["instance"]), **obs)
+        if seen["instance"] and (seen["instance"] not in live or (not seen["prior_fail"] and seen["instance"] != info["instance"])): return stop(2, reason="observed account %r disagrees with the modelSelection instance %r" % (seen["instance"], info["instance"]), **obs)
     try: payload = json.load(open(args.record))
     except (OSError, ValueError) as problem: return stop(2, reason="--record is not readable JSON: %s" % problem, **obs)
     if not isinstance(payload, dict): return bad("--record payload is not a JSON object")
@@ -189,9 +190,8 @@ def main():
     if not isinstance(final, dict) or not same(payload, final): return bad("record payload does not match the child thread output (final submission only)")
     verdict = payload.get("verdict", "pass")
     if verdict == "pass" and any(isinstance(item, dict) and item.get("severity") == "important" for item in payload.get("findings") or []): return bad("verdict pass is invalid alongside an Important finding")
-    name = "%s-%s.json" % (args.gate, args.key)
     provenance = dict(provenance_mode="t3-verified", engine="t3-delegate", provider=provider, route=route, model=model, effort=effort, driver_kind=dk, ui=ui, session_id=args.child_thread, parent_thread_id=args.parent_thread, account=info["instance"], verified_at=now())
-    target = os.path.join(args.evid, name); open(target, "w").write(json.dumps({"structured_output": payload, "provenance": provenance}, indent=2, sort_keys=True) + "\n")
+    target = os.path.join(args.evid, "%s-%s.json" % (args.gate, args.key)); name = os.path.basename(target); open(target, "w").write(json.dumps({"structured_output": payload, "provenance": provenance}, indent=2, sort_keys=True) + "\n")
     usage = info["usage"]; count = lambda *keys: next((usage[key] for key in keys if isinstance(usage.get(key), (int, float)) and not isinstance(usage.get(key), bool)), 0)
     emit(status="ok", verdict=verdict, file=name, file_sha256=sha_file(target), input_tokens=count("inputTokens", "input_tokens"), output_tokens=count("outputTokens", "output_tokens"), cost_usd=count("costUsd", "cost_usd", "totalCostUsd"), provenance_mode="t3-verified", provider=provider, route=route, model=model, effort=effort, driver_kind=dk, account=info["instance"])
     log_metrics(args.evid, args, payload, model, round_no)

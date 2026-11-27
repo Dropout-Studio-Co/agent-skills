@@ -9,6 +9,7 @@ usage: EVID=<dir> build-packet.sh <plan|review|security|epoch> <low|medium|high>
 EOF
 }
 die() { printf 'build-packet: %s\n' "$*" >&2; exit 2; }
+MAX_BYTES=204800 BLAST_MAX=8192
 [ "${1:-}" = --help ] && { usage; exit 0; }
 [ -n "${EVID:-}" ] && [ -d "$EVID" ] || die "EVID must name an existing directory"
 [ $# -ge 2 ] || { usage >&2; exit 2; }
@@ -27,9 +28,13 @@ esac; shift; done
 case $gate in plan|epoch) [ -z "$diff$base" ] || die "$gate reads EVID/facts.md or EVID/epoch.md; no --diff or --base" ;; esac
 repo=0; git rev-parse --git-dir >/dev/null 2>&1 && repo=1
 top=""; [ "$repo" = 0 ] || top=$(git rev-parse --show-toplevel)
+if [ "$repo" = 1 ] && { [ "$gate" = plan ] || [ "$gate" = epoch ] || [ -z "$diff" ]; }; then
+  st=$(git status --porcelain --untracked-files=all) || die 'cannot check git status'
+  [ -z "$st" ] || die 'worktree is dirty or has untracked files; a gate must run on a clean tree'
+fi
 sha() { shasum -a 256 "$1" | awk '{print $1}'; }
 head=""; base_ref=""; mb=""
-tmp=$(mktemp "$EVID/.packet-$gate.XXXXXX"); trap 'rm -f "$tmp" "$tmp.diff"' EXIT
+tmp=$(mktemp "$EVID/.packet-$gate.XXXXXX"); trap 'rm -f "$tmp" "$tmp.diff" "$tmp.blast"' EXIT
 {
   printf 'Gate: %s\nTier: %s\n' "$gate" "$tier"
   [ "$ui" = 0 ] || printf 'Scope: ui\n'
@@ -57,9 +62,13 @@ if [ "$repo" = 1 ] && { [ "$gate" = review ] || [ "$gate" = security ]; } && [ -
     { printf '\n## REVIEW.md\n'; cat "$top/REVIEW.md"; } >> "$tmp"
   fi
   if [ -n "$base_ref" ] && command -v trail >/dev/null 2>&1; then
-    if blast=$(trail blast --no-owners --base "$base_ref" 2>/dev/null) && [ -n "$blast" ]; then
-      printf '\n## Trail blast\n%s\n' "$blast" >> "$tmp"
+    if trail blast --no-owners --base "$base_ref" > "$tmp.blast" 2>/dev/null && [ -s "$tmp.blast" ]; then
+      printf '\n## Trail blast\n' >> "$tmp"
+      if [ "$(wc -c < "$tmp.blast" | tr -d ' ')" -gt "$BLAST_MAX" ]; then
+        head -c "$BLAST_MAX" "$tmp.blast" >> "$tmp"; printf '\n[truncated to 8192 bytes]\n' >> "$tmp"
+      else cat "$tmp.blast" >> "$tmp"; fi
     fi
   fi
 fi
+bytes=$(wc -c < "$tmp" | tr -d ' '); [ "$bytes" -le "$MAX_BYTES" ] || die "packet is ${bytes} bytes (max ${MAX_BYTES}); split the candidate"
 mv -f "$tmp" "$EVID/packet-$gate.md"

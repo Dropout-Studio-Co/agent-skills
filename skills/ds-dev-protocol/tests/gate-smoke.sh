@@ -18,12 +18,9 @@ PY
 }
 export CAPS=$(caps "$NM|$NDK|${NEON_ALL[0]}" "$NM|$NDK|${NEON_ALL[1]}" "$NM|$NDK|${NEON_ALL[2]}")
 EH=$(rt effort epoch high); EM=$(rt effort epoch medium)
-T=$(mktemp -d "${TMPDIR:-/tmp}/gate-smoke.XXXXXX"); T=$(cd "$T" && pwd -P)
-export T HOME="$T/home" XDG_STATE_HOME="$T/state" PATH="$T/bin:$PATH"
-mkdir -p "$HOME" "$XDG_STATE_HOME" "$T/bin"; FAILED=0
-trap 'rm -rf "$T"' EXIT
-ok() { printf 'ok   gate: %s\n' "$1"; }; bad() { printf 'FAIL gate: %s\n' "$1"; FAILED=1; }
-chk() { local d=$1; shift; if "$@" >/dev/null 2>&1; then ok "$d"; else bad "$d"; fi; }
+T=$(mktemp -d "${TMPDIR:-/tmp}/gate-smoke.XXXXXX"); T=$(cd "$T" && pwd -P); export T HOME="$T/home" XDG_STATE_HOME="$T/state" PATH="$T/bin:$PATH"
+mkdir -p "$HOME" "$XDG_STATE_HOME" "$T/bin"; FAILED=0; trap 'rm -rf "$T"' EXIT
+ok() { printf 'ok   gate: %s\n' "$1"; }; bad() { printf 'FAIL gate: %s\n' "$1"; FAILED=1; }; chk() { local d=$1; shift; if "$@" >/dev/null 2>&1; then ok "$d"; else bad "$d"; fi; }
 cat > "$T/bin/acp-node" <<'FAKE'
 #!/usr/bin/env python3
 # Fake T3 ACP node: `acp-mcp-call <tool> <json>` prints T3's real result envelope.
@@ -46,21 +43,33 @@ def items():
     rec, mode = record(), E("FAKE_MODE", "assistant")
     if rec is None: return []
     if mode == "twostep":
-        first = dict(rec); first["design"] = "old-plan"
-        return [{"type": "assistant_message", "itemId": "it-1", "text": json.dumps(first)}, submit("it-2", rec)]
+        first = dict(rec); first["design"] = "old-plan"; return [{"type": "assistant_message", "itemId": "it-1", "text": json.dumps(first)}, submit("it-2", rec)]
     if mode == "twosubmit":
         second = dict(rec); second["verdict"] = "fail"
         return [submit("it-1", rec), submit("it-2", second)]
     if mode == "tool":
         return [submit("it-1", rec)]
     if mode == "trunc":
-        text = json.dumps(rec); half = len(text) // 2
-        return [{"type": "assistant_message", "itemId": "it-1", "text": text[:half], "textTruncated": True, "nextTextOffset": half}]
+        text = json.dumps(rec); half = len(text) // 2; return [{"type": "assistant_message", "itemId": "it-1", "text": text[:half], "textTruncated": True, "nextTextOffset": half}]
     if mode == "spoof":
         return [{"type": "assistant_message", "itemId": "it-1", "text": "Approved."},
                 {"type": "system_notice", "itemId": "it-2", "text": json.dumps(rec)}]
-    if mode == "prose":
-        return [{"type": "assistant_message", "itemId": "it-1", "text": "The cyber harness review is done.\n" + json.dumps(rec)}]
+    if mode == "concat":
+        return [{"type": "assistant_message", "itemId": "it-1", "text": json.dumps(rec) + json.dumps(rec)}]
+    if mode == "concat2":
+        draft = dict(rec); draft["design"] = "old-plan"; return [{"type": "assistant_message", "itemId": "it-1", "text": json.dumps(draft) + json.dumps(rec)}]
+    if mode == "truncfinal": return [{"type": "assistant_message", "itemId": "it-1", "text": json.dumps(rec) + "\n\n" + json.dumps(rec)[:-5]}]
+    if mode == "prose": return [{"type": "assistant_message", "itemId": "it-1", "text": "The cyber harness review is done.\n" + json.dumps(rec)}]
+    if mode == "fencedraft":
+        draft = dict(rec); draft["design"] = "old-plan"
+        return [{"type": "assistant_message", "itemId": "it-1", "text": "```json\n" + json.dumps(draft) + "\n```\n" + json.dumps(rec)}]
+    if mode == "laterbad":
+        text = json.dumps(rec); return [{"type": "assistant_message", "itemId": "it-1", "text": text}, {"type": "assistant_message", "itemId": "it-2", "text": text[:-5]}]
+    if mode == "fencetick":
+        tick = dict(rec); tick["design"] = "see ```py\nx\n``` block"; return [{"type": "assistant_message", "itemId": "it-1", "text": "```json\n" + json.dumps(tick) + "\n```"}]
+    if mode == "deepnest": return [{"type": "assistant_message", "itemId": "it-1", "text": '{"a":' + "[" * 1000000 + "]" * 1000000 + "}"}]
+    if mode == "badtool":
+        return [submit("it-1", rec), {"type": "dynamic_tool", "status": "completed", "itemId": "it-2", "text": '{"toolName": "t3_submit_output"', "textTruncated": True, "nextTextOffset": 0}]
     return [{"type": "assistant_message", "itemId": "it-1", "text": json.dumps(rec)}]
 def emit(content):
     print(json.dumps({"structuredContent": content, "isError": E("FAKE_ISERROR") == "1"})); sys.exit(0)
@@ -90,28 +99,21 @@ if tool == "t3_thread_read":
     emit({"thread": th, "recentRuns": [run], "items": its})
 emit({})
 FAKE
-chmod +x "$T/bin/acp-node"; NODE=$T/bin/acp-node; export T3_ACP_MCP_NODE="$NODE" T3_ACP_MCP_ENTRYPOINT=""
-: > "$T/t3.calls"; : > "$T/cid"
-fresh() { : > "$T/t3.calls"; unset FAKE_STATUS FAKE_PARENT FAKE_NO_PARENT FAKE_INSTANCE FAKE_MODEL FAKE_OPTION FAKE_EFFORT \
-  FAKE_RECORD FAKE_ERR FAKE_EXECUTED FAKE_MODE FAKE_NOTICE FAKE_ISERROR FAKE_RUN_STATUS FAKE_RUN_MODEL FAKE_RUN_INSTANCE FAKE_RUNS FAKE_THREAD_MODEL FAKE_ITEM_STOP FAKE_CAPS; }
+chmod +x "$T/bin/acp-node"; NODE=$T/bin/acp-node; export T3_ACP_MCP_NODE="$NODE" T3_ACP_MCP_ENTRYPOINT=""; : > "$T/t3.calls"; : > "$T/cid"
+fresh() { : > "$T/t3.calls"; unset FAKE_STATUS FAKE_PARENT FAKE_NO_PARENT FAKE_INSTANCE FAKE_MODEL FAKE_OPTION FAKE_EFFORT FAKE_RECORD FAKE_ERR FAKE_EXECUTED FAKE_MODE FAKE_NOTICE FAKE_ISERROR FAKE_RUN_STATUS FAKE_RUN_MODEL FAKE_RUN_INSTANCE FAKE_RUNS FAKE_THREAD_MODEL FAKE_ITEM_STOP FAKE_CAPS; }
 nextid() { local v=$(( $(cat "$T/cid") + 1 )); echo "$v" > "$T/cid"; printf 'c%s' "$v"; }
-unset GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM; export GIT_CONFIG_NOSYSTEM=1
-git config --global user.email smoke@example.com; git config --global user.name Smoke; git config --global init.defaultBranch main
+unset GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM; export GIT_CONFIG_NOSYSTEM=1; git config --global user.email smoke@example.com; git config --global user.name Smoke; git config --global init.defaultBranch main
 R=$T/repo; git init -q --bare "$T/origin.git"; git init -q "$R"; printf 'a\n' > "$R/f.txt"; git -C "$R" add f.txt; git -C "$R" commit -qm base
 git -C "$R" remote add origin "$T/origin.git"; git -C "$R" push -q origin main; git -C "$R" remote set-head origin main
 printf 'feat\n' > "$R/g.txt"; git -C "$R" add g.txt; git -C "$R" commit -qm feat
 H=$(git -C "$R" rev-parse HEAD); B=$(git -C "$R" merge-base origin/main "$H")
 new_ev() { E=$T/$1; rm -rf "$E"; mkdir -p "$E"; }
 # pkt GATE KEY [BASE]: packet with the gate, tier, key, HEAD, optional merge-base and the exact source body.
-pkt() { { printf 'Gate: %s\nkey: %s\nhead: %s\nTier: low\nTier: medium\nTier: high\n' "$1" "$2" "$H"; [ -z "${3:-}" ] || printf 'base: %s\n' "$3"
-  if [ "$1" = plan ]; then cat "$E/facts.md"; elif [ "$1" = epoch ]; then cat "$E/epoch.md"; else git -C "$R" diff --no-color "$3" HEAD; fi; } > "$E/packet-$1.md"; }
-rec_review() { printf '{"gate":"%s","head_sha":"%s","verdict":"%s","summary":"ok","findings":%s}\n' "$1" "$2" "$3" "${4:-[]}" > "$E/rec.json"; }
-rec_plan() { printf '{"gate":"plan","tier":"%s","acceptance_criteria":["a"],"design":"d","files":["f"],"tests":["t"],"risks":[],"rollback":"r"}\n' "$1" > "$E/rec.json"; }
-planenv() { export FAKE_OPTION="$NO" FAKE_MODEL="$NM" FAKE_INSTANCE="$NEON_ACCT" FAKE_EFFORT="$1"; }
-opusenv() { export FAKE_OPTION="$OO" FAKE_MODEL="${2:-$OM}" FAKE_INSTANCE="${3:-$OPUS_ACCT}" FAKE_EFFORT="$1"; }
-gaterun() { ( cd "$R" && EVID="$1" bash "$GATE" "$2" "$3" "${@:4}" >"$T/out" 2>&1 ); GRC=$?; }
+pkt() { { printf 'Gate: %s\nkey: %s\nhead: %s\nTier: low\nTier: medium\nTier: high\n' "$1" "$2" "$H"; [ -z "${3:-}" ] || printf 'base: %s\n' "$3"; if [ "$1" = plan ]; then cat "$E/facts.md"; elif [ "$1" = epoch ]; then cat "$E/epoch.md"; else git -C "$R" diff --no-color "$3" HEAD; fi; } > "$E/packet-$1.md"; }
+rec_review() { printf '{"gate":"%s","head_sha":"%s","verdict":"%s","summary":"ok","findings":%s}\n' "$1" "$2" "$3" "${4:-[]}" > "$E/rec.json"; }; rec_plan() { printf '{"gate":"plan","tier":"%s","acceptance_criteria":["a"],"design":"d","files":["f"],"tests":["t"],"risks":[],"rollback":"r"}\n' "$1" > "$E/rec.json"; }
+planenv() { export FAKE_OPTION="$NO" FAKE_MODEL="$NM" FAKE_INSTANCE="$NEON_ACCT" FAKE_EFFORT="$1"; }; opusenv() { export FAKE_OPTION="$OO" FAKE_MODEL="${2:-$OM}" FAKE_INSTANCE="${3:-$OPUS_ACCT}" FAKE_EFFORT="$1"; }
 # g EVID GATE TIER [args...]: a gate run with a fresh child thread id (children are never reused across ok rows).
-g() { local e=$1; shift; gaterun "$e" "$1" "$2" --child-thread "$(nextid)" --parent-thread p1 "${@:3}"; }
+gaterun() { ( cd "$R" && EVID="$1" bash "$GATE" "$2" "$3" "${@:4}" >"$T/out" 2>&1 ); GRC=$?; }; g() { local e=$1; shift; gaterun "$e" "$1" "$2" --child-thread "$(nextid)" --parent-thread p1 "${@:3}"; }
 # seed EVID JSON-lines rows: seed gate:tier:status:verdict:reason ... (unique child sessions per row)
 seed() { python3 - "$E/gates.log" "$@" <<'PY'
 import json, os, sys
@@ -328,8 +330,46 @@ unset T3_ACP_MCP_NODE; g "$E" review medium --record "$E/rec.json"; chk "T3_ACP_
 printf '#!/bin/sh\necho not-json\n' > "$T/bin/badnode"; chmod +x "$T/bin/badnode"; export T3_ACP_MCP_NODE="$T/bin/badnode"
 g "$E" review medium --record "$E/rec.json"; chk "non-JSON T3 node exits 2 with no traceback" bash -c "[ $GRC = 2 ] && tail -1 '$E/gates.log' | grep -q 'T3 MCP verification unavailable' && ! grep -q Traceback '$T/out'"
 export T3_ACP_MCP_NODE="$NODE"
-fresh; new_ev bp; rec_review review "$H" pass; opusenv "$(rt effort review medium)"; export FAKE_RECORD=$E/rec.json
+newrepo bpbind y.txt; fresh; new_ev bp; rec_review review "$H" pass; opusenv "$(rt effort review medium)"; export FAKE_RECORD=$E/rec.json
 ( cd "$R" && EVID="$E" bash "$ROOT/scripts/build-packet.sh" review medium --base origin/main )
 g "$E" review medium --record "$E/rec.json"; chk "build-packet output binds through gate.sh --record" bash -c "[ $GRC = 0 ] && test -s '$E/review-$H.json' && grep -q '^Gate: review' '$E/packet-review.md'"
-printf '\n%s\n' "$([ $FAILED = 0 ] && echo 'GATE TESTS PASSED' || echo 'GATE TESTS FAILED')"
-exit $FAILED
+BP=$ROOT/scripts/build-packet.sh; bp() { ( cd "$R" && EVID="$E" bash "$BP" "$@" ) >"$T/out" 2>&1; }
+# --- packet builder pre-dispatch tree check, trail blast bound and hard packet byte cap ---
+fresh; new_ev bpdirty; printf 'facts body\n' > "$E/facts.md"; printf 'd\n' > "$T/bp.diff"; printf 'b\n' >> "$R/f.txt"
+bp review medium --base origin/main; r1=$?; cp "$T/out" "$T/o1"; printf 'u\n' > "$R/u.txt"; bp plan medium; r2=$?; cp "$T/out" "$T/o2"; chk "build-packet dirty tracked (review) and untracked (plan) exit2, no packet" bash -c "[ $r1 = 2 ] && [ $r2 = 2 ] && grep -q dirty '$T/o1' && grep -q dirty '$T/o2' && ! ls '$E'/packet-*.md 2>/dev/null"
+bp review medium --diff "$T/bp.diff"; r3=$?; chk "build-packet --diff on a dirty repo still exit0" bash -c "[ $r3 = 0 ] && test -s '$E/packet-review.md'"
+git -C "$R" checkout -q -- f.txt; rm -f "$R/u.txt" "$E/packet-review.md"
+fresh; new_ev capbig; head -c 204900 /dev/zero | tr '\0' x > "$E/facts.md"; bp plan medium; r1=$?; chk "packet over 204800 bytes exit2 split the candidate, no packet" bash -c "[ $r1 = 2 ] && grep -q 'split the candidate' '$T/out' && [ ! -e '$E/packet-plan.md' ]"
+mkdir -p "$T/bigbin"; printf '#!/bin/sh\nyes y | head -c 9000\n' > "$T/bigbin/trail"; chmod +x "$T/bigbin/trail"; fresh; new_ev blast
+( cd "$R" && PATH="$T/bigbin:$PATH" EVID="$E" bash "$BP" review medium --base origin/main ) >"$T/out" 2>&1; r2=$?; chk "oversized trail blast truncated to 8192 bytes with a marker" bash -c "[ $r2 = 0 ] && grep -qF '[truncated to 8192 bytes]' '$E/packet-review.md' && [ \$(wc -c < '$E/packet-review.md') -lt 204800 ]"
+rec_review review "$H" pass; opusenv "$(rt effort review medium)"; export FAKE_RECORD=$E/rec.json; g "$E" review medium --record "$E/rec.json"; chk "bounded-blast packet binds through gate.sh --record" bash -c "[ $GRC = 0 ] && test -s '$E/review-$H.json'"
+# --- local preflight: preconditions without T3, gates.log or a record ---
+fresh; new_ev pf; pkt review "$H" "$B"; rec_review review "$H" pass; opusenv "$(rt effort review medium)"; export FAKE_RECORD=$E/rec.json
+gaterun "$E" review medium --preflight; r1=$GRC; chk "preflight on a clean tree and valid packet exits 0, no t3 calls, no gates.log" bash -c "[ $r1 = 0 ] && [ ! -s '$T/t3.calls' ] && [ ! -e '$E/gates.log' ]"
+printf 'b\n' >> "$R/f.txt"; gaterun "$E" review medium --preflight; r2=$GRC; git -C "$R" checkout -q -- f.txt; chk "preflight on a dirty tree exits 2, no t3 calls, no gates.log" bash -c "[ $r2 = 2 ] && [ ! -s '$T/t3.calls' ] && [ ! -e '$E/gates.log' ]"
+gaterun "$E" review medium --preflight --record "$E/rec.json"; r3=$GRC; chk "preflight combined with --record exits 2" bash -c "[ $r3 = 2 ] && [ ! -s '$T/t3.calls' ] && [ ! -e '$E/gates.log' ]"
+# --- early invalid rows carry the computed effort (tier, --trigger, security, plan) ---
+fresh; new_ev refe; pkt review "$H" "$B"; rec_review review "$H" pass; opusenv "$(rt effort review medium)"; export FAKE_RECORD=$E/rec.json
+printf 'b\n' >> "$R/f.txt"; g "$E" review medium --record "$E/rec.json"; r1=$GRC; git -C "$R" checkout -q -- f.txt
+printf 'b\n' >> "$R/f.txt"; g "$E" review medium --record "$E/rec.json" --trigger; r2=$GRC; git -C "$R" checkout -q -- f.txt; chk "refuse logs the computed effort: review medium medium, --trigger high" bash -c "[ $r1 = 2 ] && [ $r2 = 2 ] && [ \$(grep -c '\"effort\": \"medium\"' '$E/gates.log') = 1 ] && [ \$(grep -c '\"effort\": \"high\"' '$E/gates.log') = 1 ]"
+fresh; new_ev refhs; pkt security "$H" "$B"; rec_review security "$H" pass; opusenv high; export FAKE_RECORD=$E/rec.json; printf 'b\n' >> "$R/f.txt"; g "$E" security high --record "$E/rec.json"; r3=$GRC; git -C "$R" checkout -q -- f.txt
+printf 'facts body\n' > "$E/facts.md"; rec_plan high; planenv high; export FAKE_RECORD=$E/rec.json; g "$E" plan high --record "$E/rec.json"; r4=$GRC; chk "refuse logs security high and missing-packet plan high effort" bash -c "[ $r3 = 2 ] && [ $r4 = 2 ] && [ \$(grep -c '\"effort\": \"high\"' '$E/gates.log') = 2 ] && tail -1 '$E/gates.log' | grep -q 'missing'"
+# --- a prior failed run on another live instance is not an account mismatch ---
+fresh; new_ev prior; pkt review "$H" "$B"; rec_review review "$H" pass; opusenv "$(rt effort review medium)" "$OM" "${OPUS_ALL[1]}"; export FAKE_RECORD=$E/rec.json FAKE_RUNS='[{"runId":"run-2","status":"completed","providerInstanceId":"'${OPUS_ALL[1]}'","model":"'$OM'"},{"runId":"run-1","status":"failed","providerInstanceId":"'${OPUS_ALL[0]}'","model":"'$OM'"}]'
+g "$E" review medium --record "$E/rec.json"; chk "earlier failed run on another live instance accepted exit0" bash -c "[ $GRC = 0 ] && test -s '$E/review-$H.json'"
+fresh; opusenv "$(rt effort review medium)" "$OM" "${OPUS_ALL[1]}"; export FAKE_RECORD=$E/rec.json FAKE_RUNS='[{"runId":"run-2","status":"completed","providerInstanceId":"'${OPUS_ALL[1]}'","model":"'$OM'"},{"runId":"run-1","status":"failed","providerInstanceId":"ghost-1","model":"'$OM'"}]'; g "$E" review medium --record "$E/rec.json"; chk "earlier failed run on a non-live instance exit2" bash -c "[ $GRC = 2 ] && grep -q 'observed account' '$E/gates.log'"
+fresh; opusenv "$(rt effort review medium)" "$OM" "${OPUS_ALL[1]}"; export FAKE_RECORD=$E/rec.json FAKE_RUNS='[{"runId":"run-2","status":"completed","providerInstanceId":"'${OPUS_ALL[1]}'","model":"'$OM'"},{"runId":"run-1","status":"failed","providerInstanceId":"'${OPUS_ALL[0]}'","model":"'$OM'","executedModel":"claude-opus-4-8"}]'; g "$E" review medium --record "$E/rec.json"; chk "earlier failed run with a downgraded executed model exit2" bash -c "[ $GRC = 2 ] && tail -1 '$E/gates.log' | grep -q 'executed model'"
+fresh; opusenv "$(rt effort review medium)" "$OM" "${OPUS_ALL[1]}"; export FAKE_RECORD=$E/rec.json FAKE_RUNS='[{"runId":"run-2","status":"completed","providerInstanceId":"'${OPUS_ALL[1]}'","model":"'$OM'"},{"runId":"run-1","status":"completed","providerInstanceId":"'${OPUS_ALL[0]}'","model":"'$OM'"}]'; g "$E" review medium --record "$E/rec.json"; chk "earlier completed run on another live instance exit2" bash -c "[ $GRC = 2 ] && grep -q 'observed account' '$E/gates.log'"
+# --- concatenated JSON: only the final object counts ---
+fresh; new_ev concat; printf 'facts body\n' > "$E/facts.md"; K=$(shasum -a 256 "$E/facts.md" | awk '{print $1}'); pkt plan "$K"; rec_plan medium; planenv "$(rt effort plan medium)"; export FAKE_MODE=concat FAKE_RECORD=$E/rec.json; g "$E" plan medium --record "$E/rec.json"; chk "concatenated identical JSON decodes to the final object exit0" bash -c "[ $GRC = 0 ] && test -s '$E/plan-$K.json'"
+fresh; new_ev concat2; printf 'facts body\n' > "$E/facts.md"; K=$(shasum -a 256 "$E/facts.md" | awk '{print $1}'); pkt plan "$K"; rec_plan medium; planenv "$(rt effort plan medium)"; printf '{"gate":"plan","tier":"medium","acceptance_criteria":["a"],"design":"old-plan","files":["f"],"tests":["t"],"risks":[],"rollback":"r"}\n' > "$E/old.json"
+export FAKE_MODE=concat2 FAKE_RECORD=$E/rec.json; g "$E" plan medium --record "$E/rec.json"; chk "concatenated draft then final decodes the final submission exit0" bash -c "[ $GRC = 0 ] && grep -q '\"design\": \"d\"' '$E/plan-$K.json' && ! grep -q old-plan '$E/plan-$K.json'"
+fresh; export FAKE_MODE=concat2 FAKE_RECORD=$E/rec.json; g "$E" plan medium --record "$E/old.json"; chk "earlier concatenated draft record exit2" bash -c "[ $GRC = 2 ] && tail -1 '$E/gates.log' | grep -q 'does not match the child thread output'"
+fresh; new_ev truncfinal; printf 'facts body\n' > "$E/facts.md"; K=$(shasum -a 256 "$E/facts.md" | awk '{print $1}'); pkt plan "$K"; rec_plan medium; planenv "$(rt effort plan medium)"; export FAKE_MODE=truncfinal FAKE_RECORD=$E/rec.json; g "$E" plan medium --record "$E/rec.json"; chk "truncated final object rejects the earlier draft exit2" bash -c "[ $GRC = 2 ] && tail -1 '$E/gates.log' | grep -q 'invalid output' && ! ls '$E'/plan-*.json 2>/dev/null"
+fresh; new_ev fenced; printf 'facts body\n' > "$E/facts.md"; K=$(shasum -a 256 "$E/facts.md" | awk '{print $1}'); pkt plan "$K"; rec_plan medium; planenv "$(rt effort plan medium)"; printf '{"gate":"plan","tier":"medium","acceptance_criteria":["a"],"design":"old-plan","files":["f"],"tests":["t"],"risks":[],"rollback":"r"}\n' > "$E/old.json"; export FAKE_MODE=fencedraft FAKE_RECORD=$E/rec.json; g "$E" plan medium --record "$E/old.json"; chk "fenced draft followed by text after the closing fence is rejected exit2" bash -c "[ $GRC = 2 ] && tail -1 '$E/gates.log' | grep -qE 'invalid output|does not match' && ! ls '$E'/plan-*.json 2>/dev/null"
+fresh; new_ev laterbad; printf 'facts body\n' > "$E/facts.md"; K=$(shasum -a 256 "$E/facts.md" | awk '{print $1}'); pkt plan "$K"; rec_plan medium; planenv "$(rt effort plan medium)"; export FAKE_MODE=laterbad FAKE_RECORD=$E/rec.json; g "$E" plan medium --record "$E/rec.json"; chk "a later malformed assistant message discards the earlier parsed one exit2" bash -c "[ $GRC = 2 ] && tail -1 '$E/gates.log' | grep -qE 'invalid output|does not match' && ! ls '$E'/plan-*.json 2>/dev/null"
+# --- fenced JSON holding a fence, deeply nested JSON and an unreadable completed tool item ---
+fresh; new_ev ft; printf 'facts body\n' > "$E/facts.md"; K=$(shasum -a 256 "$E/facts.md" | awk '{print $1}'); pkt plan "$K"; python3 -c 'import json,sys; json.dump({"gate":"plan","tier":"medium","acceptance_criteria":["a"],"design":"see ```py\nx\n``` block","files":["f"],"tests":["t"],"risks":[],"rollback":"r"}, open(sys.argv[1],"w"))' "$E/rec.json"; planenv "$(rt effort plan medium)"; export FAKE_MODE=fencetick FAKE_RECORD=$E/rec.json; g "$E" plan medium --record "$E/rec.json"; chk "fenced submission whose JSON strings contain a fence exit0" bash -c "[ $GRC = 0 ] && test -s '$E/plan-$K.json'"
+fresh; new_ev deep; printf 'facts body\n' > "$E/facts.md"; K=$(shasum -a 256 "$E/facts.md" | awk '{print $1}'); pkt plan "$K"; rec_plan medium; planenv "$(rt effort plan medium)"; export FAKE_MODE=deepnest FAKE_RECORD=$E/rec.json; g "$E" plan medium --record "$E/rec.json"; chk "deeply nested JSON rejects as invalid output without a traceback" bash -c "[ $GRC = 2 ] && tail -1 '$E/gates.log' | grep -q 'invalid output' && ! grep -q Traceback '$T/out'"
+fresh; new_ev badt; printf 'facts body\n' > "$E/facts.md"; K=$(shasum -a 256 "$E/facts.md" | awk '{print $1}'); pkt plan "$K"; rec_plan medium; planenv "$(rt effort plan medium)"; export FAKE_MODE=badtool FAKE_RECORD=$E/rec.json; g "$E" plan medium --record "$E/rec.json"; chk "unreadable completed tool item rejects the earlier submission exit2" bash -c "[ $GRC = 2 ] && ! ls '$E'/plan-*.json 2>/dev/null"
+printf '\n%s\n' "$([ $FAILED = 0 ] && echo 'GATE TESTS PASSED' || echo 'GATE TESTS FAILED')"; exit $FAILED
